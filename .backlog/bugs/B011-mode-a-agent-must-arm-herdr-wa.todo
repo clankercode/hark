@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-07-13T08:53:33Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T07:35:02Z"
 depends_on: []
 estimate_hours: 1
 id: B011
 priority: high
-status: pending
-tags:
-    - dogfood
-    - mode-a
-    - skill
+started_at: "2026-07-13T08:53:33Z"
+status: in_progress
+tags: []
 title: Mode A agent must arm Herdr watch Monitor (missed agent.blocked)
-updated_at: "2026-07-13T07:35:02Z"
+updated_at: "2026-07-13T08:53:33Z"
 ---
 ## Dogfood
 Watch process logged agent.blocked to watch.jsonl, but the orchestrator session had only ambient.prompt Monitor armed — operator asked why no alert.
