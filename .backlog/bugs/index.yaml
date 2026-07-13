@@ -77,3 +77,4 @@ bugs:
     - file: B076-sources-for-codex-minimax-auth.todo
     - file: B077-wake-learn-reject-short-common.todo
     - file: B078-answer-window-record-beep-stil.todo
+    - file: B079-ambient-wake-keep-mic-stream-o.todo
