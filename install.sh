@@ -403,7 +403,8 @@ Ambient wake (optional, local Vosk model):
 
 Re-run this installer anytime to update (idempotent).
 Pin a release:  HARK_REF=v0.1.0 bash install.sh
-  or:           curl -fsSL ${RAW_BASE}/master/install.sh | HARK_REF=master bash
+  or:           curl -fsSL https://hark.xk.io/install.sh | HARK_REF=v0.1.0 bash
+  (hosted install.sh is updated on each version tag; HARK_REF pins the git checkout)
 ────────────────────────────────────────
 EOF
 }
