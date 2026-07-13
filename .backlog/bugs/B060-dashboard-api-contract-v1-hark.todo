@@ -1,0 +1,32 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-07-13T14:18:33Z"
+depends_on: []
+estimate_hours: 3
+id: B060
+priority: high
+started_at: null
+status: pending
+tags: []
+title: 'Dashboard API contract v1 (hark.dashboard.v1): docs, schemas, fixtures'
+updated_at: "2026-07-13T14:18:33Z"
+---
+## Scope
+Define the stable boundary between any hark backend (Python now, Rust later) and the dashboard webui. See docs/plans/I003-dashboard.md.
+
+- docs/DASHBOARD.md: REST + SSE contract (WS reserved; messages transport-agnostic), auth model (localhost default, bearer token for non-localhost), endpoint semantics
+- schemas/dashboard-v1/: JSON Schemas for snapshot responses + stream envelope (stream payloads are hark.event.v1 unchanged)
+- fixtures/dashboard/: request/response/stream fixtures (Rust parity strategy, same as B002)
+- Redaction rules for the config endpoint (test over fixtures)
+
+## Acceptance
+- [ ] docs/DASHBOARD.md covers all endpoints in the I003 plan sketch
+- [ ] Schemas validate the fixtures in CI (extend tests/test_fixtures_parity.py pattern)
+- [ ] Explicit statement of Rust-port obligations (implement contract + pass fixtures)
+- [ ] Redacted-config fixture proves no secret material in any response
+
+## Review fixes (pre-build)
+- Stream is a discriminated envelope {source, cursor, payload}: HEP passes through for watch/ambient, but system.jsonl (LogEvent), usage.jsonl (UsageEvent), events/deliveries.jsonl (DeliveryStore records) are NOT HEP and need their own payload schemas. ambient.*/announce.* kinds are absent from event-v1's closed kind enum — define stream schemas in dashboard-v1, do not validate the stream against event-v1 wholesale.
+- Resume cursor is synthetic per-source (source:seq) carried as the SSE event id; system/usage/deliveries have no event_id.
+- Specify SSE auth: EventSource cannot set Authorization headers -> POST /api/v1/auth exchanges the bearer token for an HttpOnly SameSite=Strict session cookie; no tokens in query strings.

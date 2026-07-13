@@ -46,3 +46,12 @@ A comprehensive live web dashboard for Hark / Mode A operators. One place to see
 - [ ] Docs + security notes (local bind, no secret leakage)
 
 Related: I001 (marketing site), Mode A watch/ambient, B016 false-done, B017 conference, B019 near-miss.
+
+## Evaluation outcome (2026-07-13)
+Feasibility: HIGH — all data surfaces already exist (state JSONLs, hark monitor feed, herdr client, DeliveryStore, config/doctor). New work is contract + thin server + webui + dictation round-trip.
+
+Design: contract-first for Rust forward-compat. Versioned hark.dashboard.v1 (REST + SSE, WS reserved, transport-agnostic messages) + standalone static webui (Vite+TS) that only speaks the contract; Python 'hark serve' implements it now, Rust port reimplements against the same schemas/fixtures later and embeds the same bundle. Full design: docs/plans/I003-dashboard.md.
+
+Concrete tasks created: B060 (contract) -> B061 (backend) + B062 (webui) -> B063 (herdr surfaces), B064 (panels), B065 (dictation) -> B066 (security/packaging), B067 (beyond-parity polish: PWA/notifications/one-tap answers/palette/scrubber/heatmaps). ~24h total.
+
+Correction after independent review: total ~27h (task-table sum incl. B067). Phone PWA/notifications/browser-mic require TLS for remote use (tailscale serve; secure-context APIs) — folded into B066/B065/B067. Stream contract uses a discriminated envelope + per-source cursors (system/usage/deliveries are not HEP). Review fixes appended to B060/B061/B065/B066/B067; full design: docs/plans/I003-dashboard.md.

@@ -1,0 +1,35 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-13T14:18:57Z"
+depends_on:
+    - B060
+estimate_hours: 4
+id: B061
+priority: high
+started_at: null
+status: pending
+tags: []
+title: 'Dashboard backend: hark serve (REST snapshots + SSE live stream)'
+updated_at: "2026-07-13T14:18:57Z"
+---
+## Scope
+Thin Python implementation of hark.dashboard.v1 (see docs/plans/I003-dashboard.md). Stdlib http.server + threads — no new hard deps (keep pyproject lean).
+
+- Tail + backfill state JSONLs (watch/ambient/system/usage/events/deliveries) into the SSE stream + /events paging (Last-Event-ID -> event_id backfill)
+- Snapshot endpoints: health(+doctor), config (redacted), herdr sessions/context, deliveries, usage
+- Actions: /answer (bound, DeliveryStore expectations), /prompt (ambient.prompt injection)
+- Serve webui static bundle same-origin; 127.0.0.1 default bind; bearer token required for non-localhost
+- Naming decision: hark serve vs hark dash serve (NAMING.md)
+
+## Acceptance
+- [ ] Passes fixtures/dashboard/ contract fixtures
+- [ ] Live tail delivers new HEP events end-to-end within ~1s
+- [ ] /answer rejects on stale fingerprint/pane revision (test)
+- [ ] Non-localhost bind without token refuses to start
+
+## Review fixes (pre-build)
+- Use ThreadingHTTPServer (plain HTTPServer: one SSE stream blocks all REST). One multiplexed /stream per tab (HTTP/1.1 ~6-conn/host cap) — panels never open their own streams.
+- JSONL tailer: buffer partial trailing lines (readline can return a mid-append line; parse-fail must not drop + advance) and detect inode rotation, not just truncation (monitor_feed.follow_state_files handles truncation only).
+- /answer must register-on-demand from the tailed HEP event (target+fingerprint are in watch.jsonl): DeliveryStore.get() only knows events registered by a live 'hark watch --register-events'.
+- Auth: implement the token->cookie exchange per B060.

@@ -1,0 +1,34 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-13T14:19:32Z"
+depends_on:
+    - B061
+    - B062
+estimate_hours: 4
+id: B065
+priority: high
+started_at: null
+status: pending
+tags: []
+title: 'Dashboard: mic dictation (browser + host mic) with safe submit'
+updated_at: "2026-07-13T14:19:32Z"
+---
+## Scope
+Dictation round-trip per docs/plans/I003-dashboard.md.
+
+- Browser mic: MediaRecorder webm/opus upload -> existing STT provider path -> transcript + radio-style partials streamed back; VU meter/waveform while recording
+- Host mic mode: backend drives existing hark listen flow (mic lease, ambient pause)
+- UI states: idle -> recording -> transcribing -> review -> submitted | failed
+- Submit ONLY via safe paths: POST /answer (bound hark.command.v1 expectations; target from selected event, never invented) or POST /prompt (ambient.prompt for Mode A judgment)
+
+## Acceptance
+- [ ] Browser capture -> STT -> review -> bound answer delivers to selected blocked event
+- [ ] /prompt path reaches Mode A monitor as ambient.prompt
+- [ ] Stale target rejected with clear UI feedback
+- [ ] Host-mic mode honors mic lease + ambient pause
+
+## Review fixes (pre-build)
+- Browser audio is webm/opus (Safari mp4/aac); STT provider path is WAV-only (Provider.transcribe(wav_bytes), providers hardcode audio/wav). Add explicit transcode-to-WAV step via ffmpeg; ffmpeg becomes a documented OPTIONAL dep gating browser dictation only (doctor check). Host-mic mode works without it.
+- Browser live partials are best-effort/v2 (radio partials come from the segmented live capture loop in speech.py, not a one-shot blob transcribe) — do not put them in acceptance.
+- Phone browser mic requires a secure context (HTTPS): depends on B066's TLS setup (tailscale serve) for remote use; localhost desktop is fine.
