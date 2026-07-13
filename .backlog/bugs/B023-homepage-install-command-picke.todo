@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-13T09:11:11Z"
+depends_on: []
+estimate_hours: 1
+id: B023
+priority: high
+status: pending
+tags:
+    - site
+    - dx
+    - install
+title: Homepage install command picker (bash/npm/pnpm/bun) component
+updated_at: "2026-07-13T09:11:11Z"
+---
+## Goal
+Enhance the static site install section with a segmented control / radio-group for package manager installers.
+
+## UI
+Component-style structure (not one-off markup):
+- Segmented control: `[ bash | npm | pnpm | bun ]` with selected pill (example: unselected | **selected** | unselected)
+- Switching updates the copy-paste command block
+- Accessible: real radio inputs or proper ARIA roles + keyboard
+
+## Example commands (finalize in implementation)
+- bash: `curl -fsSL https://raw.githubusercontent.com/…/install.sh | bash`
+- npm: `npm i -g @ultradyn/hark` (+ skills install hint)
+- pnpm: `pnpm add -g @ultradyn/hark`
+- bun: `bun add -g @ultradyn/hark`
+
+## Notes
+Repo may move to ultradyn/hark; prefer configurable base URLs in the component.
