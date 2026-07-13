@@ -1,0 +1,22 @@
+---
+complexity: medium
+created_at: "2026-07-13T07:40:20Z"
+depends_on: []
+estimate_hours: 1
+id: B016
+priority: high
+status: pending
+tags:
+    - dogfood
+    - watch
+    - false-done
+title: 'False done: agent waiting for human input still emits agent.completed'
+updated_at: "2026-07-13T07:40:20Z"
+---
+## Dogfood
+w7:p1 went agent.completed / status=done while the bottom of the pane still shows a multi-option human question (Nomad worker path). Skill says judge false done; easy to miss if agent only reacts to blocked.
+
+## Wanted
+- Detect pending questions even when status is done/idle
+- Or treat menu-like trailing text as needs-input
+- Optional: question_changed / re-block heuristics

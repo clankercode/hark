@@ -14,3 +14,4 @@ bugs:
     - file: B013-wave-hardware-mute-vs-pactl-mu.todo
     - file: B014-socket-watch-broken-pipe-noisy.todo
     - file: B015-mode-a-pids-duplicate-ambient.todo
+    - file: B016-false-done-agent-waiting-for-h.todo
