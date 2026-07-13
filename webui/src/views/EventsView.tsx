@@ -190,7 +190,7 @@ export function EventsView() {
             waiting for events…
             <br />
             <span style="font-size:11px">
-              arm Mode A (<code>hark watch</code> / <code>hark ambient</code>) and the feed lights
+              arm workers (<code>hark watch</code> / <code>hark ambient</code>) and the feed lights
               up
             </span>
           </div>

@@ -1,4 +1,4 @@
-"""Partial transcript events for radio-mode streaming to Mode A agents."""
+"""Partial transcript events for radio-mode streaming to the orchestrator."""
 
 from __future__ import annotations
 

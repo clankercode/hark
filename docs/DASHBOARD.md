@@ -16,7 +16,7 @@ hark webui --port 5000
 hark doctor                    # includes a `dashboard:` posture line
 ```
 
-Everything Mode A writes (watch, ambient, syslog, usage, deliveries) streams
+Everything workers write (watch, ambient, syslog, usage, deliveries) streams
 live; arm workers with `./scripts/run-mode-a.sh` and the feed lights up.
 Dictate (◉) captures via the browser mic (needs HTTPS or localhost; server
 needs `ffmpeg`) or the host mic (existing listen flow), then submits only
@@ -194,7 +194,7 @@ delivery to that event's recorded target.
 ### `POST /api/v1/prompt`
 
 `{"text": "…", "session_id": null}` → appends a final `ambient.prompt` HEP
-event to the ambient feed (same shape as a voice wake), so the Mode A
+event to the ambient feed (same shape as a voice wake), so the orchestrator
 orchestrator picks it up with its normal judgment. Response includes the new
 `event_id`. This is the unbound path; routing stays with the orchestrator.
 

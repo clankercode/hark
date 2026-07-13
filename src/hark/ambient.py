@@ -391,7 +391,7 @@ def _wait_for_wake(
                 _apply_policy_to_backend(backend, pol)
                 phrase_list = pol.display_phrases()
 
-            # Plausible failed wake → Mode A monitor (grouped), never spam on noise
+            # Plausible failed wake → handsfree monitor (grouped), never spam on noise
             if acc is not None and text:
                 miss = plausible_near_miss(text, phrase_list, policy=pol)
                 if miss is not None:
@@ -625,7 +625,7 @@ def _wake_deadline(timeout_s: float | None, amb_timeout_s: float | None) -> floa
 
     ``timeout_s`` (call arg) overrides config ``amb_timeout_s``. Values
     ``None`` fall through to the other / default 300s. ``0`` (or negative)
-    means wait indefinitely — no ambient.timeout cycle (continuous Mode A
+    means wait indefinitely — no ambient.timeout cycle (continuous handsfree
     can use this, or one-shot with an explicit hang-until-wake).
     """
     if timeout_s is not None:
@@ -976,7 +976,7 @@ def run_ambient_loop(
         model_path=cfg.ambient.model_path,
         policy=policy if isinstance(policy, WakePolicy) else None,
     )
-    # Persist near-miss grouping across wake cycles for Mode A monitor
+    # Persist near-miss grouping across wake cycles for handsfree monitor
     near_miss_acc = NearMissAccumulator()
     # Eager load vosk so boot TTS happens after model is ready
     try:
@@ -1125,7 +1125,7 @@ def run_ambient_loop(
                 if kind == "ambient.timeout" and not getattr(
                     cfg.ambient, "surface_timeouts", True
                 ):
-                    # Quiet continuous Mode A: still re-enter wake wait, no NDJSON/syslog
+                    # Quiet continuous handsfree: still re-enter wake wait, no NDJSON/syslog
                     pass
                 else:
                     line = {k: v for k, v in line.items() if v is not None}

@@ -1,4 +1,4 @@
-# Antigravity (`agy`) as Mode A orchestrator
+# Antigravity (`agy`) as handsfree orchestrator
 
 > **Status:** experimental foundation (B049).  
 > Supported path: **CLI-first + agentapi wake deliver**. Not MCP.
@@ -7,7 +7,7 @@ Related: [ARCHITECTURE.md](ARCHITECTURE.md) · [plans/B049-agy-agentapi.md](plan
 
 ## Why a special path?
 
-Mode A requires a **long-lived feed** of `hark monitor --for-monitor` lines
+Handsfree requires a **long-lived feed** of `hark monitor --for-monitor` lines
 (`agent.blocked`, `ambient.prompt`, …). Claude Code and Grok expose a native
 **Monitor** tool. **Google Antigravity CLI (`agy`)** does not — an idle session
 will not wake on new stdout from a background process unless something
@@ -39,7 +39,7 @@ outside the TUI can still inject.
 3. Skill installed where Antigravity loads skills (often under `~/.gemini/…`;
    also copy/link monorepo `skill/hark` if needed). Use `/hark` or load the skill text.
 
-### 2. Start Mode A workers
+### 2. Start workers
 
 ```bash
 ./scripts/run-mode-a.sh
@@ -88,9 +88,9 @@ Pipe mode (tests / custom feeds):
 hark monitor --for-monitor --replay 0 | hark agentapi deliver --stdin
 ```
 
-### 5. Run the Mode A skill
+### 5. Run the Hark skill
 
-Same rules as Claude/Grok Mode A:
+Same rules as Claude/Grok handsfree:
 
 - Prefer `hark tts` / `hark ask` / `hark answer <event_id>`
 - On each injected wake: parse the HEP JSON, act, then **idle** (no polling)
@@ -113,7 +113,7 @@ Useful flags: `--dry-run`, `--json`, `--path`, `--title`, `--raw` (skip preamble
 Each HEP monitor line is wrapped:
 
 ```text
-[hark] Mode A wake — treat as a Monitor event. …
+[hark] wake — treat as a Monitor event. …
 <compact JSON line from hark monitor --for-monitor>
 ```
 
@@ -121,7 +121,7 @@ Use `event_id` + `hark context` / `hark answer` as usual. Do **not** invent targ
 
 ## Comparison with other harnesses
 
-| Harness | How Mode A wakes |
+| Harness | How handsfree wakes |
 |---------|------------------|
 | Claude Code, Grok | Native `Monitor({ command: "hark monitor --for-monitor", persistent: true })` |
 | Pi | `pi-monitor` plugin |
@@ -130,7 +130,7 @@ Use `event_id` + `hark context` / `hark answer` as usual. Do **not** invent targ
 
 ## Constraints
 
-- **CLI-first** — do not require a c2c or MCP server for Mode A on agy.
+- **CLI-first** — do not require a c2c or MCP server for Hark on agy.
 - Register again after restarting agy if the LS port or conversation id changes.
 - Radio `ambient.partial` can be chatty; if inject floods the TUI, filter kinds
   with `hark monitor --kinds …` (follow-up rate-limit planned).
@@ -144,7 +144,7 @@ Use `event_id` + `hark context` / `hark answer` as usual. Do **not** invent targ
 | `agy binary not found` | Install Antigravity CLI; ensure `agy` on PATH |
 | inject exit non-zero | Check LS address still live; re-register; try `hark agentapi send --dry-run` |
 | No blocked events | Workers down? `./scripts/run-mode-a.sh`; tail `hark monitor --for-monitor` |
-| Identity confusion | You are the Mode A orchestrator **outside** Herdr panes; workers stay in Herdr |
+| Identity confusion | You are the handsfree orchestrator **outside** Herdr panes; workers stay in Herdr |
 
 ## Implementation map
 

@@ -122,7 +122,7 @@ export function VoiceView() {
           <span class="readout dim">loading…</span>
         ) : (
           <div class="readout" style="gap:16px">
-            <Light on={!!pipe.mode_a?.running} label="mode-a" />
+            <Light on={!!pipe.mode_a?.running} label="workers" />
             <Light on={!!pipe.harkd?.running} label="harkd" />
             <Light on={!!pipe.mic_lock} hot label="mic-lease" />
             <Light on={!!pipe.busy_lock} hot label="recording" />

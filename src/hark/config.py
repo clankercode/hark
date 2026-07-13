@@ -311,7 +311,7 @@ class ListenConfig:
     # Legacy radio segment hang (kept for config BC; not used for partial cadence)
     radio_end_silence_s: float = 2.5
     # Radio-only: quiet seconds between speech segments before interim STT/partial
-    # (shorter than end_silence_s so Mode A gets frequent HOLD partials). Does NOT
+    # (shorter than end_silence_s so the orchestrator gets frequent HOLD partials). Does NOT
     # finalize the turn — end phrases / agent listen-end still required.
     radio_partial_silence_s: float = 0.6
     # Radio answer windows only: after speech has opened at least once, continuous
@@ -391,11 +391,11 @@ class AmbientConfig:
     # Continuous capture ring capacity (seconds). Enough for snippet + pre-roll.
     ring_s: float = 5.0
     # One-shot wake wait / continuous loop tick (seconds). 0 = wait indefinitely
-    # (no ambient.timeout cycle). Continuous Mode A still uses this as the idle
+    # (no ambient.timeout cycle). Continuous handsfree still uses this as the idle
     # cycle length when > 0; see surface_timeouts to hide the heartbeat event.
     timeout_s: float = 300.0
     # When true (default), continuous ambient emits ambient.timeout NDJSON/syslog
-    # each idle cycle as a heartbeat. Set false for quieter long-running Mode A.
+    # each idle cycle as a heartbeat. Set false for quieter long-running handsfree.
     surface_timeouts: bool = True
     # Dev: save wake audio+text under state/debug/wake (7-day cleanup)
     debug: bool = False
@@ -660,10 +660,10 @@ snippet_s = 2.5
 # Continuous mic ring capacity (seconds) while ambient is armed.
 ring_s = 5.0
 # One-shot wake wait / continuous idle cycle length (seconds). 0 = wait forever
-# (no ambient.timeout). Continuous Mode A re-enters the wake wait each timeout_s.
+# (no ambient.timeout). Continuous handsfree re-enters the wake wait each timeout_s.
 timeout_s = 300
 # Surface ambient.timeout on continuous idle cycles (NDJSON + syslog). Default on
-# as a heartbeat (useful for provider cache / dogfood). Set false to quiet Mode A.
+# as a heartbeat (useful for provider cache / dogfood). Set false to quiet handsfree.
 surface_timeouts = true
 # emit_timeout_events = true  # alias of surface_timeouts
 debug = true                 # save wake wav+text under ~/.local/state/hark/debug/wake

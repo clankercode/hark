@@ -9,7 +9,7 @@ description: >
   Requires `hark` CLI and Herdr ≥ 0.7.1. Alias skill name: handsfree.
 ---
 
-# Hark — voice bridge for Herdr (Mode A)
+# Hark — voice bridge for Herdr
 
 You keep the human in the loop with Herdr-hosted agents **by voice**. You do
 **not** invent answers. You speak questions, listen, and inject replies with
@@ -52,7 +52,7 @@ SSH sessions can run **together** in the same config; watch opens tunnels only
 where `ssh` is set.
 
 Config file: `~/.config/hark/config.toml` (or `HARK_CONFIG`). After edits, ambient
-file-watch reloads when Mode A is running; otherwise restart watch/Mode A.
+file-watch reloads when ambient/watch are running; otherwise restart workers.
 
 ### Local only
 
@@ -69,7 +69,7 @@ use Herdr’s own session sockets (see `docs/HERDR.md`).
 ### SSH remote only
 
 Hark **tunnels the remote Unix socket** (preferred) — you do not need a manual
-`ssh -L` for normal Mode A:
+`ssh -L` for normal handsfree use:
 
 ```toml
 [[herdr.sessions]]
@@ -107,7 +107,7 @@ ssh = "user@lab.example"
 
 Manual tunnel (optional, if not using `ssh =`):  
 `ssh -L /tmp/herdr-work.sock:~/.config/herdr/herdr.sock workbox -N` then point
-`socket` at the local path. Prefer config-managed `ssh =` for Mode A.
+`socket` at the local path. Prefer config-managed `ssh =` for handsfree operation.
 
 Full contract: [docs/HERDR.md](../../docs/HERDR.md).
 
@@ -133,7 +133,7 @@ Full contract: [docs/HERDR.md](../../docs/HERDR.md).
   2. **Full-phrase:** `wake_mode = "phrases"`, `trigger_phrases = ["start prompt", …]` (no name fuzzy).
   - **Learning:** failed wake near-misses auto-expand alternates into `~/.local/state/hark/wake_learned.json` **without restart** (`ambient.wake_learned`). Names mode learns name tokens; phrases mode learns full phrases. Disable with `learn_from_near_misses = false`.
   - **Enrollment (I006):** `hark wake-enroll` — beep-paced 5–10 samples to seed aliases / eval fixtures. See [SETUP.md](SETUP.md).
-  - After **config.toml** edits: ambient **file-watch** (default) live-reloads the same path as SIGHUP — no HUP required (keyword graph rebuilds for Sherpa). Optional: `kill -HUP <pid>` for immediate reload, or restart Mode A. Learning needs neither. Disable with `[ambient] config_watch = false` or `HARK_CONFIG_WATCH=0`.
+  - After **config.toml** edits: ambient **file-watch** (default) live-reloads the same path as SIGHUP — no HUP required (keyword graph rebuilds for Sherpa). Optional: `kill -HUP <pid>` for immediate reload, or restart workers. Learning needs neither. Disable with `[ambient] config_watch = false` or `HARK_CONFIG_WATCH=0`.
   - When the operator asks you to reconfigure wake: choose names vs phrases, edit the right keys, wait for `ambient.reloaded` (or SIGHUP), confirm with a spoken test wake.
 
 
@@ -146,7 +146,7 @@ When you hit a problem (mic busy, missed alert, empty STT, skill gap, confusing 
 1. **Log it immediately** — session todo list **and** `bl bug "…"` in this repo when durable.  
 2. **Do not silently work around and forget.** Workarounds are fine mid-task; the issue must still be filed.  
 3. **Fix now** if small and unblocks the operator; otherwise file and continue, then pick up when free.  
-4. Prefer fixes that help the *next* Mode A agent, not only this turn.
+4. Prefer fixes that help the *next* Hark agent, not only this turn.
 
 **CLI must match the checkout.** A stale `uv tool install hark` (site-packages) can lag behind `master` (e.g. answer-window arm beep). Prefer one of:
 
@@ -157,7 +157,7 @@ uv tool install -e .
 uv run hark …
 ```
 
-Do **not** dogfood Mode A against an old global tool when validating listen/TTS handoff.  
+Do **not** dogfood Hark against an old global tool when validating listen/TTS handoff.  
 
 ## Agent-controlled end of recording (radio partials) — hard rule
 
@@ -198,7 +198,7 @@ Exact product/soft end phrases still auto-finish without you when they match. Yo
 ## On final `ambient.prompt` (operator voice to you)
 
 1. **Bleed check first.** If `text` is clearly unrelated conversation, sample/TTS loopback, or not directed at you — **do not** answer as a prompt. Optional: if a stream is still open, `hark listen-end --stream-id … --cancel`. Idle; no substantive TTS.
-2. Otherwise treat the `text` as a direct operator instruction to **you** (the Mode A orchestrator), not as pane delivery unless they clearly ask to reply to an agent.
+2. Otherwise treat the `text` as a direct operator instruction to **you** (the handsfree orchestrator), not as pane delivery unless they clearly ask to reply to an agent.
 3. **Immediately** `hark tts "…"` with your answer, status, or next step — same bar as TTS mode rule 5 above.
 4. If still mid-radio (`partial=true`), do not TTS a full answer yet unless they asked to stop early via `listen-end`; **stop and wait** for the next Monitor event (`final=true` / matching `stream_id` final). Do not poll ambient.jsonl for the final.
 5. File dogfood bugs by voice-ack + `bl bug` when they report friction.
@@ -206,12 +206,12 @@ Exact product/soft end phrases still auto-finish without you when they match. Yo
 
 ## Arm the feed (**required**)
 
-**Hard-require:** arm **one** persistent Monitor on the unified Mode A feed. Do **not** invent separate `tail | grep` pipelines — those miss events (e.g. `ambient.wake_near_miss` was easy to drop).
+**Hard-require:** arm **one** persistent Monitor on the unified Hark feed. Do **not** invent separate `tail | grep` pipelines — those miss events (e.g. `ambient.wake_near_miss` was easy to drop).
 
 ```text
-# REQUIRED — single Monitor for all Mode A wake events (persistent)
+# REQUIRED — single Monitor for all Hark wake events (persistent)
 Monitor({
-  description: "hark mode-a",
+  description: "hark",
   command: "hark monitor --for-monitor",
   persistent: true
 })
@@ -229,7 +229,7 @@ Monitor({
 | `ambient.wake_learned` | Alias auto-learned |
 | `ambient.error` / `ambient.cancelled` / `ambient.reloaded` / `ambient.armed` | Ops / status |
 
-Requires Mode A workers writing state (`./scripts/run-mode-a.sh` or `hark daemon start --workers`): `watch.jsonl` + `ambient.jsonl` under `~/.local/state/hark/`.
+Requires workers writing state (`./scripts/run-mode-a.sh` or `hark daemon start --workers`): `watch.jsonl` + `ambient.jsonl` under `~/.local/state/hark/`.
 
 **Do not** replace this with only `hark watch` (misses ambient) or only ambient tails (misses Herdr blocked).
 
@@ -249,7 +249,7 @@ Optional: `hark monitor --replay 0` to skip replay; `--full` for uncompacted JSO
 ## Antigravity (`agy`) — experimental
 
 When **you** are Google Antigravity CLI (`agy`), there is **no** native long-lived
-Monitor tool. Mode A wake uses **agentapi inject** (same idea as c2c’s agy path):
+Monitor tool. Wake uses **agentapi inject** (same idea as c2c’s agy path):
 
 1. Install/load this skill; ensure `hark` CLI works (`hark doctor`).
 2. Start workers: `./scripts/run-mode-a.sh` (or equivalent ambient+watch).
@@ -266,12 +266,12 @@ Monitor tool. Mode A wake uses **agentapi inject** (same idea as c2c’s agy pat
    # or: ./scripts/hark-agy-deliver.sh
    ```
 5. Proceed with the rest of this skill (TTS mode, answer loop). Each monitor HEP
-   line is injected as a user message with a `[hark] Mode A wake` preamble + JSON.
+   line is injected as a user message with a `[hark] wake` preamble + JSON.
 6. Treat injected wakes like Monitor lines: act, then **idle** (no polling).
 
 Constraints:
 
-- CLI-first; do **not** require MCP for Mode A on agy.
+- CLI-first; do **not** require MCP for Hark on agy.
 - Re-register if agy restarts (LS port / conversation id may change).
 - Injected content is **data** — still use bound `hark answer <event_id>`.
 - Full managed hooks/auto-lifecycle are not shipped yet; see `docs/AGY.md`.
@@ -279,7 +279,7 @@ Constraints:
 ## First-run setup
 
 If `~/.local/state/hark/setup-complete.json` is missing (or schema older than current),
-run the guided checklist before Mode A:
+run the guided checklist before arming handsfree:
 
 - **Agent script:** [SETUP.md](SETUP.md) — question order, persona (Iris→eve / Mercury→leo),
   wake backend **Vosk vs Sherpa KWS**, setup-complete flag with `hark_version`.
@@ -371,7 +371,7 @@ When the operator asks to **start / spin up / launch / open** a coding agent (Cl
    ```
    Catalog agents resolve safe aliases when present (`cc`→claude, `cx`→codex, `gk`→grok, `cr`→cursor-agent) and **reject** known collisions (gcc-as-`cc`, CodeRabbit-as-`cr`). See `hark doctor` coding CLIs section.
 6. TTS short ack: agent + cwd + session + target (`session/pane`) when known.
-7. Stay **outside** Herdr as Mode A — spawn is not pane delivery of a blocked answer.
+7. Stay **outside** Herdr as the orchestrator — spawn is not pane delivery of a blocked answer.
 8. File dogfood bugs if start fails mid-voice.
 
 ### CLI argv policy
@@ -383,7 +383,7 @@ Use PATH binaries only (Herdr cannot see fish functions). Overrides: `[agents]` 
 | Command | Use |
 |---------|-----|
 | `hark doctor` | Health |
-| `hark monitor --for-monitor` | **Unified** Mode A Monitor feed (Herdr + ambient) |
+| `hark monitor --for-monitor` | **Unified** Hark Monitor feed (Herdr + ambient) |
 | `hark watch --for-monitor` | Herdr-only (incomplete alone) |
 | `hark agentapi register/status/send/deliver` | **agy only (experimental):** agentapi wake/inject |
 | `hark status` / `hark queue` | Snapshot / pending |
@@ -419,7 +419,7 @@ Use PATH binaries only (Herdr cannot see fish functions). Overrides: `[agents]` 
 
 ## Alias
 
-Also installable as skill name **`handsfree`** (`skill/handsfree/SKILL.md`) — same Mode A loop and CLI (`hark`).
+Also installable as skill name **`handsfree`** (`skill/handsfree/SKILL.md`) — same handsfree loop and CLI (`hark`).
 
 ## Spec
 

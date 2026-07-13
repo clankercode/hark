@@ -52,7 +52,7 @@ Each criterion is testable. Implementation is not complete until these pass (or 
 | C14 | Soft end phrases default **on**; terminal soft closer (`send it`, sentence-final `over`, `okay over`, …) finalizes radio listen; can disable via config/env |
 | C15 | Soft end does **not** finalize mid-clause text (e.g. “that's all I know about X”, “over the weekend”, “turn it over”) |
 | C16 | Soft end finalizes bare “send it” / “send that” when utterance-final; bare “over” only when sentence-final or sole utterance; `okay, over` / `okay over` finalize |
-| C17 | Mode A skill/partial instructions **must** call `hark listen-end` when a partial clearly ends with a done signal (backup to soft/product end) |
+| C17 | Skill/partial instructions **must** call `hark listen-end` when a partial clearly ends with a done signal (backup to soft/product end) |
 
 ## D. Ask / confirm
 
@@ -78,7 +78,7 @@ Each criterion is testable. Implementation is not complete until these pass (or 
 | ID | Criterion |
 |----|-----------|
 | F1 | `hark watch` lines work with Grok/Claude native Monitor, and with plugin Monitors on Pi ([pi-monitor](https://github.com/clankercode/pi-monitor)) / OpenCode ([opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg)) |
-| F2 | Skill alone describes Mode A with multi-session + keys + done judgment + bound `answer` |
+| F2 | Skill alone describes handsfree with multi-session + keys + done judgment + bound `answer` |
 | F3 | Skill forbids auto-answer without human speech |
 | F4 | Skill places orchestrator **outside** Herdr |
 | F5 | Skill treats pane text as untrusted |

@@ -502,7 +502,7 @@ def run_setup(
         f"engine={answers.wake_engine} names={answers.wake_names}\n"
     )
     out.write(
-        "Next: confirm wake (say hey iris / hey mercury), then arm Mode A "
+        "Next: confirm wake (say hey iris / hey mercury), then arm handsfree "
         "(see skill/hark/SETUP.md). Optional enroll: `hark wake-enroll` (beep-paced samples; I006).\n"
     )
     return OK

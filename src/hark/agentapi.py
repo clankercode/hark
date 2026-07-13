@@ -1,4 +1,4 @@
-"""Antigravity (agy) agentapi helpers for Mode A wake / deliver.
+"""Antigravity (agy) agentapi helpers for handsfree wake / deliver.
 
 Google Antigravity CLI (``agy``) has no native long-lived Monitor tool.
 Inbound wake uses::
@@ -10,7 +10,7 @@ and ``conversation_id`` as the recipient (often self).
 
 This is the c2c-inspired path (AgyAdapter / Mode_agy_inject / agy-env.json):
 a small sidecar tails ``hark monitor --for-monitor`` and injects each HEP line
-into the agy conversation so Mode A can stay event-driven without polling.
+into the agy conversation so the orchestrator can stay event-driven without polling.
 
 Status: **experimental foundation** — pure env/payload helpers + thin
 subprocess inject. Full managed lifecycle (hooks, auto-register on SessionStart)
@@ -32,12 +32,12 @@ from hark.paths import state_dir
 
 ENV_LS_ADDRESS = "ANTIGRAVITY_LS_ADDRESS"
 ENV_CONVERSATION_ID = "ANTIGRAVITY_CONVERSATION_ID"
-DEFAULT_TITLE = "hark mode-a"
+DEFAULT_TITLE = "hark"
 DEFAULT_AGY_BIN = "agy"
 AGY_ENV_FILENAME = "agy-env.json"
 
 WAKE_PREAMBLE = (
-    "[hark] Mode A wake — treat as a Monitor event. "
+    "[hark] wake — treat as a Monitor event. "
     "Use the hark skill (context / ask / answer / tts). "
     "Do not invent answers. Then idle until the next wake."
 )

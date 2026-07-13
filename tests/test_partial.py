@@ -12,7 +12,7 @@ def test_partial_has_hold_warning():
 
 
 def test_partial_instructions_require_listen_end_on_done():
-    """B068: Mode A backup is MUST, not optional."""
+    """B068: orchestrator backup is MUST, not optional."""
     assert "MUST" in HOLD_INSTRUCTIONS
     assert "end_recording" in HOLD_INSTRUCTIONS
     assert "over" in HOLD_INSTRUCTIONS.lower()

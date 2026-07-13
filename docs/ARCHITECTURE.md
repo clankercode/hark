@@ -6,7 +6,7 @@
  ┌──────────────────────────────────────────────────────────────┐
  │  Local machine                                                 │
  │                                                                │
- │  Mode A orchestrator (outside Herdr)                           │
+ │  Handsfree orchestrator (outside Herdr)                        │
  │       ▲  Monitor: hark watch --for-monitor                     │
  │       │  tools: context, ask, answer, keys                     │
  │       │                                                        │
@@ -27,7 +27,7 @@
 | Layer | Owns |
 |-------|------|
 | **hark library** | Herdr client, HEP normalize/dedupe, fingerprints, audio gate, providers, **safe delivery**, mic lease |
-| **Mode A agent** | Judgment: false done, menu mapping, summaries, when to dig into session files |
+| **Handsfree agent** | Judgment: false done, menu mapping, summaries, when to dig into session files |
 | **harkd** | Optional: priority queue + dialogue FSM without an orchestrator |
 
 **Invariant:** an LLM **MUST NOT** choose the delivery target ID. Targets come from events + explicit human/agent tool args; the library validates fingerprints.
@@ -45,7 +45,7 @@ Herdr wire event
   → normalize HEP (hark.event.v1)
   → dedupe by (session, pane, epoch, fingerprint)
   → priority queue
-  → Mode A: stdout --for-monitor
+  → orchestrator: stdout --for-monitor
   → (Mode B: dialogue FSM)
 ```
 
@@ -65,7 +65,7 @@ blocked → extract question + risk + fingerprint
 
 ## Monitor / harness compatibility
 
-Mode A needs the orchestrator to wake on **`hark monitor --for-monitor`** (unified Herdr + ambient feed). Prefer that over bare `hark watch` alone. Availability by harness:
+Handsfree needs the orchestrator to wake on **`hark monitor --for-monitor`** (unified Herdr + ambient feed). Prefer that over bare `hark watch` alone. Availability by harness:
 
 | Harness | Monitor / wake | How |
 |---------|----------------|-----|
@@ -82,6 +82,6 @@ Point plugins / agentapi at `hark monitor --for-monitor` (or at minimum `hark wa
 - [SAFETY.md](SAFETY.md) — risk, stale, distrust  
 - [AUDIO_DESIGN.md](AUDIO_DESIGN.md) — gate / duplex  
 - [PRIOR_ART.md](PRIOR_ART.md) — what we merged from other agents  
-- [HARKD.md](HARKD.md) — optional `harkd` vs Mode A boundary (experimental)  
-- [AGY.md](AGY.md) — Antigravity (`agy`) agentapi Mode A path (experimental)  
+- [HARKD.md](HARKD.md) — optional `harkd` vs handsfree boundary (experimental)  
+- [AGY.md](AGY.md) — Antigravity (`agy`) agentapi handsfree path (experimental)  
 - [plans/B049-agy-agentapi.md](plans/B049-agy-agentapi.md) — B049 design + follow-ups

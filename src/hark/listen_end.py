@@ -6,14 +6,14 @@ accept the false-trigger risk.
 
 Optional **soft end phrases** (default **ON** for radio dogfood) add a
 conservative local heuristic for informal closers ("send it", "that's all",
-utterance-final "over", …) without requiring the Mode A agent to call
+utterance-final "over", …) without requiring the orchestrator to call
 ``hark listen-end``. Soft matches are **utterance-final only** (phrase must end
 the transcript after normalize) and only evaluated after a radio segment
 boundary (trailing silence). Bare ``over`` additionally requires a
 **sentence-final** boundary (sole utterance or after ``.`` / ``!`` / ``?`` /
 ``,``) so mid-clause "turn it over" / "over the weekend" never finishes.
 Multi-word ``okay over`` / ``ok over`` cover STT that drops the comma in
-"okay, over". Mode A **must** also call ``hark listen-end`` on partials when
+"okay, over". The orchestrator **must** also call ``hark listen-end`` on partials when
 the operator clearly finished. See docs/AUDIO_DESIGN.md.
 """
 
@@ -78,7 +78,7 @@ DEFAULT_SOFT_END_PHRASES: tuple[str, ...] = (
     "end of message",
     "end message",
     "end of transmission",
-    "message done",  # informal closer (Mode A backup also catches this)
+    "message done",  # informal closer (orchestrator backup also catches this)
     "okay send it",
     "ok send it",
     "okay send",

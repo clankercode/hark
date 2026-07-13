@@ -1,10 +1,10 @@
-"""Unified Mode A monitor feed: all events that should wake the orchestrator.
+"""Unified handsfree monitor feed: all events that should wake the orchestrator.
 
 ``hark watch`` only covers Herdr agent state. Ambient writes
 ``ambient.wake_near_miss``, ``ambient.prompt``, etc. to state JSONL files that
 were easy to miss with ad-hoc ``tail | grep`` monitors.
 
-``hark monitor`` follows the Mode A state files and prints one HEP NDJSON line
+``hark monitor`` follows the worker state files and prints one HEP NDJSON line
 per matching event (optionally compact for harness Monitors).
 """
 
@@ -19,7 +19,7 @@ from typing import Any, Iterable, TextIO
 from hark.events import monitor_profile
 from hark.paths import state_dir
 
-# Events that MUST wake a Mode A agent (persistent Monitor consumers).
+# Events that MUST wake the handsfree orchestrator (persistent Monitor consumers).
 MODE_A_WAKE_KINDS: frozenset[str] = frozenset(
     {
         # Herdr / watch (via watch.jsonl from `hark watch`)
@@ -44,7 +44,7 @@ MODE_A_WAKE_KINDS: frozenset[str] = frozenset(
     }
 )
 
-# Default files written by Mode A (run-mode-a.sh / harkd --workers)
+# Default files written by workers (run-mode-a.sh / harkd --workers)
 DEFAULT_FEED_FILES: tuple[str, ...] = ("watch.jsonl", "ambient.jsonl")
 
 
@@ -90,7 +90,7 @@ def compact_mode_a_event(event: dict[str, Any]) -> dict[str, Any]:
             {
                 "stream_id": event.get("stream_id"),
                 "seq": event.get("seq"),
-                # Prefer delta for Mode A / logs; keep full body truncated as text
+                # Prefer delta for the orchestrator / logs; keep full body truncated as text
                 "fragment": frag if frag is not None else text,
                 "text": text,
                 "text_len": full_len or None,
@@ -236,7 +236,7 @@ def emit_line(
         except Exception as exc:
             # Never kill the whole feed on one malformed line (dogfood: string
             # question/target crashed monitor_profile). Fall back to a minimal
-            # compact object the Mode A agent can still see.
+            # compact object the orchestrator can still see.
             payload = {
                 "schema": obj.get("schema") or "hark.event.v1",
                 "kind": obj.get("kind") or obj.get("event"),
@@ -297,9 +297,9 @@ def follow_state_files(
     out: TextIO | None = None,
     poll_s: float = 0.05,
 ) -> int:
-    """Follow JSONL state files; print matching Mode A events forever.
+    """Follow JSONL state files; print matching handsfree wake events forever.
 
-    Expects Mode A (or equivalent) to be writing watch.jsonl + ambient.jsonl.
+    Expects workers (or equivalent) to be writing watch.jsonl + ambient.jsonl.
     """
     out = out or sys.stdout
     # Ensure files exist so first open works

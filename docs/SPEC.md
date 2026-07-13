@@ -18,13 +18,13 @@ RFC words: **MUST** / **MUST NOT** / **SHOULD** / **MAY**.
 
 Enable a human within earshot of a microphone to supervise multiple Herdr coding agents by voice. The system surfaces blocked (and optionally completed) agent state, speaks questions, captures deliberate replies, transcribes via **cloud** STT, and delivers text or keys with **auditable, race-safe routing**.
 
-Not a general voice assistant. An LLM is **not** required on the critical path for routing identity (Mode B / library). Mode A uses a supervisory agent for **judgment** (false done, menus, summaries) while still calling library-safe delivery APIs.
+Not a general voice assistant. An LLM is **not** required on the critical path for routing identity (Mode B / library). Handsfree uses a supervisory agent for **judgment** (false done, menus, summaries) while still calling library-safe delivery APIs.
 
 ## 2. Placement
 
 | Component | Location |
 |-----------|----------|
-| Mode A orchestrator | Local, **outside** Herdr |
+| Handsfree orchestrator | Local, **outside** Herdr |
 | `hark` CLI + mic/speakers | Local |
 | Herdr server(s) | Local and/or remote (multi-session) |
 | Coding agents | Inside Herdr panes |
@@ -37,9 +37,9 @@ Not a general voice assistant. An LLM is **not** required on the critical path f
 | **B — `harkd`** | **Post-v1** | Same library; full voice loop without orchestrator — **not in v1** |
 | **C — one-shot** | Always | `tts`, `listen`, freeform `reply` for debug |
 
-v1 **MUST** complete Mode A without shipping `harkd`. Library design **SHOULD** leave room for Mode B later.
+v1 **MUST** complete handsfree without shipping `harkd`. Library design **SHOULD** leave room for Mode B later.
 
-Mode A requires a long-lived wake path on `hark monitor --for-monitor` (or at least `hark watch`). Native Monitor in Claude Code / Grok; on Pi use [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`), on OpenCode use [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg), on **Antigravity (`agy`)** use experimental **agentapi deliver** (`hark agentapi deliver --follow-monitor` — see [AGY.md](AGY.md)). See [ARCHITECTURE.md](ARCHITECTURE.md#monitor--harness-compatibility).
+Handsfree requires a long-lived wake path on `hark monitor --for-monitor` (or at least `hark watch`). Native Monitor in Claude Code / Grok; on Pi use [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`), on OpenCode use [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg), on **Antigravity (`agy`)** use experimental **agentapi deliver** (`hark agentapi deliver --follow-monitor` — see [AGY.md](AGY.md)). See [ARCHITECTURE.md](ARCHITECTURE.md#monitor--harness-compatibility).
 
 ## 4. CLI (v1 surface)
 
@@ -145,7 +145,7 @@ Cancel phrases abort without delivery (`hark cancel`, not casual “cancel that�
 
 **Endpointing strategy** (`[listen].endpoint_strategy`, default **`energy`**, env `HARK_LISTEN_ENDPOINT_STRATEGY`): silence-mode turn detection is pluggable. `energy` reduces exactly to the fixed `end_silence_s` gate (default; also the fallback). `smart_turn` consults a Smart Turn v3 model (optional `[smart-turn]` extra + `smart_turn_model_path`) to finish early or hold through mid-thought pauses, bounded by `endpoint_max_silence_s`; if it cannot load, capture falls back to the energy gate. Full evaluation + seam: [ENDPOINTING.md](ENDPOINTING.md).
 
-**Soft end phrases** (`[listen].soft_end_phrases_enabled`, default **`true`**): in radio mode, also finalize on a conservative list of informal closers (`send it`, `send that`, `that's all`, `end of message`, `over and out`, `okay over`, sentence-final bare `over`, …) **only** when the phrase is utterance-final (word-bounded transcript suffix) after segment silence. Bare `over` additionally requires a sentence boundary (sole utterance or after `.`/`!`/`?`/`,`) so “turn it over” / “over the weekend” never finish; multi-word `okay over` covers STT that drops the comma in “okay, over”. Mid-clause “that's all I know about X” and “send it to production” must not finish. Env: `HARK_SOFT_END_PHRASES_ENABLED` (`0`/`false` disables). Mode A agents **must** call `hark listen-end` from partials when a done signal is clear and the stream is still active (backup if soft-end misses). Full lists: [AUDIO_DESIGN.md](AUDIO_DESIGN.md).
+**Soft end phrases** (`[listen].soft_end_phrases_enabled`, default **`true`**): in radio mode, also finalize on a conservative list of informal closers (`send it`, `send that`, `that's all`, `end of message`, `over and out`, `okay over`, sentence-final bare `over`, …) **only** when the phrase is utterance-final (word-bounded transcript suffix) after segment silence. Bare `over` additionally requires a sentence boundary (sole utterance or after `.`/`!`/`?`/`,`) so “turn it over” / “over the weekend” never finish; multi-word `okay over` covers STT that drops the comma in “okay, over”. Mid-clause “that's all I know about X” and “send it to production” must not finish. Env: `HARK_SOFT_END_PHRASES_ENABLED` (`0`/`false` disables). The orchestrator **must** call `hark listen-end` from partials when a done signal is clear and the stream is still active (backup if soft-end misses). Full lists: [AUDIO_DESIGN.md](AUDIO_DESIGN.md).
 
 **Ambient** (`[ambient]`): when not in an answer window, optional local 2–3 s snippet wake (`hey hark` / `hey herald`); **no cloud STT until activation**.
 
@@ -155,7 +155,7 @@ See [PROVIDERS.md](PROVIDERS.md). xAI via Grok OAuth preferred. No local neural 
 
 ## 11. Events
 
-See [PROTOCOL.md](PROTOCOL.md). Dedupe + debounce required. `--for-monitor` compact profile required for Mode A.
+See [PROTOCOL.md](PROTOCOL.md). Dedupe + debounce required. `--for-monitor` compact profile required for handsfree.
 
 ## 12. Config (sketch)
 
@@ -233,7 +233,7 @@ Env: `HARK_CONFIG`, `HARK_LISTEN_END_MODE`, `HARK_SOFT_END_PHRASES_ENABLED`, `HA
 Python prototype: always `uv run hark` from latest git checkout.  
 Production: Rust rewrite, same CLI + HEP.
 
-## 16. Definition of done (v1 Mode A)
+## 16. Definition of done (v1 handsfree)
 
 Without browser automation or local ML models:
 
@@ -243,5 +243,5 @@ Without browser automation or local ML models:
 4. Bound `hark answer` with stale rejection.  
 5. `hark keys` for menus.  
 6. Done events wake agent; skill forbids blind announce.  
-7. Skill alone runs Mode A.  
+7. Skill alone runs handsfree.  
 8. Acceptance tests in [ACCEPTANCE.md](ACCEPTANCE.md) pass or skip with documented reasons.  

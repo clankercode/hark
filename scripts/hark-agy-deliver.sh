@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Mode A wake sidecar for Google Antigravity (agy) via agentapi.
+# Handsfree wake sidecar for Google Antigravity (agy) via agentapi.
 #
 # Prerequisite:
-#   1. Mode A workers running (./scripts/run-mode-a.sh)
+#   1. Workers running (./scripts/run-mode-a.sh)
 #   2. agy-env registered: hark agentapi register
 #      (needs ANTIGRAVITY_LS_ADDRESS + ANTIGRAVITY_CONVERSATION_ID)
 #

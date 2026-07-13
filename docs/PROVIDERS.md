@@ -168,7 +168,7 @@ Never log the token. ChatGPT OAuth access tokens may not work for all `api.opena
 |------|---------------------|
 | Public STT API | **Not available** for third-party apps the way xAI/OpenAI are |
 | Claude Code `/voice` | Product UI; tokens free in product; **not** a stable external STT endpoint for `hark listen` |
-| Role in system | **Mode A orchestrator** (Claude Code Max) calling `hark` tools |
+| Role in system | **Handsfree orchestrator** (Claude Code Max) calling `hark` tools |
 
 **Implementation:**
 

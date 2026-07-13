@@ -1,4 +1,4 @@
-"""harkd scaffold: pidfile single-instance, status, refuse if Mode A running."""
+"""harkd scaffold: pidfile single-instance, status, refuse if handsfree workers running."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def test_assert_can_start_allows_own_pid(state: Path):
 
 def test_assert_can_start_refuses_mode_a(state: Path):
     (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    with pytest.raises(daemon.DaemonConflict, match="Mode A workers"):
+    with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
         daemon.assert_can_start(state)
 
 
@@ -201,7 +201,7 @@ def test_run_foreground_idle_and_sigterm(state: Path):
 def test_refuse_start_when_mode_a_pids_live(state: Path):
     """Integration-style: mode-a.pids with our pid blocks acquire."""
     (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    with pytest.raises(daemon.DaemonConflict, match="Mode A"):
+    with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
         daemon.acquire_harkd_pidfile(state, pid=os.getpid())
 
 

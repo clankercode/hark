@@ -1,4 +1,4 @@
-"""Unified Mode A monitor feed (wake_near_miss + agent + ambient.prompt)."""
+"""Unified handsfree monitor feed (wake_near_miss + agent + ambient.prompt)."""
 
 from __future__ import annotations
 

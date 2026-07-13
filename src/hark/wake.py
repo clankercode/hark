@@ -831,7 +831,7 @@ def near_miss_group_size(group_index: int) -> int:
 
 @dataclass
 class NearMissAccumulator:
-    """Buffer plausible misses and emit groups on the Mode A schedule."""
+    """Buffer plausible misses and emit groups on the handsfree schedule."""
 
     total: int = 0
     group_index: int = 0
@@ -861,7 +861,7 @@ def make_wake_near_miss_event(
     group_index: int,
     phrases: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """HEP event for Mode A monitor: grouped plausible wake failures."""
+    """HEP event for handsfree monitor: grouped plausible wake failures."""
     from hark.events import new_event_id, utc_now_iso
 
     return {

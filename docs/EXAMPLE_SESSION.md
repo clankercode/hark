@@ -1,4 +1,4 @@
-# Example — Mode A with Hark
+# Example — handsfree with Hark
 
 ## Operator
 

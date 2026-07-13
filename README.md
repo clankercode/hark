@@ -47,9 +47,9 @@ The verse is playful; **routing and confirmation are not.** Site: **[hark.xk.io]
 | [docs/PRIOR_ART.md](docs/PRIOR_ART.md) | Merge log from earlier agent specs |
 | [docs/NAMING.md](docs/NAMING.md) | Locked names (`hark`, `harkd`, paths) |
 | [docs/PRODUCT.md](docs/PRODUCT.md) | Goals |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Topology, Mode A, library vs daemon |
-| [docs/HARKD.md](docs/HARKD.md) | **Experimental `harkd`** — Mode A boundary (not required for v1) |
-| [docs/AGY.md](docs/AGY.md) | **Experimental Antigravity** Mode A via agentapi |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Topology, handsfree path, library vs daemon |
+| [docs/HARKD.md](docs/HARKD.md) | **Experimental `harkd`** — handsfree boundary (not required for v1) |
+| [docs/AGY.md](docs/AGY.md) | **Experimental Antigravity** handsfree path via agentapi |
 | [docs/SPEC.md](docs/SPEC.md) | Normative software spec |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | HEP event protocol |
 | [docs/SAFETY.md](docs/SAFETY.md) | Routing, risk R0–R3, distrust |
@@ -148,7 +148,7 @@ uv sync
 uv run hark doctor
 uv run hark config init          # optional ~/.config/hark/config.toml
 uv run hark status
-uv run hark monitor              # primary Mode A feed (compact default)
+uv run hark monitor              # primary handsfree feed (compact default)
 uv run hark tts "hello"
 uv run hark listen               # speak, then silence ends (or end_mode=radio)
 uv run hark ask "What color?"
@@ -161,13 +161,13 @@ uv run hark logs -f              # raw JSONL follow (no color)
 
 Dev tip: run from **latest checkout** (`uv run hark`). After `./install.sh`, the global `hark` on `PATH` is fine for day-to-day use.
 
-### Experimental `harkd` (not required for Mode A)
+### Experimental `harkd` (not required for handsfree)
 
-Mode A v1 does **not** need a daemon. The optional `harkd` scaffold is for process ownership experiments only — see **[docs/HARKD.md](docs/HARKD.md)**.
+Handsfree v1 does **not** need a daemon. The optional `harkd` scaffold is for process ownership experiments only — see **[docs/HARKD.md](docs/HARKD.md)**.
 
 ```bash
 uv run hark daemon status
-uv run hark daemon start    # foreground; refuses if Mode A workers are live
+uv run hark daemon start    # foreground; refuses if Hark workers are live
 uv run hark daemon stop
 # or: uv run harkd status|start|stop
 ```
@@ -219,6 +219,6 @@ uv run pytest tests/test_fixtures_parity.py -q
   skill/                  # canonical agent skills (hark, handsfree)
   skills/                 # symlinks → skill/* for `npx skills` discovery
   packages/ultradyn-hark/ # @ultradyn/hark on npm
-  src/hark/               # Python Mode A bridge
+  src/hark/               # Python handsfree bridge
   tests/
 ```

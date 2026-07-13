@@ -11,7 +11,7 @@ on), TTS play paths:
   5. Resume full TTS (``announce.resumed``)
 
 Detection is fail-open by default: missing tools / unreadable ``/proc`` means
-"not in conference" so Mode A still works on stripped environments.
+"not in conference" so handsfree still works on stripped environments.
 
 Deep module: one public decision surface for callers (``is_conference_active``,
 ``apply_conference_hold``); internals stay private.
@@ -760,7 +760,7 @@ def apply_conference_hold(
             event=held_event,
         )
 
-    # Timed out still in conference — speak anyway so Mode A is not stuck forever
+    # Timed out still in conference — speak anyway so the orchestrator is not stuck forever
     mark_queue_status(qid, "timeout_resume", wait_ms=wait_ms)
     syslog(
         "announce.hold_timeout",

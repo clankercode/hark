@@ -96,7 +96,7 @@ pauses. Finish a turn with any of:
 | Stay quiet ~**6.3 s** after you have started speaking | Idle auto-finish (default 3× `end_silence_s`; B074) |
 | **`hark cancel`** | Abort without using the transcript |
 
-Mode A agents also **must** run `hark listen-end` when a partial clearly shows
+The orchestrator also **must** run `hark listen-end` when a partial clearly shows
 you are done (backup if soft-end misses). Skill bootstrap reminds operators:
 *“when you’re done, say over or okay hark send.”*
 
@@ -151,7 +151,7 @@ opened**, if the operator stays quiet longer than `radio_idle_end_silence_s`
 do not leave the mic open indefinitely (B074). Short thinking pauses (~2 s)
 remain open. Before the first open, long quiet still uses the existing initial
 timeout / nudge path. Shorter `radio_partial_silence_s` → more frequent
-partials for Mode A; raise it (e.g. 1.0–1.5) to cut STT cost when pauses are
+partials for the orchestrator; raise it (e.g. 1.0–1.5) to cut STT cost when pauses are
 long. Do **not** lower `end_silence_s` to chase radio partials — that would
 change normal silence-mode answer windows.
 
@@ -204,7 +204,7 @@ syslog for `mic.mute_desync` / `mic.mute_hold_cleared`.
 
 ### Soft end phrases (default on)
 
-Mode A agents **must** finish a radio capture from partials with
+The orchestrator **must** finish a radio capture from partials with
 `hark listen-end` when the operator clearly ended (done-signal backup).
 By default, Hark itself also auto-finishes on a **small set** of informal
 closers without agent intervention (radio dogfood).
@@ -261,7 +261,7 @@ Residual risk when soft end is on: if the operator pauses *right after* a
 terminal soft closer mid-thought (e.g. says `"please just send it"` then
 stops before `"to production"`), radio may finalize. Use product phrases
 (`okay hark send`) or set `soft_end_phrases_enabled = false` for stricter
-control. Mode A agents **must** call `hark listen-end` from partials when a
+control. The orchestrator **must** call `hark listen-end` from partials when a
 done signal is clear and soft-end did not already finalize.
 
 ## Ambient (`[ambient]`)
@@ -281,7 +281,7 @@ ring_s = 5.0             # continuous capture ring capacity (seconds)
 timeout_s = 300
 # Emit ambient.timeout on continuous idle cycles (NDJSON + syslog).
 # Default on — useful as a heartbeat when watching provider cache / dogfood.
-# Set false to quiet long-running Mode A (still re-enters the wake wait).
+# Set false to quiet long-running handsfree (still re-enters the wake wait).
 surface_timeouts = true
 # emit_timeout_events = true  # alias of surface_timeouts
 
@@ -302,8 +302,8 @@ names/phrases on config reload. Vosk remains default until dogfood. Operator gui
 | `snippet_s` | `2.5` | Score window length cut from the continuous ring (clamped ~0.8–2.5 s). |
 | `snippet_hop_s` | `≈0.3×snippet` | Advance between overlapping score windows. Must be **&lt;** `snippet_s` so “hey &lt;name&gt;” is not chopped at non-overlapping borders. |
 | `ring_s` | `5.0` | Continuous PCM ring capacity while ambient is armed (wake windows + headroom). |
-| `timeout_s` | `300` | One-shot: max wait for a wake before `ambient.timeout`. Continuous Mode A: idle cycle length before re-entering the wake wait (and optionally emitting `ambient.timeout`). `0` = no deadline / no timeout event. |
-| `surface_timeouts` | `true` | When **on**, continuous ambient surfaces `ambient.timeout` each idle cycle (monitor NDJSON + syslog) as a heartbeat. When **off**, continuous idle cycles stay quiet (no timeout event) — turn off for noisy long-running Mode A; leave on if you want cache-warmup / liveness visibility. Alias: `emit_timeout_events`. One-shot `hark ambient --once` always emits timeout when nothing is heard. |
+| `timeout_s` | `300` | One-shot: max wait for a wake before `ambient.timeout`. Continuous handsfree: idle cycle length before re-entering the wake wait (and optionally emitting `ambient.timeout`). `0` = no deadline / no timeout event. |
+| `surface_timeouts` | `true` | When **on**, continuous ambient surfaces `ambient.timeout` each idle cycle (monitor NDJSON + syslog) as a heartbeat. When **off**, continuous idle cycles stay quiet (no timeout event) — turn off for noisy long-running handsfree; leave on if you want cache-warmup / liveness visibility. Alias: `emit_timeout_events`. One-shot `hark ambient --once` always emits timeout when nothing is heard. |
 | `listen.pre_roll_ms` | `300` | PCM kept from before speech-open on answer/post-wake capture (clamped **250–500**). Complements radio **post-cut** segment pad (B075). |
 
 CLI: `hark ambient` (forces a wake+listen cycle). Continuous: `hark ambient` without `--once`.

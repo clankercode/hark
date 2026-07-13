@@ -35,7 +35,7 @@ if (cmd === "list") {
 }
 
 if (cmd === "help" || cmd === "-h" || cmd === "--help") {
-  console.log(`@ultradyn/hark — agent skills for Hark (handsfree Mode A)
+  console.log(`@ultradyn/hark — agent skills for Hark (handsfree)
 
 Usage:
   hark-skill path          Print absolute paths to skill dirs

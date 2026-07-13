@@ -1,7 +1,7 @@
 """Coordinate mic ownership between ambient wake and bound listen/ask.
 
 Ambient holds a continuous capture stream (MicLease + ring buffer) while
-scanning for wake phrases. Mode A answer flows (listen / ask / tts --listen)
+scanning for wake phrases. Handsfree answer flows (listen / ask / tts --listen)
 need exclusive access. Cooperative protocol:
 
   1. Listener writes ``state/ambient.pause``

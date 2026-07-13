@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     mon = sub.add_parser(
         "monitor",
         help=(
-            "unified Mode A feed (watch + ambient JSONL): agent.blocked, "
+            "unified handsfree feed (watch + ambient JSONL): agent.blocked, "
             "ambient.prompt, ambient.wake_near_miss, … — single Monitor command"
         ),
     )
@@ -174,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     mon.add_argument(
         "--kinds",
         default=None,
-        help="comma-separated kind filter (default: Mode A wake set)",
+        help="comma-separated kind filter (default: handsfree wake set)",
     )
 
     ctx = sub.add_parser("context", help="read pane context")
@@ -426,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dae = sub.add_parser(
         "daemon",
-        help="experimental harkd scaffold (not required for Mode A v1; see docs/HARKD.md)",
+        help="experimental harkd scaffold (not required for handsfree v1; see docs/HARKD.md)",
     )
     dae_sub = dae.add_subparsers(dest="daemon_cmd", required=True)
     dae_start = dae_sub.add_parser(
@@ -444,14 +444,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ambient", action="store_true", help="with --workers: skip ambient"
     )
     dae_start.add_argument("--session", default="default")
-    dae_status = dae_sub.add_parser("status", help="harkd / Mode A / locks")
+    dae_status = dae_sub.add_parser("status", help="harkd / workers / locks")
     dae_status.add_argument("--json", action="store_true")
     dae_stop = dae_sub.add_parser("stop", help="SIGTERM via harkd.pid")
     dae_stop.add_argument("--force", action="store_true")
     dae_stop.add_argument("--timeout", type=float, default=15.0)
     dae_stop.add_argument("--json", action="store_true")
 
-    # Antigravity (agy) agentapi — Mode A wake without native Monitor (B049)
+    # Antigravity (agy) agentapi — handsfree wake without native Monitor (B049)
     api = sub.add_parser(
         "agentapi",
         help=(
@@ -511,12 +511,12 @@ def build_parser() -> argparse.ArgumentParser:
     api_send.add_argument(
         "--raw",
         action="store_true",
-        help="do not wrap with the Mode A wake preamble",
+        help="do not wrap with the Hark wake preamble",
     )
     api_del = api_sub.add_parser(
         "deliver",
         help=(
-            "Mode A sidecar: read monitor lines and inject via agentapi "
+            "handsfree sidecar: read monitor lines and inject via agentapi "
             "(stdin or --follow-monitor)"
         ),
     )
@@ -538,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     api_del.add_argument(
         "--raw",
         action="store_true",
-        help="do not wrap lines with the Mode A wake preamble",
+        help="do not wrap lines with the Hark wake preamble",
     )
     api_del.add_argument(
         "--replay",
@@ -553,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     api_del.add_argument("--json", action="store_true")
 
-    # I005 / B057 — voice-spawn surfaces (Mode A tools)
+    # I005 / B057 — voice-spawn surfaces (handsfree tools)
     sess = sub.add_parser(
         "session",
         help="list or ensure Herdr named sessions (I005)",
@@ -1631,7 +1631,7 @@ def cmd_ambient(args: argparse.Namespace, cfg) -> int:
         else:
             print(json.dumps(payload, separators=(",", ":")))
         return OK if result.activated else TIMEOUT
-    # continuous Mode A ambient
+    # continuous handsfree ambient
     return run_ambient_loop(cfg, announce=announce)
 
 

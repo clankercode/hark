@@ -1,4 +1,4 @@
-"""Pure helpers + thin agentapi inject (B049 Antigravity Mode A)."""
+"""Pure helpers + thin agentapi inject (B049 Antigravity handsfree)."""
 
 from __future__ import annotations
 
@@ -111,12 +111,12 @@ def test_parse_monitor_line():
 
 
 def test_build_send_message_argv():
-    argv = build_send_message_argv("cid", "hello there", title="hark mode-a")
+    argv = build_send_message_argv("cid", "hello there", title="hark")
     assert argv == [
         "agy",
         "agentapi",
         "send-message",
-        "--title=hark mode-a",
+        "--title=hark",
         "cid",
         "hello there",
     ]

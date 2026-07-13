@@ -75,10 +75,10 @@ hark keys work/w1:p6 2 enter
 | `blocked` | Primary speak/listen trigger |
 | `working` | Usually ignore |
 | `idle` | Ignore unless asked |
-| `done` | **Wake Mode A; do not auto-announce.** Agent reads short context and judges |
+| `done` | **Wake orchestrator; do not auto-announce.** Agent reads short context and judges |
 | `unknown` | Non-blocked |
 
-False `done` / missed `blocked` → Mode A re-reads pane (`hark context` / `herdr agent read`) and optionally session files.
+False `done` / missed `blocked` → orchestrator re-reads pane (`hark context` / `herdr agent read`) and optionally session files.
 
 ## CLI used by Hark
 
@@ -104,7 +104,7 @@ herdr pane run <pane_id> <command>               # text+Enter for shells, not ch
 
 ### Sessions + start agent (I005 / voice spawn)
 
-Prefer **`hark`** wrappers for Mode A (alias-safe CLI resolve + kickoff):
+Prefer **`hark`** wrappers for handsfree (alias-safe CLI resolve + kickoff):
 
 ```bash
 hark session list [--json]

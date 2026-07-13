@@ -309,7 +309,7 @@ def make_agent_needs_input(
 ) -> dict[str, Any]:
     """Synthetic re-block: status is done/idle but pane still needs a human.
 
-    Mode A should treat this like agent.blocked (speak + answer). Bound for
+    The orchestrator should treat this like agent.blocked (speak + answer). Bound for
     ``hark answer`` when a fingerprint is present.
     """
     choice_list = list(choices) if choices is not None else list(hit.choices if hit else ())

@@ -1,6 +1,6 @@
 """Human-readable colorful live log viewer for ``hark watch-logs``.
 
-Formats ``system.jsonl`` (and optionally Mode A ``ambient.jsonl`` /
+Formats ``system.jsonl`` (and optionally handsfree ``ambient.jsonl`` /
 ``watch.jsonl``) with ANSI colors, timestamps, and compact data highlights.
 """
 
@@ -231,7 +231,7 @@ def format_hep_record(
     color: bool = True,
     source: str = "watch",
 ) -> str:
-    """Pretty one-line format for a HEP / Mode A event (watch/ambient JSONL)."""
+    """Pretty one-line format for a HEP / handsfree event (watch/ambient JSONL)."""
     kind = str(rec.get("kind") or rec.get("event") or "?")
     level = "error" if "error" in kind or rec.get("error") else "hep"
     tss = format_timestamp(rec.get("observed_at") or rec.get("ts"))

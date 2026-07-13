@@ -6,7 +6,7 @@
 | **CLI** | **`hark`** |
 | **Daemon (optional)** | **`harkd`** |
 | **Skill (primary)** | **`hark`** (`skill/hark/SKILL.md`) |
-| **Skill (alias)** | **`handsfree`** (`skill/handsfree/SKILL.md`) — same Mode A loop |
+| **Skill (alias)** | **`handsfree`** (`skill/handsfree/SKILL.md`) — same handsfree loop |
 | **Config dir** | `~/.config/hark/` |
 | **State dir** | `~/.local/state/hark/` |
 | **Env prefix** | `HARK_` |

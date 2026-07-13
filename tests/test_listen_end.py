@@ -333,7 +333,7 @@ def test_soft_end_safe_list_documented():
         "go",
         "go ahead",
         "cancel that",
-        "stop recording",  # Mode A backup only — mid "don't stop recording"
+        "stop recording",  # orchestrator backup only — mid "don't stop recording"
     }
     assert soft_norm.isdisjoint(unsafe)
 

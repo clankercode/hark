@@ -1,4 +1,4 @@
-# Hark first-run setup (Mode A checklist)
+# Hark first-run setup checklist
 
 Canonical **question order** for agent-driven and CLI setup.  
 CLI: `hark setup` (flags: `--yes`, `--persona`, `--wake-engine`, `--voice`, …).  
@@ -16,7 +16,7 @@ Related: [WAKE_STT.md](WAKE_STT.md) (local wake; **prefer Sherpa KWS** for produ
 | No `setup-complete.json` | Full setup (this checklist) |
 | `setup_schema_version` older than current | Re-ask **only new** questions |
 | Operator asks to reconfigure | Full or partial; use `--force` on CLI |
-| Already complete, same schema | Skip; go arm Mode A |
+| Already complete, same schema | Skip; go arm handsfree (monitor + workers) |
 
 Schema version lives in code as `SETUP_SCHEMA_VERSION` (`hark.setup_flow`).
 
@@ -65,9 +65,9 @@ Schema version lives in code as `SETUP_SCHEMA_VERSION` (`hark.setup_flow`).
    }
    ```
    No secrets in this file.
-9. **Arm Mode A** — continue SKILL.md (monitor, TTS mode, queue announce).
+9. **Arm handsfree** — continue SKILL.md (monitor, TTS mode, queue announce).
 
-**Voice-first:** after doctor, prefer `hark tts` / `hark ask` one question at a time when Mode A skill drives setup.
+**Voice-first:** after doctor, prefer `hark tts` / `hark ask` one question at a time when the Hark skill drives setup.
 
 ---
 

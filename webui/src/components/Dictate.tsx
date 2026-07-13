@@ -232,7 +232,7 @@ export function DictateOverlay({ onClose }: { onClose: () => void }) {
             value={target.value}
             onChange={(e) => (target.value = (e.target as HTMLSelectElement).value)}
           >
-            <option value="prompt">operator prompt → Mode A judgment (unbound)</option>
+            <option value="prompt">operator prompt → orchestrator judgment (unbound)</option>
             {pending.map((p) => (
               <option key={p.event_id} value={p.event_id}>
                 answer {p.session_id}/{p.pane_id} — {(p.question_text ?? "").slice(0, 60)}

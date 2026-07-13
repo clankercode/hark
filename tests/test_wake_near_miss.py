@@ -1,4 +1,4 @@
-"""Plausible wake near-miss detection and Mode A grouping schedule (B019)."""
+"""Plausible wake near-miss detection and handsfree grouping schedule (B019)."""
 
 from __future__ import annotations
 

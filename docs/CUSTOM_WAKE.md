@@ -119,7 +119,7 @@ Env: `HARK_CONFIG_WATCH=0` disables; `=1` forces on (overrides TOML).
 Both file-watch and SIGHUP call the same `apply_config_reload` (phrases, names, `listen.end_mode`, `surface_timeouts`, etc.). Phrase-only changes hot-update the backend; engine/model changes rebuild it.
 
 ```bash
-# Optional: force reload without waiting for the next poll (PID from Mode A / hark daemon)
+# Optional: force reload without waiting for the next poll (PID from workers / hark daemon)
 kill -HUP <ambient-pid>
 ```
 
@@ -133,7 +133,7 @@ With `[ambient] debug = true`, wake hits/misses under:
 
 ## Agent / skill configuration help
 
-When the operator asks to change how they wake Hark, the Mode A skill should:
+When the operator asks to change how they wake Hark, the Hark skill should:
 
 1. Ask **name-based** vs **full-phrase** if unclear.
 2. Edit the right keys (table above); do not invent CLI flags that do not exist.

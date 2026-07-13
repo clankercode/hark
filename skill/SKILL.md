@@ -20,4 +20,4 @@ This file exists so tools that expect `skill/SKILL.md` still find **Hark**.
 | [`handsfree/SKILL.md`](handsfree/SKILL.md) | **handsfree** (alias) |
 | [`../skills/`](../skills/) | Same skills for `npx skills add` discovery |
 
-Load either. Full Mode A instructions live in those files (identical loop; CLI is always `hark`).
+Load either. Full handsfree instructions live in those files (identical loop; CLI is always `hark`).

@@ -1,6 +1,6 @@
 """Watch config.toml for changes and request ambient config reload.
 
-Mode A ambient already reloads on **SIGHUP** via ``lifecycle.request_reload``.
+Ambient already reloads on **SIGHUP** via ``lifecycle.request_reload``.
 This module adds a **file mtime poll** (with debounce) so editing
 ``HARK_CONFIG`` / ``~/.config/hark/config.toml`` applies the same path without
 remembering ``kill -HUP``.

@@ -1,6 +1,6 @@
 # Safety and routing integrity
 
-Merged from prior `SECURITY.md` + risk policy, adapted for Mode A + library.
+Merged from prior `SECURITY.md` + risk policy, adapted for handsfree + library.
 
 ## Assets
 

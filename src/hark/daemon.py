@@ -1,14 +1,14 @@
-"""Experimental harkd process scaffold (Mode B boundary with Mode A).
+"""Experimental harkd process scaffold (optional always-on vs handsfree CLI).
 
-Not required for Mode A v1. See docs/HARKD.md for the full boundary spec.
+Not required for handsfree v1. See docs/HARKD.md for the full boundary spec.
 
 v0 provides:
   - single-instance pidfile under the shared XDG state dir
   - status / stop via that pidfile
-  - refuse start when Mode A workers (mode-a.pids) or another harkd is live
-  - optional --workers to supervise the same ambient/watch processes Mode A uses
+  - refuse start when handsfree workers (mode-a.pids) or another harkd is live
+  - optional --workers to supervise the same ambient/watch processes the launcher uses
 
-It does **not** auto-deliver answers (no silent double-send with Mode A).
+It does **not** auto-deliver answers (no silent double-send with the skill path).
 """
 
 from __future__ import annotations
@@ -187,7 +187,7 @@ def collect_status(root: Path | None = None) -> DaemonStatus:
 
 
 def assert_can_start(root: Path | None = None, *, self_pid: int | None = None) -> None:
-    """Refuse if another harkd or Mode A workers already own always-on role."""
+    """Refuse if another harkd or handsfree workers already own always-on role."""
     root = root or state_dir()
     harkd = probe_harkd(root)
     for pid in harkd.pids:
@@ -201,7 +201,7 @@ def assert_can_start(root: Path | None = None, *, self_pid: int | None = None) -
     if mode_a.running:
         pids = ", ".join(str(p) for p in mode_a.pids)
         raise DaemonConflict(
-            f"Mode A workers are running (pids: {pids} via {MODE_A_PIDS_NAME}); "
+            f"Hark workers are running (pids: {pids} via {MODE_A_PIDS_NAME}); "
             "stop them first (./scripts/run-mode-a.sh --stop) so harkd does not "
             "race ambient/watch or delivery ownership — see docs/HARKD.md"
         )
@@ -313,7 +313,7 @@ def spawn_mode_a_workers(
     root: Path | None = None,
     log_dir: Path | None = None,
 ) -> list[subprocess.Popen[Any]]:
-    """Start ambient/watch children and record mode-a.pids (shared with Mode A)."""
+    """Start ambient/watch children and record mode-a.pids (shared with handsfree launcher)."""
     root = root or state_dir()
     log_dir = log_dir or root
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -398,7 +398,7 @@ def run_foreground(
     session: str = "default",
     idle_sleep_s: float = 0.5,
 ) -> int:
-    """Foreground supervisor: hold harkd.pid; optional Mode A workers; wait for SIGTERM."""
+    """Foreground supervisor: hold harkd.pid; optional ambient/watch workers; wait for SIGTERM."""
     root = root or state_dir()
     children: list[subprocess.Popen[Any]] = []
     shutting_down = {"flag": False}
@@ -475,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="harkd",
         description=(
-            "Experimental Hark always-on daemon scaffold (not required for Mode A v1). "
+            "Experimental Hark always-on daemon scaffold (not required for handsfree v1). "
             "See docs/HARKD.md."
         ),
     )
@@ -494,7 +494,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     st.add_argument("--session", default="default", help="Herdr session for watch")
 
-    status = sub.add_parser("status", help="show harkd / Mode A / locks")
+    status = sub.add_parser("status", help="show harkd / workers / locks")
     status.add_argument("--json", action="store_true")
 
     stop = sub.add_parser("stop", help="SIGTERM harkd via pidfile")
@@ -539,9 +539,9 @@ def dispatch_daemon(args: argparse.Namespace) -> int:
             else:
                 print("harkd: not running")
             if m.running:
-                print(f"mode_a: running (pids {', '.join(str(p) for p in m.pids)})")
+                print(f"workers: running (pids {', '.join(str(p) for p in m.pids)})")
             else:
-                print("mode_a: not running")
+                print("workers: not running")
             print(f"busy.lock: {'yes' if status.busy_lock else 'no'}")
             print(f"mic.lock: {'yes' if status.mic_lock else 'no'}")
         return OK

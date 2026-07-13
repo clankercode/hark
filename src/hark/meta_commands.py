@@ -1,4 +1,4 @@
-"""Spoken meta-command lexicon for Mode A answer windows.
+"""Spoken meta-command lexicon for handsfree answer windows.
 
 During an answer window (after Hark speaks a blocked agent's question and starts
 listening) the operator may say a *control* phrase instead of an answer:

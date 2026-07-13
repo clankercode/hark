@@ -2,7 +2,7 @@
 
 Radio mode waits for product-scoped end phrases. Operators often say something
 looser ("that's all", "how do I stop?", "okay send it"). Partials carry HOLD
-warnings *and* CLI hints so the Mode A agent may finalize via:
+warnings *and* CLI hints so the orchestrator may finalize via:
 
   hark listen-end --stream-id <id>
   hark listen-end --stream-id <id> --cancel
@@ -162,7 +162,7 @@ def consume_listen_action(stream_id: str | None = None) -> Action | None:
 
 
 def agent_control_block(stream_id: str) -> dict[str, str]:
-    """Embed in partial events so Mode A agents know how to end capture."""
+    """Embed in partial events so the orchestrator knows how to end capture."""
     return {
         "end_recording": f"hark listen-end --stream-id {stream_id}",
         "cancel_recording": f"hark listen-end --stream-id {stream_id} --cancel",

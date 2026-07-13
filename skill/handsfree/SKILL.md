@@ -1,13 +1,13 @@
 ---
 name: handsfree
 description: >
-  Alias of the hark skill (identical Mode A voice bridge). After load, communicate
+  Alias of the hark skill (identical handsfree voice bridge). After load, communicate
   primarily via TTS; watch blocked/done, speak questions, cloud STT/TTS, reply with
   text or menu keys. Use when operator says handsfree, hark, or voice bridge.
   Requires `hark` CLI and Herdr ≥ 0.7.1.
 ---
 
-# Handsfree — alias for Hark (Mode A)
+# Handsfree — alias for Hark
 
 > **This skill is an alias of [`hark`](../hark/SKILL.md).** Same product, CLI (`hark`), TTS mode, and loop. Install either or both names.
 

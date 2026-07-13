@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run Hark Mode A properly: Herdr watch + ambient wake (hey hark).
+# Run Hark handsfree properly: Herdr watch + ambient wake (hey hark).
 #
 #   ./scripts/run-mode-a.sh
 #   ./scripts/run-mode-a.sh --no-ambient
@@ -16,7 +16,7 @@
 # Busy marker (while user is recording):
 #   ~/.local/state/hark/busy.lock
 #
-# Single-instance: before start, previous Mode A workers (pidfile + orphans)
+# Single-instance: before start, previous workers (pidfile + orphans)
 # are stopped; the pidfile is always rewritten from scratch with only live PIDs.
 
 set -euo pipefail
@@ -50,7 +50,7 @@ pid_alive() {
   [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
-# True if /proc/PID is a Mode A worker: `hark ambient` or `hark watch`
+# True if /proc/PID is a Hark worker: `hark ambient` or `hark watch`
 # (uv wrapper or python entrypoint). Avoids pgrep -f self-match and does not
 # match this script, shells that only mention ambient logs, or pgrep/pkill.
 is_mode_a_worker() {
@@ -156,7 +156,7 @@ graceful_stop() {
   fi
 
   if ((${#pids[@]} == 0)); then
-    echo "no Mode A processes running"
+    echo "no Hark workers running"
     rm -f "$PIDFILE"
     return 0
   fi
@@ -175,7 +175,7 @@ graceful_stop() {
     fi
 
     if ((${#still[@]} == 0)); then
-      echo "all Mode A processes exited cleanly (${waited}s)"
+      echo "all Hark workers exited cleanly (${waited}s)"
       rm -f "$PIDFILE" "$BUSY"
       return 0
     fi
@@ -244,7 +244,7 @@ if [[ -f "$HARKD_PIDFILE" ]]; then
   if [[ "$harkd_pid" =~ ^[0-9]+$ ]] && kill -0 "$harkd_pid" 2>/dev/null; then
     echo "error: harkd is running (pid $harkd_pid via $HARKD_PIDFILE)" >&2
     echo "  stop it first: uv run hark daemon stop" >&2
-    echo "  (Mode A and harkd must not both own ambient/watch — see docs/HARKD.md)" >&2
+    echo "  (handsfree workers and harkd must not both own ambient/watch — see docs/HARKD.md)" >&2
     exit 1
   fi
   # stale pidfile
@@ -271,7 +271,7 @@ fi
 
 HARK=(uv run hark)
 
-# Always replace previous Mode A (pidfile and/or orphan ambient/watch workers)
+# Always replace previous workers (pidfile and/or orphan ambient/watch)
 # so partial restarts cannot leave duplicate ambients.
 prev_count=0
 if [[ -f "$PIDFILE" ]]; then
@@ -286,7 +286,7 @@ if ((${#_prev[@]} > 0)); then
 fi
 
 if [[ $prev_count -gt 0 ]]; then
-  echo "restarting previous Mode A (graceful, ${#_prev[@]} pid(s))…"
+  echo "restarting previous workers (graceful, ${#_prev[@]} pid(s))…"
   graceful_stop 0 "restart" || graceful_stop 1 "restart"
   # Allow ambient to finish shutdown TTS after recording
   sleep 0.5

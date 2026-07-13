@@ -1,4 +1,4 @@
-# Local wake engines & STT (operator + Mode A guide)
+# Local wake engines & STT (operator + handsfree guide)
 
 Hark ambient **wake** uses a **local** short-snippet model only. After activation,
 prompt body / radio STT stays **cloud-first** (xAI etc.). Full survey:
@@ -44,7 +44,7 @@ dep set or are debugging without ONNX.
 | **Vosk** (stock default) | `engine = "vosk"` | Constrained disk/deps; already set up; alias learning OK | ~40 M zip / ~68 M installed; RSS ~150 MiB |
 | **text_probe** | `engine = "text_probe"` | Tests only | — |
 
-Config default in the package remains **Vosk** for backward compatibility; Mode A
+Config default in the package remains **Vosk** for backward compatibility; handsfree
 setup / dogfood should **recommend Sherpa** when download is OK.
 
 ---
@@ -69,7 +69,7 @@ setup / dogfood should **recommend Sherpa** when download is OK.
 - Path (auto): `~/.local/share/hark/models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`
 - Keywords built from `WakePolicy` (names×prefixes + exact phrases); **rebuild on config reload / SIGHUP**
 - Doctor: `hark doctor` reports `status=ready|missing_model|package_missing` for `engine=sherpa_kws`
-- Mode A launcher (`scripts/run-mode-a.sh`) puts onnxruntime’s `capi/` on `LD_LIBRARY_PATH`
+- Handsfree launcher (`scripts/run-mode-a.sh`) puts onnxruntime’s `capi/` on `LD_LIBRARY_PATH`
   so `import sherpa_onnx` can resolve the shared library (Hark also re-execs once if needed)
 
 ```toml
@@ -89,7 +89,7 @@ uv sync --extra wake-sherpa
 the model. Ambient does **not** silently use cloud for wake.
 
 If logs say `sherpa-onnx not installed` but the package is present, the usual cause is
-**missing `libonnxruntime.so`** (install `onnxruntime` via `wake-sherpa`, restart Mode A).
+**missing `libonnxruntime.so`** (install `onnxruntime` via `wake-sherpa`, restart workers).
 
 ---
 

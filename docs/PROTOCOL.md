@@ -1,6 +1,6 @@
 # Hark Event Protocol (HEP) v1
 
-Normalized events so Mode A, Monitor, and future `harkd` share one shape.  
+Normalized events so the orchestrator, Monitor, and future `harkd` share one shape.  
 Herdr wire JSON is **external**; HEP is **stable internal**.
 
 ## Envelope
@@ -86,7 +86,7 @@ When `[listen] end_mode = "radio"` and `stream_partials = true`, interim transcr
 }
 ```
 
-Mode A agents **must** finalize a stuck radio capture with `hark listen-end` (finish) when the partial clearly ends with a done signal (`over`, `okay hark send`, `that's all`, `send it`, `stop recording`, `message done`, …) and the stream is still active. Prefer finish over cancel when the thought is complete; use `--cancel` only to abort. Do **not** end mid-clause (`over the weekend`, `send it to staging`). By default (`[listen].soft_end_phrases_enabled = true`), Hark itself also auto-finishes on conservative utterance-final soft closers (`send it`, sentence-final `over`, `okay over`, …) without agent intervention — see [AUDIO_DESIGN.md](AUDIO_DESIGN.md). Set `soft_end_phrases_enabled = false` for product phrases only.
+The orchestrator **must** finalize a stuck radio capture with `hark listen-end` (finish) when the partial clearly ends with a done signal (`over`, `okay hark send`, `that's all`, `send it`, `stop recording`, `message done`, …) and the stream is still active. Prefer finish over cancel when the thought is complete; use `--cancel` only to abort. Do **not** end mid-clause (`over the weekend`, `send it to staging`). By default (`[listen].soft_end_phrases_enabled = true`), Hark itself also auto-finishes on conservative utterance-final soft closers (`send it`, sentence-final `over`, `okay over`, …) without agent intervention — see [AUDIO_DESIGN.md](AUDIO_DESIGN.md). Set `soft_end_phrases_enabled = false` for product phrases only.
 
 Consumers **MUST**:
 
@@ -156,4 +156,4 @@ Rejects if expectation fails (safer than free `hark reply` for production loops)
 ## JSON Schema
 
 Normative file: `schemas/event-v1.schema.json` (in repo).  
-Interaction FSM states (for `harkd` / queue): see prior art interaction schema — optional in Mode A.
+Interaction FSM states (for `harkd` / queue): see prior art interaction schema — optional in handsfree.

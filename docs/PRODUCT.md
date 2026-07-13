@@ -16,7 +16,7 @@ Software (`hark` / optional `harkd`) + skill (`hark`) so a human can unblock and
 2. Permission prompt → always confirm → keys or text.  
 3. Many blocked agents → priority queue; one answer window at a time.  
 4. Multi-session (laptop + workbox) → one feed, tagged targets.  
-5. False Herdr `done` → Mode A peeks context → only announce if real.  
+5. False Herdr `done` → orchestrator peeks context → only announce if real.  
 6. Other models implement from SPEC alone.  
 
 ## Non-goals (v1)
@@ -37,7 +37,7 @@ Software (`hark` / optional `harkd`) + skill (`hark`) so a human can unblock and
 | Idle watch overhead | low CPU/RSS (see SPEC) |
 | False ambient send | near zero |
 | Stale double-send | zero (library enforcement) |
-| Skill usability | Mode A from skill alone |
+| Skill usability | Handsfree from skill alone |
 
 ## Brand
 

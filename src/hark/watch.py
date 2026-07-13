@@ -128,7 +128,7 @@ class EdgeTracker:
             # Leaving interest entirely (e.g. working→working never hits here).
             if cur not in interest and prev not in interest:
                 # Still catch false done when status becomes idle-like even if
-                # "done" was not in interest but blocked was (Mode A often has both).
+                # "done" was not in interest but blocked was (handsfree often has both).
                 if (
                     detect_false_done
                     and is_idle_like_status(cur)

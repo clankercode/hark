@@ -244,7 +244,7 @@ def run_tts(
             instructions="Long TTS multi-chunk play (informational).",
         )
 
-    # Mode A path (hark tts / ask): hold full question speech during conference.
+    # Handsfree path (hark tts / ask): hold full question speech during conference.
     hold_meta: dict[str, Any] | None = None
     if play:
         from hark.conference import apply_conference_hold
@@ -807,7 +807,7 @@ def run_listen(
 ) -> ListenResult:
     """Capture speech. Radio mode streams partials via on_partial when enabled.
 
-    on_partial(event_dict) is called for each non-final radio transcript so Mode A
+    on_partial(event_dict) is called for each non-final radio transcript so the orchestrator
     agents can start thinking early. Events always set partial=true and HOLD warnings.
 
     Empty STT recovery (silence mode): log ``speech.empty_stt``, optionally
@@ -1552,7 +1552,7 @@ def run_listen(
                 )
                 if hit is None:
                     # Joined segment STT is append-only; still refuse shrink so a
-                    # flaky mid-slice rewrite cannot drop words Mode A already saw.
+                    # flaky mid-slice rewrite cannot drop words the orchestrator already saw.
                     body_so_far = monotonic_partial_text(
                         last_partial_text, (tr.text or "").strip()
                     )
@@ -1644,7 +1644,7 @@ def run_listen(
                     from types import SimpleNamespace
 
                     joined = join_radio_stt_segments(text_segments)
-                    # Monotonic vs last partial Mode A already saw
+                    # Monotonic vs last partial the orchestrator already saw
                     body = monotonic_partial_text(last_partial_text, joined)
                     latency_ms = 0
                     tr_provider = last_provider
