@@ -173,7 +173,21 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument("--json", action="store_true")
 
     sub.add_parser("mute", help="mute system default mic (pactl)")
-    sub.add_parser("unmute", help="unmute system default mic (pactl)")
+    sub.add_parser("unmute", help="unmute system default mic (pactl + ALSA Wave)")
+    ms = sub.add_parser(
+        "mute-sync",
+        help="sync hardware unmute → OS (one-shot or watch loop)",
+    )
+    ms.add_argument(
+        "--watch",
+        action="store_true",
+        help="run background poller (also started with ambient by default)",
+    )
+    ms.add_argument(
+        "--once",
+        action="store_true",
+        help="force ensure_unmuted now and exit (default if no --watch)",
+    )
 
     stt_stats = sub.add_parser("stats", help="TTS/STT usage stats")
     stt_stats.add_argument("--json", action="store_true")
@@ -305,6 +319,8 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
         return cmd_mic_mute(True)
     if cmd == "unmute":
         return cmd_mic_mute(False)
+    if cmd == "mute-sync":
+        return cmd_mute_sync(args)
     if cmd == "stats":
         return cmd_stats(args)
     if cmd == "logs":
@@ -313,14 +329,24 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
 
 
 def cmd_mic_mute(mute: bool) -> int:
-    from hark.audio.mic_mute import default_source, set_source_mute, source_is_muted
+    from hark.audio.mic_mute import (
+        default_source,
+        ensure_unmuted,
+        set_source_mute,
+        source_is_muted,
+    )
 
     src = default_source()
     if not src:
         eprint("hark: no default Pulse/PipeWire source")
         return AUDIO
+    if not mute:
+        # Full cascade: Pulse + ALSA Wave + release TTS hold
+        result = ensure_unmuted(source=src)
+        print(json.dumps({"ok": True, "muted": False, "source": src, **result}))
+        return OK
     if not set_source_mute(src, mute):
-        eprint(f"hark: failed to {'mute' if mute else 'unmute'} {src}")
+        eprint(f"hark: failed to mute {src}")
         return AUDIO
     state = source_is_muted(src)
     print(
@@ -329,6 +355,59 @@ def cmd_mic_mute(mute: bool) -> int:
                 "ok": True,
                 "source": src,
                 "muted": state if state is not None else mute,
+            }
+        )
+    )
+    return OK
+
+
+def cmd_mute_sync(args: argparse.Namespace) -> int:
+    """Force OS unmute cascade, or run hardware→OS mute sync watcher."""
+    from hark.audio.mic_mute import (
+        alsa_mic_capture_on,
+        default_source,
+        ensure_unmuted,
+        find_wave_alsa_card,
+        source_is_muted,
+        start_mute_sync_watcher,
+    )
+
+    if args.watch:
+        ok = start_mute_sync_watcher(enabled=True)
+        src = default_source()
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "watching": True,
+                    "source": src,
+                    "wave_card": find_wave_alsa_card(),
+                    "pulse_muted": source_is_muted(src) if src else None,
+                    "alsa_capture_on": alsa_mic_capture_on(),
+                }
+            )
+        )
+        # Keep process alive for standalone watcher
+        try:
+            import time as _time
+
+            while True:
+                _time.sleep(3600)
+        except KeyboardInterrupt:
+            return OK
+        return OK
+
+    result = ensure_unmuted()
+    src = default_source()
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "source": src,
+                "pulse_muted": source_is_muted(src) if src else None,
+                "alsa_capture_on": alsa_mic_capture_on(),
+                "wave_card": find_wave_alsa_card(),
+                **result,
             }
         )
     )

@@ -42,6 +42,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "post_tts_guard_ms",
         "listen_pre_arm_ms",
         "mute_mic_during_tts",
+        "sync_hw_unmute",
         "cue_volume",
         "cue_start_path",
         "cue_stop_path",
@@ -106,6 +107,8 @@ class AudioConfig:
     listen_pre_arm_ms: int = 300
     # Mute system default capture during TTS (Wave ring white→red via pactl)
     mute_mic_during_tts: bool = True
+    # Watch Wave/ALSA/Pulse mute edges; hardware unmute → force OS unmute
+    sync_hw_unmute: bool = True
     # Record start/stop cue volume for generated blips (0.0–1.0)
     cue_volume: float = 0.22
     # Optional custom WAV/MP3 paths (empty = assets/cues defaults)
@@ -218,6 +221,7 @@ half_duplex = true
 post_tts_guard_ms = 100      # after TTS ends → start listen (tight handoff)
 listen_pre_arm_ms = 300      # signal ~0.3s before TTS ends
 mute_mic_during_tts = true   # pactl mute → Elgato Wave ring red while speaking
+sync_hw_unmute = true        # Wave/ALSA unmute button → force OS/Pulse unmute
 cue_volume = 0.22            # generated start/stop beep volume (0–1)
 # cue_start_path = "/path/to/record-start.wav"
 # cue_stop_path  = "/path/to/record-stop.wav"
@@ -480,6 +484,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
             post_tts_guard_ms=int(audio_raw.get("post_tts_guard_ms", 100)),
             listen_pre_arm_ms=int(audio_raw.get("listen_pre_arm_ms", 300)),
             mute_mic_during_tts=bool(audio_raw.get("mute_mic_during_tts", True)),
+            sync_hw_unmute=bool(audio_raw.get("sync_hw_unmute", True)),
             cue_volume=float(
                 audio_raw.get(
                     "cue_volume",
@@ -614,6 +619,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "post_tts_guard_ms": cfg.audio.post_tts_guard_ms,
             "listen_pre_arm_ms": cfg.audio.listen_pre_arm_ms,
             "mute_mic_during_tts": cfg.audio.mute_mic_during_tts,
+            "sync_hw_unmute": cfg.audio.sync_hw_unmute,
             "cue_volume": cfg.audio.cue_volume,
             "cue_start_path": cfg.audio.cue_start_path,
             "cue_stop_path": cfg.audio.cue_stop_path,

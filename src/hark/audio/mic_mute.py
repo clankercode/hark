@@ -2,12 +2,19 @@
 
 When the default source is the Wave (or any PA source with mute-sync hardware),
 `pactl set-source-mute` toggles the same path the Wave ring uses (white→red).
+
+**Hardware unmute sync:** the Wave mute button and ALSA capture switch can
+diverge from the PipeWire source mute (or from app mute indicators). A small
+watcher (``start_mute_sync_watcher``) detects mute→unmute edges and runs
+``ensure_unmuted`` so OS/Pulse (and ALSA Mic) follow a manual unmute.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
@@ -20,8 +27,16 @@ class MuteState:
     applied: bool
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, check=False, timeout=5)
+def _run(args: list[str], *, timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args, capture_output=True, text=True, check=False, timeout=timeout
+    )
+
+
+def _which(bin_name: str) -> bool:
+    from shutil import which
+
+    return which(bin_name) is not None
 
 
 def default_source() -> str | None:
@@ -51,15 +66,136 @@ def set_source_mute(source: str, mute: bool) -> bool:
     return p.returncode == 0
 
 
-def _which(bin_name: str) -> bool:
-    from shutil import which
+# ---------------------------------------------------------------------------
+# ALSA Wave capture switch (hardware mute path)
+# ---------------------------------------------------------------------------
 
-    return which(bin_name) is not None
+_WAVE_CARD_RE = re.compile(r"card\s+(\d+):\s+(\S+)\s+\[([^\]]+)\]", re.I)
 
+
+def find_wave_alsa_card() -> tuple[str, int] | None:
+    """Return (card_id_or_index, index) for Elgato Wave if present."""
+    if not _which("arecord"):
+        return None
+    p = _run(["arecord", "-l"])
+    if p.returncode != 0:
+        return None
+    for line in (p.stdout or "").splitlines():
+        m = _WAVE_CARD_RE.search(line)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        short = m.group(2)
+        long = m.group(3)
+        if "wave" in short.lower() or "wave" in long.lower() or "elgato" in long.lower():
+            # prefer ALSA id string when available
+            return (short, idx)
+    return None
+
+
+def alsa_mic_capture_on(card: str | int | None = None) -> bool | None:
+    """True if ALSA Mic capture switch is on (unmuted), False if off, None if n/a."""
+    if not _which("amixer"):
+        return None
+    if card is None:
+        found = find_wave_alsa_card()
+        if not found:
+            return None
+        card = found[0]
+    p = _run(["amixer", "-c", str(card), "sget", "Mic"])
+    if p.returncode != 0:
+        return None
+    out = p.stdout or ""
+    # Mono: Capture N [pct%] [dB] [on|off]
+    if re.search(r"\[off\]", out, re.I):
+        return False
+    if re.search(r"\[on\]", out, re.I):
+        return True
+    return None
+
+
+def set_alsa_mic_capture(on: bool, card: str | int | None = None) -> bool:
+    if not _which("amixer"):
+        return False
+    if card is None:
+        found = find_wave_alsa_card()
+        if not found:
+            return False
+        card = found[0]
+    # 'cap' / 'nocap' or unmute/mute for cswitch
+    arg = "cap" if on else "nocap"
+    p = _run(["amixer", "-c", str(card), "-q", "sset", "Mic", arg])
+    if p.returncode == 0:
+        return True
+    # fallback wording
+    p2 = _run(
+        ["amixer", "-c", str(card), "-q", "sset", "Mic", "unmute" if on else "mute"]
+    )
+    return p2.returncode == 0
+
+
+def ensure_unmuted(*, source: str | None = None) -> dict[str, bool | None]:
+    """Force OS + ALSA capture unmuted (manual/hardware unmute cascade).
+
+    Returns which steps succeeded.
+    """
+    src = source or default_source()
+    result: dict[str, bool | None] = {
+        "pulse": None,
+        "alsa": None,
+        "released_hark_hold": False,
+    }
+    if src and _which("pactl"):
+        result["pulse"] = set_source_mute(src, False)
+    alsa = set_alsa_mic_capture(True)
+    result["alsa"] = alsa if find_wave_alsa_card() else None
+    # If TTS still holding mute, drop the hold so we do not re-apply mid-demo
+    if release_tts_mute_hold():
+        result["released_hark_hold"] = True
+    try:
+        from hark.syslog import log
+
+        log(
+            "mic.ensure_unmuted",
+            component="audio",
+            source=src,
+            pulse=result["pulse"],
+            alsa=result["alsa"],
+            released_hark_hold=result["released_hark_hold"],
+        )
+    except Exception:
+        pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Nestable TTS mute
+# ---------------------------------------------------------------------------
 
 _lock = threading.Lock()
 _depth = 0
 _saved: MuteState | None = None
+# User (or HW button) overrode mute while we held it — do not re-mute on exit
+_user_unmuted_override = False
+
+
+def release_tts_mute_hold() -> bool:
+    """Cancel intentional TTS mute hold (user unmuted for a demo)."""
+    global _depth, _saved, _user_unmuted_override
+    with _lock:
+        if _depth <= 0 and _saved is None:
+            return False
+        _user_unmuted_override = True
+        # Unmute OS now; leave depth bookkeeping so nested contexts still exit cleanly
+        if _saved and _saved.source:
+            set_source_mute(_saved.source, False)
+        set_alsa_mic_capture(True)
+        return True
+
+
+def tts_mute_depth() -> int:
+    with _lock:
+        return _depth
 
 
 @contextmanager
@@ -67,17 +203,19 @@ def mic_muted_during_tts(*, enabled: bool = True) -> Iterator[MuteState]:
     """Nestable: mute default capture source while TTS plays; restore after.
 
     Only mutes if we are the first nested holder and the source was unmuted
-    (or unknown). Always restores to pre-TTS state when the outermost exits.
+    (or unknown). Always restores to pre-TTS state when the outermost exits,
+    unless the user/hardware unmutes mid-hold (override).
     """
     state = MuteState(source=None, was_muted=None, applied=False)
     if not enabled or not _which("pactl"):
         yield state
         return
 
-    global _depth, _saved
+    global _depth, _saved, _user_unmuted_override
     with _lock:
         _depth += 1
         if _depth == 1:
+            _user_unmuted_override = False
             src = default_source()
             state.source = src
             if src:
@@ -118,7 +256,23 @@ def mic_muted_during_tts(*, enabled: bool = True) -> Iterator[MuteState]:
         with _lock:
             _depth = max(0, _depth - 1)
             if _depth == 0 and _saved is not None:
-                if _saved.applied and _saved.source and _saved.was_muted is not True:
+                # If user overrode mid-TTS, leave unmuted (demo path)
+                if _user_unmuted_override:
+                    if _saved.source:
+                        set_source_mute(_saved.source, False)
+                    set_alsa_mic_capture(True)
+                    try:
+                        from hark.syslog import log
+
+                        log(
+                            "mic.unmuted",
+                            component="audio",
+                            source=_saved.source,
+                            reason="user_override",
+                        )
+                    except Exception:
+                        pass
+                elif _saved.applied and _saved.source and _saved.was_muted is not True:
                     set_source_mute(_saved.source, False)
                     try:
                         from hark.syslog import log
@@ -131,3 +285,103 @@ def mic_muted_during_tts(*, enabled: bool = True) -> Iterator[MuteState]:
                     except Exception:
                         pass
                 _saved = None
+                _user_unmuted_override = False
+
+
+# ---------------------------------------------------------------------------
+# Mute sync watcher (hardware / ALSA unmute → OS unmute)
+# ---------------------------------------------------------------------------
+
+_watcher_lock = threading.Lock()
+_watcher_thread: threading.Thread | None = None
+_watcher_stop = threading.Event()
+
+
+def _read_mute_snapshot() -> tuple[bool | None, bool | None]:
+    """(pulse_muted, alsa_capture_on)."""
+    src = default_source()
+    pulse = source_is_muted(src) if src else None
+    alsa_on = alsa_mic_capture_on()
+    return pulse, alsa_on
+
+
+def mute_sync_tick(
+    prev_pulse: bool | None,
+    prev_alsa_on: bool | None,
+) -> tuple[bool | None, bool | None, bool]:
+    """One poll step. Returns (pulse, alsa_on, did_sync)."""
+    pulse, alsa_on = _read_mute_snapshot()
+    did = False
+
+    # Hardware / ALSA capture turned ON (unmuted) while Pulse still muted
+    if prev_alsa_on is False and alsa_on is True:
+        ensure_unmuted()
+        did = True
+        pulse, alsa_on = _read_mute_snapshot()
+
+    # Pulse source mute→unmute edge (Wave button often hits this path)
+    # Also covers user unmuting during TTS hold (override)
+    if prev_pulse is True and pulse is False:
+        ensure_unmuted()
+        did = True
+        pulse, alsa_on = _read_mute_snapshot()
+
+    return pulse, alsa_on, did
+
+
+def start_mute_sync_watcher(
+    *,
+    poll_s: float = 0.15,
+    enabled: bool = True,
+) -> bool:
+    """Start background thread (idempotent). Returns True if running/started."""
+    global _watcher_thread
+    if not enabled:
+        return False
+    with _watcher_lock:
+        if _watcher_thread is not None and _watcher_thread.is_alive():
+            return True
+        _watcher_stop.clear()
+
+        def _loop() -> None:
+            pulse, alsa_on = _read_mute_snapshot()
+            while not _watcher_stop.is_set():
+                try:
+                    pulse, alsa_on, did = mute_sync_tick(pulse, alsa_on)
+                    if did:
+                        try:
+                            from hark.syslog import log
+
+                            log(
+                                "mic.sync",
+                                component="audio",
+                                pulse_muted=pulse,
+                                alsa_capture_on=alsa_on,
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _watcher_stop.wait(poll_s)
+
+        _watcher_thread = threading.Thread(
+            target=_loop, name="hark-mute-sync", daemon=True
+        )
+        _watcher_thread.start()
+        try:
+            from hark.syslog import log
+
+            log("mic.sync_start", component="audio", poll_s=poll_s)
+        except Exception:
+            pass
+        return True
+
+
+def stop_mute_sync_watcher() -> None:
+    global _watcher_thread
+    with _watcher_lock:
+        _watcher_stop.set()
+        t = _watcher_thread
+        _watcher_thread = None
+    if t is not None:
+        t.join(timeout=2.0)

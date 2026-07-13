@@ -355,6 +355,15 @@ def run_ambient_loop(
     cfg.ambient.enabled = True
     install_signal_handlers()
 
+    # Hardware unmute → OS unmute (Wave button / ALSA → Pulse)
+    if getattr(cfg.audio, "sync_hw_unmute", True):
+        try:
+            from hark.audio.mic_mute import start_mute_sync_watcher
+
+            start_mute_sync_watcher(enabled=True)
+        except Exception:
+            pass
+
     if not cfg.ambient.model_path and cfg.ambient.engine == "vosk":
         err = {
             "schema": "hark.event.v1",
