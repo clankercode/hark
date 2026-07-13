@@ -10,7 +10,7 @@ tags:
     - idea
     - planning
 title: 'Wake enrollment: record 5–10 activation samples for near-miss + optional light adapt'
-updated_at: "2026-07-13T15:43:36Z"
+updated_at: "2026-07-14T00:00:00Z"
 ---
 ## Idea
 
@@ -21,10 +21,11 @@ phrase **5–10 times** (e.g. “hey iris”, “hey mercury”).
 
 1. **Near-miss prepopulation** — run each sample through the active wake backend
    (Vosk / Sherpa KWS) and seed `wake_learned.json` / alias tables with observed
-   mishears (not unsafe 1–2 letter tokens).
+   mishears (not unsafe 1–2 letter tokens — see B077 denylist).
 2. **Optional light adaptation** — if computationally feasible later, use samples
    for keyword boost / small adapter; only if open-source path is practical on
    laptop CPU. Survey first; do not block setup.
+3. **Eval fixtures** — optional export into wake eval set (B071).
 
 ### Non-goals
 
@@ -32,7 +33,91 @@ phrase **5–10 times** (e.g. “hey iris”, “hey mercury”).
 - Cloud upload of enrollment audio without explicit consent
 - Replacing Sherpa/Vosk with a custom trained model in v1
 
-### Related
+---
 
-- B070 setup flow / SETUP.md enrollment step
-- B069 survey; B071 wake eval harness
+## Enrollment mode / script (UX)
+
+Ship a **dedicated mode or CLI** (e.g. `hark wake-enroll` / `hark setup --enroll-wake`
+or a small script under `scripts/`) whose only job is paced sample gathering —
+not ambient wake and not a normal answer window.
+
+### Beep-paced loop
+
+Operator is guided by **beeps**, not spoken “say it again” every time (TTS optional
+for intro/outro only):
+
+```
+[start/ready beep]  →  operator says activation phrase  →  [sample-captured beep]
+                    →  operator says phrase again       →  [sample-captured beep]
+                    →  …  (target N=5–10)
+                    →  [end beep]  (distinct cadence / double / lower pitch)
+```
+
+Timing sketch:
+
+1. **Intro** (once): short spoken or printed instructions — “After each beep, say
+   your activation phrase once. Wait for the next beep before the next try.”
+2. **Ready beep** — means “speak now” (reuse or extend `audio.cues` beeps).
+3. Capture one utterance (gate open → silence end, or fixed max window ~2–3s).
+4. **Captured beep** — different enough from ready beep that the operator knows
+   the take was kept (or a single short chirp). If take rejected (too quiet /
+   empty STT optional), use a **reject** sound and re-prompt same slot.
+5. Brief pause (~0.3–0.8s), then next ready beep.
+6. After N good samples: **end beep** (distinct), write files, optional near-miss
+   learn pass, print summary path.
+
+Default N ≈ **7** (range 5–10, configurable `--count`).
+
+### Audio / storage
+
+- 16 kHz mono PCM (or wav) under state dir, e.g.
+  `~/.local/state/hark/wake_enroll/<phrase-slug>/NN.wav` (+ manifest.json with
+  phrase, timestamps, backend scores if run).
+- Do **not** upload; local only unless operator explicitly opts in later.
+- Mic: prefer continuous open for the whole session (aligns with B079 ring) so
+  OS mic indicator does not thrash between takes; if continuous not ready, one
+  open for enroll session is fine.
+
+### CLI sketch
+
+```text
+hark wake-enroll [--phrase "hey iris"] [--count 7] [--names iris]
+# or via setup:
+hark setup   # step: optional “record activation samples now?”
+```
+
+- Phrase defaults from configured wake names/phrases (Iris/Mercury path).
+- Exit non-zero if &lt; min samples kept; allow `--min 5`.
+- `--dry-run` / print-only timing without write for dogfood of beeps.
+
+### Signals (reuse `hark.audio.cues`)
+
+| Event | Cue |
+|-------|-----|
+| Session start / first ready | record-start style beep (or slightly longer) |
+| Sample accepted | short higher chirp or double-tick |
+| Sample rejected | low/error tone; same slot retries |
+| Session complete | end beep (longer or two-tone) |
+
+Prefer **non-verbal** mid-loop so enroll is fast and doesn’t train the mic on TTS.
+
+---
+
+## Acceptance (when promoted to task)
+
+- [ ] Dedicated enroll command or setup step with beep → phrase → beep loop
+- [ ] Distinct ready / accepted / end (and reject) cues
+- [ ] Writes N local wavs + manifest; no cloud
+- [ ] Optional: score samples with current wake backend and seed learned aliases
+  (respect B077 denylist)
+- [ ] Documented in SETUP.md / CUSTOM_WAKE; skill knows when to offer enroll
+- [ ] Works headless enough for Mode A (prints progress; beeps on speakers)
+
+## Related
+
+- B070 setup flow / SETUP.md enrollment step (offer after persona/wake backend)
+- B069 survey; B071 wake eval harness (samples can feed fixtures)
+- B077 wake learn denylist (never seed `is`→iris from TTS bleed during enroll
+  post-process either)
+- B079 continuous mic (nice for enroll session hold-open)
+- `src/hark/audio/cues.py` existing beeps
