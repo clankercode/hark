@@ -422,10 +422,14 @@ def run_listen(
     )
 
     stt = resolve_stt(provider or cfg.stt.provider)
+    # Silence mode: end_silence_s finalizes the answer window.
+    # Radio mode: radio_partial_silence_s only cuts a segment for interim STT /
+    # ambient.partial (B037). The turn still finalizes only on end phrase,
+    # soft end (if enabled), agent listen-end, cancel, or max_listen_s.
     end_silence = (
         float(cfg.listen.end_silence_s)
         if mode is EndMode.SILENCE
-        else float(cfg.listen.radio_end_silence_s)
+        else float(getattr(cfg.listen, "radio_partial_silence_s", 0.6))
     )
     # Pluggable endpointing (B007): only for silence mode. Falls back to the
     # energy gate (strategy=None) if the smart detector can't load.

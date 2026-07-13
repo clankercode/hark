@@ -65,7 +65,7 @@ Consumers **MUST ignore unknown fields**.
 
 ### Partial streaming (radio end mode)
 
-When `[listen] end_mode = "radio"` and `stream_partials = true`, interim transcripts are emitted as:
+When `[listen] end_mode = "radio"` and `stream_partials = true`, interim transcripts are emitted after each radio segment (trailing quiet of `radio_partial_silence_s`, default 0.6 s — not a final). HOLD until `final=true` / `ambient.prompt` for the same `stream_id`:
 
 ```json
 {
