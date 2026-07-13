@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-07-13T14:33:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T16:05:00Z"
 complexity: high
 created_at: "2026-07-13T14:18:57Z"
 depends_on:
     - B060
+duration_minutes: 91.876859647
 estimate_hours: 4
 id: B062
 priority: high
 started_at: "2026-07-13T14:33:08Z"
-status: in_progress
+status: done
 tags: []
 title: Dashboard webui scaffold + live event stream view
-updated_at: "2026-07-13T14:33:08Z"
+updated_at: "2026-07-13T16:05:00Z"
 ---
 ## Scope
 Standalone static frontend (webui/, Vite + TypeScript; random dev port per repo norms; framework: smallest viable — leaning preact, record decision). Speaks only hark.dashboard.v1; dev mode replays fixtures/dashboard/ with no backend.
