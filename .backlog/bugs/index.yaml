@@ -27,3 +27,4 @@ bugs:
     - file: B026-suggest-my-pi-monitor-and-open.todo
     - file: B027-run-docs-audit-and-fix.todo
     - file: B028-investigate-recent-ci-runs-and.todo
+    - file: B029-must-detect-self-if-running-fr.todo
