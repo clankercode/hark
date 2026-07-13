@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-13T17:37:39Z"
+depends_on: []
+estimate_hours: 1
+id: B091
+priority: high
+status: pending
+tags: []
+title: TTS silently hard-truncates at max_chars (default 500) mid-word; long Mode A replies cut off (e.g. dry-run setup TTS ended at 'if Sh' of Sherpa)
+updated_at: "2026-07-13T17:37:39Z"
+---
+
+TTS silently hard-truncates at max_chars (default 500) mid-word; long Mode A replies cut off (e.g. dry-run setup TTS ended at 'if Sh' of Sherpa)
