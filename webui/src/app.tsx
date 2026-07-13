@@ -5,6 +5,7 @@ import { conferenceHold, deliveries, wireDataRefreshes } from "./lib/data";
 import { connState, connect, events, serverInfo, severityOf } from "./lib/stream";
 import { DictateOverlay } from "./components/Dictate";
 import { Palette } from "./components/Palette";
+import { SpectrumPanel } from "./components/Spectrum";
 import { focusEventId, notifyEnabled, notifySupported, toggleNotifications, wireNotifications } from "./lib/notify";
 import { selectedPane } from "./lib/data";
 import { EventsView } from "./views/EventsView";
@@ -169,6 +170,7 @@ export function App() {
           onClose={() => (paletteOpen.value = false)}
         />
       )}
+      <SpectrumPanel />
       <div class="main">
         <nav class="sidenav">
           <div class="navlabel">console</div>
