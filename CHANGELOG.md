@@ -4,6 +4,12 @@ All notable changes to **Hark** and the **`@ultradyn/hark`** npm skills package.
 
 Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package version in `packages/ultradyn-hark/package.json`.
 
+## 0.1.2
+
+- Automated release via GitHub Actions `release.yml` (OIDC trusted publishing, no NPM_TOKEN).
+- Package validation gate (skills + `npm pack --dry-run`) before publish.
+- Site install picker (bash/npm/pnpm/bun) on hark.xk.io (docs surface; not in tarball).
+
 ## 0.1.1
 
 - Polish npm package README for npmjs.com (skills vs CLI, install via npm/pnpm/bun, `install.sh`).
