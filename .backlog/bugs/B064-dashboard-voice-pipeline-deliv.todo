@@ -2,10 +2,10 @@
 complexity: medium
 created_at: "2026-07-13T14:19:10Z"
 depends_on:
-    - B055
-    - B056
+    - B061
+    - B062
 estimate_hours: 3
-id: B058
+id: B064
 priority: medium
 status: pending
 tags:
@@ -26,5 +26,5 @@ Remaining read-only surfaces per docs/plans/I003-dashboard.md.
 ## Acceptance
 - [ ] Pipeline state updates live (mic lease, recording, TTS)
 - [ ] Delivery outcomes incl. delivery_uncertain surfaced
-- [ ] Config panel provably redacted (uses B054 fixtures)
+- [ ] Config panel provably redacted (uses B060 fixtures)
 - [ ] Usage panel renders rates + near-miss groups

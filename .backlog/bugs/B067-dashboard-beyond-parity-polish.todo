@@ -3,11 +3,11 @@ completed_at: null
 complexity: medium
 created_at: "2026-07-13T14:19:32Z"
 depends_on:
-    - B057
-    - B058
-    - B059
+    - B063
+    - B064
+    - B065
 estimate_hours: 4
-id: B061
+id: B067
 priority: medium
 started_at: null
 status: pending
@@ -33,4 +33,4 @@ Owner-approved delight features, all webui-side (no contract change) — see 'Be
 - [ ] No hark.dashboard.v1 contract changes required
 
 ## Review note
-- PWA install + Web Notifications + phone mic are secure-context APIs: the phone-over-tailnet story requires B060's TLS setup (tailscale serve). Localhost desktop works without it. Acceptance 'PWA installs on phone' is conditional on that setup.
+- PWA install + Web Notifications + phone mic are secure-context APIs: the phone-over-tailnet story requires B066's TLS setup (tailscale serve). Localhost desktop works without it. Acceptance 'PWA installs on phone' is conditional on that setup.

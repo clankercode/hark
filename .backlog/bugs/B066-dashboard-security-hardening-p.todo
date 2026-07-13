@@ -3,11 +3,11 @@ completed_at: null
 complexity: medium
 created_at: "2026-07-13T14:19:32Z"
 depends_on:
-    - B057
-    - B058
-    - B059
+    - B063
+    - B064
+    - B065
 estimate_hours: 2
-id: B060
+id: B066
 priority: medium
 started_at: null
 status: pending
@@ -29,4 +29,4 @@ Ship it per docs/plans/I003-dashboard.md.
 
 ## Review fixes (pre-build)
 - Remote (tailnet) access REQUIRES TLS: plain http://100.x.y.z is not a secure context — no PWA install, no Web Notifications, no getUserMedia. Document tailscale serve (recommended) or tailscale cert + native TLS. Doctor: flag non-localhost bind without token AND advise TLS for remote browser features.
-- Token->HttpOnly SameSite=Strict cookie exchange (B054); raw token never in URLs.
+- Token->HttpOnly SameSite=Strict cookie exchange (B060); raw token never in URLs.

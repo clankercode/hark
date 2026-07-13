@@ -2,9 +2,9 @@
 complexity: high
 created_at: "2026-07-13T14:18:57Z"
 depends_on:
-    - B054
+    - B060
 estimate_hours: 4
-id: B056
+id: B062
 priority: high
 status: pending
 tags:

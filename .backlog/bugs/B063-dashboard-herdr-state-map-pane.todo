@@ -2,10 +2,10 @@
 complexity: medium
 created_at: "2026-07-13T14:19:10Z"
 depends_on:
-    - B055
-    - B056
+    - B061
+    - B062
 estimate_hours: 3
-id: B057
+id: B063
 priority: medium
 status: pending
 tags:

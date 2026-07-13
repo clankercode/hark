@@ -1,6 +1,6 @@
 # I003 — Live web dashboard: feasibility + design
 
-Status: evaluated 2026-07-13 · verdict: **feasible, ~27 h across 8 tasks** (B054–B061)
+Status: evaluated 2026-07-13 · verdict: **feasible, ~27 h across 8 tasks** (B060–B067)
 Related: [PROTOCOL.md](../PROTOCOL.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [HARKD.md](../HARKD.md) · B002 (Rust parity)
 
 ## Feasibility verdict
@@ -82,7 +82,7 @@ implementation.** The deliverable boundary is `hark.dashboard.v1`:
   token sets an `HttpOnly` `SameSite=Strict` session cookie; the stream and
   all endpoints then authenticate via cookie, same-origin. (Avoids tokens in
   query strings / server logs; works identically in axum.) Contract task
-  (B054) specifies this.
+  (B060) specifies this.
 - **WebSocket is reserved, not required**: the contract specifies transport-
   agnostic JSON messages (one object per SSE `data:` line), so a WS endpoint
   carrying identical messages can be added in the Rust port without any schema
@@ -147,7 +147,7 @@ with live partials in radio style when available.
   (tailnet IP) as an insecure context, which disables Service Workers / PWA
   install, Web Notifications, and `getUserMedia`. Recommended setup:
   `tailscale serve` (terminates TLS on `*.ts.net` and proxies to the local
-  bind) or `tailscale cert` + native TLS. Documented in B060; localhost
+  bind) or `tailscale cert` + native TLS. Documented in B066; localhost
   desktop use needs none of this.
 - Token is exchanged for an `HttpOnly` `SameSite=Strict` cookie (see SSE auth
   above); the raw token never appears in URLs.
@@ -160,20 +160,20 @@ with live partials in radio style when available.
 
 | Task | Depends on | Est | Scope |
 |---|---|---|---|
-| B054 contract | — | 3 h | `docs/DASHBOARD.md`, `schemas/dashboard-v1/`, `fixtures/dashboard/`, redaction rules |
-| B055 backend `hark serve` | B054 | 4 h | stdlib HTTP+SSE, JSONL tail/backfill, snapshot endpoints, auth, static serving |
-| B056 webui scaffold + event stream | B054 | 4 h | Vite+TS app, fixtures dev mode, live tail w/ filters/search/pause/severity |
-| B057 Herdr + context surfaces | B055, B056 | 3 h | session/pane map, chat context, blocked/false-done/conference visibility |
-| B058 pipeline/queue/config/usage panels | B055, B056 | 3 h | voice pipeline state, deliveries, config+doctor, usage metrics |
-| B059 dictation | B055, B056 | 4 h | both capture modes, STT, review, bound submit + prompt injection |
-| B060 security + packaging + docs | B057–B059 | 2 h | package static build, redaction audit, docs/site, doctor check |
-| B061 beyond-parity polish | B057–B059 | 4 h | PWA + notifications, command palette, timeline scrubber, heatmaps, saved views, TTS audit trail |
+| B060 contract | — | 3 h | `docs/DASHBOARD.md`, `schemas/dashboard-v1/`, `fixtures/dashboard/`, redaction rules |
+| B061 backend `hark serve` | B060 | 4 h | stdlib HTTP+SSE, JSONL tail/backfill, snapshot endpoints, auth, static serving |
+| B062 webui scaffold + event stream | B060 | 4 h | Vite+TS app, fixtures dev mode, live tail w/ filters/search/pause/severity |
+| B063 Herdr + context surfaces | B061, B062 | 3 h | session/pane map, chat context, blocked/false-done/conference visibility |
+| B064 pipeline/queue/config/usage panels | B061, B062 | 3 h | voice pipeline state, deliveries, config+doctor, usage metrics |
+| B065 dictation | B061, B062 | 4 h | both capture modes, STT, review, bound submit + prompt injection |
+| B066 security + packaging + docs | B063–B065 | 2 h | package static build, redaction audit, docs/site, doctor check |
+| B067 beyond-parity polish | B063–B065 | 4 h | PWA + notifications, command palette, timeline scrubber, heatmaps, saved views, TTS audit trail |
 
-Rust port cost later: reimplement B055 against the same contract/fixtures
+Rust port cost later: reimplement B061 against the same contract/fixtures
 (axum: REST + SSE + optional WS) and embed the same webui bundle — no webui or
 contract rework.
 
-## Beyond-parity features (operator delight — B061 + sprinkled into B056–B059)
+## Beyond-parity features (operator delight — B067 + sprinkled into B062–B065)
 
 Explicitly in scope (owner approved going big). The product story is
 *answering agents while away from the keyboard* — the dashboard should be the
@@ -209,7 +209,7 @@ endpoints already in the sketch (`/answer`, `/events` backfill).
 ## Open questions (non-blocking, decided at task time)
 
 - Webui framework: plain TS vs preact/lit — pick smallest thing that keeps the
-  bundle self-contained (leaning preact; decision recorded in B056).
+  bundle self-contained (leaning preact; decision recorded in B062).
 - History window: how much JSONL backfill to index in-memory vs on-demand
-  paging (B055 decides; contract exposes paging either way).
-- `hark serve` vs `hark dash serve` naming (B055; NAMING.md precedent applies).
+  paging (B061 decides; contract exposes paging either way).
+- `hark serve` vs `hark dash serve` naming (B061; NAMING.md precedent applies).
