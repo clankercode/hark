@@ -28,3 +28,5 @@ One-line install people can copy-paste, following common OSS patterns (curl|bash
 
 ## Notes
 Align with how Mode A is actually shipped (Python uv package + skill under skill/hark).
+
+Merged to master via bl-fix-many subagents. Tests: 155 passed.
