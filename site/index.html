@@ -356,54 +356,222 @@
             <code>hark watch --for-monitor</code>. Without that, blocks won’t interrupt the session.
           </p>
         </div>
-        <div class="card" style="padding: 0; overflow: hidden">
-          <table class="risk-table supports-table">
-            <thead>
-              <tr>
-                <th>CLI / agent</th>
-                <th>Monitor</th>
-                <th>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Claude Code</td>
-                <td class="ok">Native</td>
-                <td>Skill + Monitor on watch feed; full handsfree loop</td>
-              </tr>
-              <tr>
-                <td>Grok Build / Grok CLI</td>
-                <td class="ok">Native</td>
-                <td>Same pattern; skill install + persistent monitor</td>
-              </tr>
-              <tr>
-                <td>Pi</td>
-                <td class="ok">Plugin</td>
-                <td>
-                  Use
-                  <a class="product-link" href="https://github.com/clankercode/pi-monitor">pi-monitor</a>
-                  (<code>pi install npm:pi-monitor</code>) — watches background
-                  processes and delivers matching output into the session.
-                </td>
-              </tr>
-              <tr>
-                <td>OpenCode</td>
-                <td class="ok">Plugin</td>
-                <td>
-                  Use
-                  <a class="product-link" href="https://github.com/clankercode/opencode-monitor-bg">opencode-monitor-bg</a>
-                  (<code>monitor_start</code> / <code>monitor_fetch</code>) —
-                  runs background processes and delivers their output back into
-                  the owning session.
-                </td>
-              </tr>
-              <tr>
-                <td>Codex / others</td>
-                <td class="maybe">If Monitor exists</td>
-                <td>Any agent with shell + long-lived watch can drive Hark</td>
-              </tr>
-            </tbody>
-          </table>
+
+        <ul class="logo-strip" aria-label="Compatible agents and orchestrators">
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/claude.svg"
+              width="28"
+              height="28"
+              alt="Claude Code logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Claude Code</span>
+          </li>
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/grok.svg"
+              width="28"
+              height="28"
+              alt="Grok logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Grok</span>
+          </li>
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/pi.svg"
+              width="28"
+              height="28"
+              alt="Pi logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Pi</span>
+          </li>
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/opencode.svg"
+              width="28"
+              height="28"
+              alt="OpenCode logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">OpenCode</span>
+          </li>
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/codex.svg"
+              width="28"
+              height="28"
+              alt="Codex logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Codex</span>
+          </li>
+          <li class="logo-strip__item logo-strip__item--muted">
+            <img
+              class="logo-strip__logo"
+              src="assets/logos/antigravity.svg"
+              width="28"
+              height="28"
+              alt="Antigravity logo placeholder"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Antigravity</span>
+            <span class="logo-strip__hint">agy</span>
+          </li>
+        </ul>
+
+        <div class="card supports-card">
+          <div class="supports-table-wrap">
+            <table class="risk-table supports-table">
+              <thead>
+                <tr>
+                  <th>CLI / agent</th>
+                  <th>Monitor</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/claude.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Claude Code</span>
+                    </span>
+                  </td>
+                  <td class="ok">Native</td>
+                  <td>Skill + Monitor on watch feed; full handsfree loop</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/grok.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Grok Build / Grok CLI</span>
+                    </span>
+                  </td>
+                  <td class="ok">Native</td>
+                  <td>Same pattern; skill install + persistent monitor</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/pi.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Pi</span>
+                    </span>
+                  </td>
+                  <td class="ok">Plugin</td>
+                  <td>
+                    Use
+                    <a class="product-link" href="https://github.com/clankercode/pi-monitor">pi-monitor</a>
+                    (<code>pi install npm:pi-monitor</code>) — watches background
+                    processes and delivers matching output into the session.
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/opencode.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>OpenCode</span>
+                    </span>
+                  </td>
+                  <td class="ok">Plugin</td>
+                  <td>
+                    Use
+                    <a class="product-link" href="https://github.com/clankercode/opencode-monitor-bg">opencode-monitor-bg</a>
+                    (<code>monitor_start</code> / <code>monitor_fetch</code>) —
+                    runs background processes and delivers their output back into
+                    the owning session.
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/codex.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Codex / others</span>
+                    </span>
+                  </td>
+                  <td class="maybe">If Monitor exists</td>
+                  <td>Any agent with shell + long-lived watch can drive Hark</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
+                        src="assets/logos/antigravity.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Antigravity <span class="agent-cell__aka">agy</span></span>
+                    </span>
+                  </td>
+                  <td class="maybe">If Monitor exists</td>
+                  <td>Placeholder — swap in an official mark when available; same shell + watch pattern</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
         <p class="supports-footnote">
           Herdr hosts the worker agents. Your orchestrator (outside Herdr) runs the skill and speaks for the fleet.
