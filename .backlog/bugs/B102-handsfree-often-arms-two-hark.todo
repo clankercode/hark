@@ -1,0 +1,27 @@
+---
+complexity: medium
+created_at: "2026-07-13T19:58:09Z"
+depends_on: []
+estimate_hours: 1
+id: B102
+priority: high
+status: pending
+tags: []
+title: Handsfree often arms two hark monitor --for-monitor processes (duplicate HEP wakes)
+updated_at: "2026-07-13T19:58:09Z"
+---
+## Dogfood (2026-07-14)
+Session had two concurrent `hark monitor --for-monitor --replay 0` processes.
+Orchestrator received duplicate ambient/watch lines (same event twice).
+
+## Expected
+Skill requires one unified monitor; start/bootstrap should be idempotent or
+detect an already-running feed consumer.
+
+## Actual
+Easy to double-arm across session restarts / dual skill boots.
+
+## Ideas
+- Singleflight lock / pidfile for monitor consumers
+- `hark monitor` warn if another monitor already tails state
+- Skill: check before arming second
