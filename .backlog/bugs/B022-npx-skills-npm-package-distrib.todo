@@ -35,3 +35,10 @@ Operator published @ultradyn/hark@0.1.0 to npm. Remaining: full skills ecosystem
 ## Progress
 - Operator published @ultradyn/hark@0.1.0
 - Package README rewritten for npmjs.com landing (skills vs CLI, npm/pnpm/bun, install.sh, Mode A summary). Needs **republish** (e.g. 0.1.1) for npm page to update.
+
+
+## Progress
+- release.yml (OIDC trusted publisher, workflow name matches npm setup)
+- Removed npm-publish.yml (NPM_TOKEN path)
+- RELEASE.md + scripts/release-npm.sh + CHANGELOG.md
+- Agent must run /watch-gh-populate-release after pushing version tag
