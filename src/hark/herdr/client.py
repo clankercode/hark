@@ -213,17 +213,27 @@ class HerdrClient:
                 error=str(exc),
             )
 
-    def send_text(self, pane_id: str, text: str) -> None:
+    def send_text(self, pane_id: str, text: str, *, submit: bool = True) -> None:
+        """Inject text into a pane. By default also press Enter to submit.
+
+        Dogfood: freeform reply without Enter left the operator prompt unsent.
+        Pass ``submit=False`` only when you intentionally want buffer-only paste.
+        """
+        sent = False
         try:
             self.run_json(["agent", "send", pane_id, text])
-            return
+            sent = True
         except HerdrError:
             pass
-        try:
-            self.run_json(["pane", "send-text", pane_id, text])
-            return
-        except HerdrError as exc:
-            raise HerdrError(f"could not send text to {pane_id}: {exc}") from exc
+        if not sent:
+            try:
+                self.run_json(["pane", "send-text", pane_id, text])
+                sent = True
+            except HerdrError as exc:
+                raise HerdrError(f"could not send text to {pane_id}: {exc}") from exc
+        if submit:
+            # agent send / send-text often only type; Enter submits to the agent
+            self.send_keys(pane_id, ["enter"])
 
     def send_keys(self, pane_id: str, keys: list[str]) -> None:
         if not keys:

@@ -71,10 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
     ctx.add_argument("--lines", type=int, default=60)
     ctx.add_argument("--json", action="store_true")
 
-    rp = sub.add_parser("reply", help="freeform send text")
+    rp = sub.add_parser("reply", help="freeform send text (+ Enter to submit)")
     rp.add_argument("target")
     rp.add_argument("text")
     rp.add_argument("--session")
+    rp.add_argument(
+        "--no-submit",
+        action="store_true",
+        help="type only; do not press Enter (default submits)",
+    )
 
     ky = sub.add_parser("keys", help="send keys")
     ky.add_argument("target")
@@ -582,8 +587,20 @@ def cmd_context(args: argparse.Namespace, cfg) -> int:
 
 def cmd_reply(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
-    _client_for(cfg, target.session_id).send_text(target.pane_id, args.text)
-    print(json.dumps({"ok": True, "target": str(target), "mode": "reply"}))
+    submit = not bool(getattr(args, "no_submit", False))
+    _client_for(cfg, target.session_id).send_text(
+        target.pane_id, args.text, submit=submit
+    )
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "target": str(target),
+                "mode": "reply",
+                "submit": submit,
+            }
+        )
+    )
     return OK
 
 
