@@ -115,16 +115,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="read question excerpts before emitting blocked events (default)",
     )
 
-    srv = sub.add_parser(
-        "serve",
-        help="live web dashboard (REST + SSE, hark.dashboard.v1)",
+    def _add_dashboard_serve_parser(name: str, *, help: str) -> None:
+        p = sub.add_parser(name, help=help)
+        p.add_argument(
+            "--host", default=None, help="bind host (default: [dashboard].host)"
+        )
+        p.add_argument(
+            "--port",
+            type=int,
+            default=None,
+            help="bind port (default: [dashboard].port)",
+        )
+        p.add_argument(
+            "--print-token",
+            action="store_true",
+            help="generate a token for [dashboard].token and exit",
+        )
+
+    # Preferred names for the live web UI (B060–B067). Keep `serve` as alias.
+    _add_dashboard_serve_parser(
+        "webui",
+        help="start live web dashboard UI (REST + SSE; alias: dashboard, serve)",
     )
-    srv.add_argument("--host", default=None, help="bind host (default: [dashboard].host)")
-    srv.add_argument("--port", type=int, default=None, help="bind port (default: [dashboard].port)")
-    srv.add_argument(
-        "--print-token",
-        action="store_true",
-        help="generate a token for [dashboard].token and exit",
+    _add_dashboard_serve_parser(
+        "dashboard",
+        help="start live web dashboard UI (alias for webui / serve)",
+    )
+    _add_dashboard_serve_parser(
+        "serve",
+        help="alias for webui — live web dashboard (REST + SSE, hark.dashboard.v1)",
     )
 
     mon = sub.add_parser(
@@ -710,7 +729,7 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
             kinds=kinds,
             replay=int(getattr(args, "replay", 0) or 0),
         )
-    if cmd == "serve":
+    if cmd in ("webui", "dashboard", "serve"):
         if getattr(args, "print_token", False):
             import secrets as _secrets
 

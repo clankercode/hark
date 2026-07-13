@@ -283,6 +283,7 @@ run the guided checklist before Mode A:
 
 - **Agent script:** [SETUP.md](SETUP.md) — question order, persona (Iris→eve / Mercury→leo),
   wake backend **Vosk vs Sherpa KWS**, setup-complete flag with `hark_version`.
+- **Web UI:** `hark webui` (aliases `dashboard`, `serve`) → http://127.0.0.1:4136 by default. See docs/DASHBOARD.md.
 - **CLI:** `hark setup` (`--yes --persona feminine --wake-engine vosk|sherpa_kws`).
 - **Local wake engines / models:** [WAKE_STT.md](WAKE_STT.md) (survey: `docs/plans/B069-local-stt-survey.md`).
 

@@ -1,7 +1,7 @@
 # Hark Dashboard Protocol v1 (`hark.dashboard.v1`)
 
 Normative contract between a hark backend and the dashboard webui.
-The Python `hark serve` implements it today; the Rust port MUST implement the
+The Python `hark webui` (aliases: `dashboard`, `serve`) implements it today; the Rust port MUST implement the
 same endpoints, pass the same fixtures (`fixtures/dashboard/`), and serve the
 same webui bundle unmodified. Design rationale: [plans/I003-dashboard.md](plans/I003-dashboard.md).
 
@@ -11,8 +11,8 @@ Related: [PROTOCOL.md](PROTOCOL.md) (HEP) · [SAFETY.md](SAFETY.md)
 ## Quickstart
 
 ```bash
-hark serve                     # http://127.0.0.1:4136 — no auth on localhost
-hark serve --port 5000
+hark webui                     # http://127.0.0.1:4136 — no auth on localhost
+hark webui --port 5000
 hark doctor                    # includes a `dashboard:` posture line
 ```
 
