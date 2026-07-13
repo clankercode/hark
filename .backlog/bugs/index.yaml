@@ -9,3 +9,4 @@ bugs:
     - file: B008-ambient-wake-offline-re-decode.todo
     - file: B009-multi-session-voice-queue-ux-p.todo
     - file: B010-auto-pause-ambient-when-ask-li.todo
+    - file: B011-mode-a-agent-must-arm-herdr-wa.todo
