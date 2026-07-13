@@ -13,6 +13,11 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   holders track PID + claim time; dead/missing heads are auto-healed; ambient
   boot TTS heals then waits at most 15s; doctor heals + warns; atexit/SIGTERM
   abandon claimed tickets.
+- Ambient streaming mode (B098): `[ambient].streaming` (default false). When
+  true, `ambient.partial` HEP `warning`/`instructions` allow short live TTS
+  acks (not hard HOLD-only); pane delivery still waits for final. `streaming`
+  field on partial events; monitor compact differs. Skill + PROTOCOL. Does not
+  implement barge-in or TTS-defer-while-speaking (B097+).
 
 ## 0.1.7
 
