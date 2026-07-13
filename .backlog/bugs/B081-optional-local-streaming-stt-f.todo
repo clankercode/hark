@@ -16,17 +16,7 @@ updated_at: "2026-07-13T16:12:16Z"
 
 # Optional local streaming STT for radio/partial-transcript mode (offline)
 
-## Steps to Reproduce
-
-1. TODO: Add steps
-
-## Expected Behavior
-
-TODO: Describe expected behavior
-
-## Actual Behavior
-
-TODO: Describe actual behavior
+_Derived from idea I004 / survey B069 (`docs/plans/B069-local-stt-survey.md`). Sibling of B072 (batch local STT)._
 
 ## Problem
 I004's idea names "the new whisper **streaming** one" specifically. The B069 survey (§4) noted streaming ASR (Sherpa Zipformer / whisper-streaming forks / Moonshine streaming) as a fit for post-wake local dictation but filed **no task** for it. B072 covers only **batch utterance STT** (`SttProvider.transcribe(wav_bytes) -> Transcript`), and its non-goals exclude the wake path but say nothing about the radio path.
