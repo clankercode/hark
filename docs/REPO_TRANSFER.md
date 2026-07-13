@@ -1,12 +1,12 @@
 # Repository transfer: `clankercode/hark` → `ultradyn/hark`
 
-**Status:** in-repo install/docs/site/npm URLs were flipped to `ultradyn/hark` (**B025**). The GitHub org move itself is still a **human/operator** action — if `ultradyn/hark` is not live yet, raw/GitHub pages may 404 until transfer or until you override with `HARK_GITHUB_REPO=clankercode/hark`.
+**Status:** **transfer complete** — live GitHub home is [`ultradyn/hark`](https://github.com/ultradyn/hark). Old `clankercode/hark` links redirect. Post-transfer: update npm Trusted Publisher to org `ultradyn` (see RELEASE.md) and keep `package.json` `repository.url` on `ultradyn/hark` for OIDC.
 
 Related backlog: **B024** (prep + tooling), **B025** (URL flip).
 
 ## Why this doc
 
-Canonical public path is **`ultradyn/hark`**. The physical GitHub repository may still live under `clankercode/hark` until transfer; GitHub redirects usually cover clone/browse once transfer completes. npm **Trusted Publisher** OIDC must track the **actual** Actions remote (see RELEASE.md), not only marketing URLs.
+Canonical public path is **`ultradyn/hark`**. Checklist below is retained for history and for any leftover operator machines still pointing at the old remote.
 
 This repo includes:
 

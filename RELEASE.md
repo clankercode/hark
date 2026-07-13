@@ -99,11 +99,8 @@ repo’s **release** workflow (no long-lived token):
 1. Open <https://www.npmjs.com/package/@ultradyn/hark/access>
    (package → **Settings** → **Trusted Publishing**).
 2. Add a **GitHub Actions** publisher:
-   - Organization / user: **must match the actual GitHub remote that runs this
-     workflow** — still `clankercode` until the org transfer completes; switch
-     to `ultradyn` after `ultradyn/hark` is the live remote. Public
-     install/docs URLs may already say `ultradyn/hark`; OIDC does **not**
-     follow those links — it binds to the repo that executed Actions.
+   - Organization / user: **`ultradyn`** (live remote after org transfer;
+     was `clankercode` pre-transfer)
    - Repository: `hark`
    - Workflow filename: **`release.yml`** (must match exactly)
    - Environment: *(leave blank unless you add a GitHub Environment)*
@@ -114,14 +111,12 @@ repo’s **release** workflow (no long-lived token):
 Two common causes (npm masks auth failures as 404):
 
 1. **`package.json` `repository.url` must exactly match the GitHub repo that
-   runs Actions.** Until the org transfer, that is
-   `git+https://github.com/clankercode/hark.git` (with
-   `"directory": "packages/ultradyn-hark"`). Do **not** rewrite this field to
-   `ultradyn/hark` while the remote is still `clankercode/hark` — npm trusted
-   publishing validates this match.
-2. **Trusted Publisher form** must list `clankercode` / `hark` /
-   `release.yml` (case-sensitive, filename only). Wrong org (e.g. `ultradyn`
-   before the transfer) → same 404.
+   runs Actions.** Live remote is `ultradyn/hark` →
+   `git+https://github.com/ultradyn/hark.git` (with
+   `"directory": "packages/ultradyn-hark"`).
+2. **Trusted Publisher form** must list **`ultradyn`** / **`hark`** /
+   **`release.yml`** (case-sensitive, filename only). If it still says
+   `clankercode` after transfer, update it or publishes keep 404ing.
 
 `release.yml` fails early if `repository.url` does not contain
 `${GITHUB_REPOSITORY}`.
