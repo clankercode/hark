@@ -170,8 +170,8 @@ Filed from this survey (IDs filled when `bl bug` runs; see B069 todo body if thi
 
 | ID | Slice | Intent | Est. |
 |----|-------|--------|------|
-| **B070** | Sherpa-ONNX KWS wake backend | Optional `engine=sherpa_kws`, model download script, keyword rebuild on config, fixture tests, doctor readiness | M (~5 h) |
-| **B071** | Wake eval harness expansion | More WAVs / speakers / noise; score hit-rate & false-accept for Vosk vs KWS — **landed** as `hark.wake_eval` + `scripts/eval-wake-fixtures.py` + derived fixtures (Sherpa optional until B070) | M (~3 h) |
+| **B070** | Sherpa-ONNX KWS wake backend | Optional `engine=sherpa_kws`, model download script, keyword rebuild on config, fixture tests, doctor readiness, `hark setup` + SETUP/WAKE_STT docs | M (~8 h; implemented) |
+| **B071** | Wake eval harness expansion | More WAVs / speakers / noise; score hit-rate & false-accept for Vosk vs KWS — **landed** as `hark.wake_eval` + `scripts/eval-wake-fixtures.py` + derived fixtures (Sherpa optional) | M (~3 h) |
 | **B072** | Optional local STT provider | `faster-whisper` (or Moonshine) behind existing STT provider interface for offline/privacy; default remains cloud | M (~4 h) |
 | **B073** | Docs: larger Vosk model_path | Operator note + optional download helper for 0.22-lgraph / 0.22 — see `docs/AUDIO_DESIGN.md` § Larger Vosk models, `scripts/download-vosk-model.sh --model` | S (~1 h) |
 

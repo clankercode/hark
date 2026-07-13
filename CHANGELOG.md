@@ -31,6 +31,15 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   `HARK_STT_PROVIDER` / `HARK_STT_LOCAL_*`. Extra: `pip install 'hark[local-stt]'`.
   Documented B069 RTF (~0.1–0.15 tiny.en on short clips). Not for continuous
   ambient wake. `hark doctor` / `hark providers` surface readiness.
+- **Sherpa-ONNX KWS wake backend** (B070): optional `[ambient] engine = "sherpa_kws"`
+  beside default Vosk — open-vocab keyword spotting (English GigaSpeech 3.3M int8)
+  with keywords built from `WakePolicy` (rebuild on config watch / SIGHUP);
+  `./scripts/download-sherpa-kws-model.sh`; `uv sync --extra wake-sherpa`;
+  doctor readiness (`status=ready|missing_model|package_missing`); optional
+  `@pytest.mark.sherpa_kws` fixture tests. Guided setup: `hark setup` writes
+  config + `~/.local/state/hark/setup-complete.json` (`hark_version`); skill docs
+  `skill/hark/SETUP.md` + `WAKE_STT.md` (package mirrors). Fail-open if model
+  missing; Vosk remains product default until dogfood.
 - **Live web dashboard** (I003 / B060–B067): `hark serve` — REST + SSE backend
   implementing the new versioned `hark.dashboard.v1` contract
   ([docs/DASHBOARD.md](docs/DASHBOARD.md), `schemas/dashboard-v1/`,
