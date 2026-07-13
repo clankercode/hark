@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T13:12:00Z"
 depends_on:
@@ -6,11 +7,9 @@ depends_on:
 estimate_hours: 3
 id: B046
 priority: medium
+started_at: null
 status: pending
-tags:
-    - audio
-    - ducking
-    - stt
+tags: []
 title: Duck or pause media during STT capture windows
 updated_at: "2026-07-13T13:12:00Z"
 ---
@@ -38,3 +37,19 @@ B044 — media detection + sink-input identity.
 - [ ] Continuous ambient wake idle does not aggressively pause media unless explicitly enabled
 - [ ] Unit tests cover restore-on-exception and config off
 - [ ] No deadlock with mic_mute / overlap_prearm paths
+
+
+## User refinement (2026-07-13)
+
+During STT capture windows:
+- **Pause and/or mute (duck) everything** while listening — default **duck on** so media does not bleed into the mic/gate.
+- **Whether to pause media sources particularly** is configurable (`pause_media_during_stt`).
+- Prefer native pause (MPRIS) when pause is enabled; otherwise (or in addition) duck volumes to `duck_level` (shared with TTS, default ~0.15).
+- Mute/duck everything during STT (not only music): non-Hark sink-inputs should be ducked; optional MPRIS pause for player apps.
+
+Suggested keys:
+- `duck_media_during_stt` (bool, default true)
+- `pause_media_during_stt` (bool, default true per user "pause/mute everything" — original plan had false; implement as **true** for dogfood unless tests need false)
+- reuses `duck_level`, `duck_exclude_apps`
+
+Do **not** aggressively pause during continuous idle ambient wake Vosk unless explicitly enabled. Fail-open + always restore. No deadlock with mic_mute / overlap_prearm.
