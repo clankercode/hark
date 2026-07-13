@@ -142,6 +142,9 @@ uv run hark listen               # speak, then silence ends (or end_mode=radio)
 uv run hark ask "What color?"
 # ambient wake (needs vosk model if engine=vosk):
 # uv run hark ambient
+uv run hark watch-logs           # live colorful system.jsonl (Ctrl-C to stop)
+uv run hark watch-logs --all     # also ambient.jsonl + watch.jsonl
+uv run hark logs -f              # raw JSONL follow (no color)
 ```
 
 Dev tip: run from **latest checkout** (`uv run hark`). After `./install.sh`, the global `hark` on `PATH` is fine for day-to-day use.
