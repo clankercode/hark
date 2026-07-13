@@ -57,4 +57,4 @@ Survey recommendation (summary): keep Vosk+cloud as default interim; next wake e
 - [x] Idea has been decomposed into concrete backlog work items. (B069–B073 + B081)
 - [x] New items include clear acceptance criteria and dependencies. (B081 has acceptance criteria + depends_on B072)
 - [x] This idea intake is updated with created IDs. (B081 added above; gap analysis recorded)
-- [ ] Marked done — deferred to the parent/coordinator session after review + merge (do not `bl done I004` here).
+- [x] Marked done (2026-07-14, coordinator session, after review + merge to master).
