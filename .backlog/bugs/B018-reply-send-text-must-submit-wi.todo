@@ -19,3 +19,5 @@ hark reply injected text but did not press Enter; operator had to submit manuall
 
 ## Fix
 send_text(..., submit=True) default; send_keys enter after inject. --no-submit to opt out.
+
+Fixed: send_text(submit=True) sends enter after inject; reply --no-submit to opt out. Commit e148659.
