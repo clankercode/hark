@@ -35,6 +35,47 @@ from hark.wake import (
     plausible_near_miss,
 )
 
+# Default spoken wake example in ambient boot TTS (names mode / stock config).
+DEFAULT_BOOT_WAKE_LABEL = "hey hark"
+
+
+def primary_wake_label(cfg: HarkConfig) -> str:
+    """Primary (first) name as ``hey <name>``, or first custom full phrase.
+
+    Used for ambient startup TTS so the spoken line — and thus the on-disk TTS
+    cache key (voice + full text) — tracks the operator's configured wake.
+    """
+    amb = cfg.ambient
+    mode = str(getattr(amb, "wake_mode", "") or "").strip().lower()
+    names = [str(n).strip() for n in (getattr(amb, "names", None) or []) if str(n).strip()]
+    phrases = [
+        str(p).strip()
+        for p in (getattr(amb, "activation_phrases", None) or [])
+        if p and str(p).strip()
+    ]
+
+    if mode in ("phrases", "phrase", "full", "full_phrase", "full-phrase"):
+        return phrases[0] if phrases else DEFAULT_BOOT_WAKE_LABEL
+
+    if names:
+        return f"hey {names[0]}"
+
+    if phrases:
+        joined = " ".join(phrases).lower()
+        # Exclusive custom list (no product names) → speak the first full phrase
+        if "hark" not in joined and "herald" not in joined:
+            return phrases[0]
+        return phrases[0]
+
+    return DEFAULT_BOOT_WAKE_LABEL
+
+
+def ambient_boot_tts_text(cfg: HarkConfig) -> str:
+    """Startup TTS line; cache is keyed by voice + this full string (includes label)."""
+    from hark.audio.cues import ambient_boot_line
+
+    return ambient_boot_line(primary_wake_label(cfg))
+
 
 @dataclass
 class AmbientResult:
@@ -566,9 +607,11 @@ def run_ambient_loop(
         try:
             # Lifecycle cues: keep mic unmuted (Wave ring stays white).
             # Skip (do not hold/block ambient boot) if operator is in a call.
+            # Text (and TTS disk cache key) follows primary name or custom phrase.
+            boot_text = ambient_boot_tts_text(cfg)
             run_tts(
                 cfg,
-                "Hark ambient is listening. Say hey hark when you need me.",
+                boot_text,
                 play=True,
                 mute_mic=False,
                 conference_policy="skip",

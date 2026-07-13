@@ -188,8 +188,14 @@ def tts_cache_path(voice: str, text: str) -> Path:
     return TTS_CACHE_DIR / voice / f"{slug}-{h}.mp3"
 
 
+def ambient_boot_line(wake_label: str) -> str:
+    """Full ambient startup sentence for a primary name / custom phrase label."""
+    label = (wake_label or "hey hark").strip() or "hey hark"
+    return f"Hark ambient is listening. Say {label} when you need me."
+
+
 COMMON_PHRASES: tuple[str, ...] = (
-    "Hark ambient is listening. Say hey hark when you need me.",
+    ambient_boot_line("hey hark"),
     "Cancelled.",
     "Listening.",
     "Got it.",
@@ -199,6 +205,18 @@ COMMON_PHRASES: tuple[str, ...] = (
     "Hark shutting down.",
     "Hark restarting.",
 )
+
+
+def tts_boot_cache_path(voice: str, wake_label: str) -> Path:
+    """TTS cache path for ambient boot, keyed on primary name or custom phrase.
+
+    The path embeds a slug of the wake label plus a content hash of the full
+    spoken line (same bytes ``lookup_cached_tts`` / ``store_cached_tts`` use).
+    """
+    label = (wake_label or "hey hark").strip() or "hey hark"
+    text = ambient_boot_line(label)
+    # Same path as the generic cache so first synthesize hits on next boot.
+    return tts_cache_path(voice or "eve", text)
 
 
 def lookup_cached_tts(voice: str | None, text: str) -> bytes | None:
