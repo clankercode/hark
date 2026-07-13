@@ -138,6 +138,7 @@ Env: `HARK_LISTEN_END_MODE=radio`. Disable soft end with
 | `radio_partial_silence_s` | **radio** only | 0.6 s | Quiet that ends a **segment** → cloud STT → optional `ambient.partial` (HOLD) |
 | `radio_idle_end_silence_s` | **radio** answer only | **3× `end_silence_s`** (~6.3 s) | After speech has opened at least once, continuous quiet this long **auto-finishes** (soft-end path, not cancel). Before first open: no-op (initial timeout / nudges) |
 | `radio_segment_pad_ms` | **radio** only | 250 | Silence pad each side of a segment before STT (B075); does not change cut timing |
+| `radio_segment_overlap_ms` | **radio** only | 300 | Real PCM lookback from the prior segment into the next STT window (B085); prefers captured samples over silence pad for boundary phonemes |
 | `radio_end_silence_s` | legacy | 2.5 s | Kept for config BC; segment cadence is `radio_partial_silence_s` |
 | `stream_partials` | radio | `true` | Emit interim events when segment text grows |
 
@@ -154,7 +155,7 @@ partials for Mode A; raise it (e.g. 1.0–1.5) to cut STT cost when pauses are
 long. Do **not** lower `end_silence_s` to chase radio partials — that would
 change normal silence-mode answer windows.
 
-#### Radio segment boundary pad (B075)
+#### Radio segment boundary pad (B075) + ring overlap (B085)
 
 Energy-gate segment cuts can clip edge phonemes when the gate closes a little
 early/late. After each radio segment is cut (on `radio_partial_silence_s` quiet),
@@ -164,6 +165,26 @@ upload (`radio_segment_pad_ms`, default 250). Pad is clamped to
 inter-segment hush budget and does not invent words. Mid-speech samples are
 unchanged. Silence `end_mode` is unaffected. Complements ambient/answer
 pre-roll (B079): that is **pre-open** lead-in; this is **post-cut** boundary pad.
+
+**B085** additionally prepends **real PCM** from the tail of the previous
+segment (`radio_segment_overlap_ms`, default 300) into the next STT window so
+boundary phonemes appear in at least one cloud upload. Overlap uses captured
+samples only (never invents speech across long silence). Text reassembly stays
+with per-segment STT + `join_radio_stt_segments` (B083); join already trims
+duplicate head/tail tokens from overlap.
+
+#### Mute clock freeze (B084)
+
+While Hark holds the mic muted for half-duplex TTS (`mic_muted_during_tts` /
+`tts_mute_depth > 0`), listen clocks **do not advance**:
+
+- `initial_timeout_s` / no-open wait
+- segment / end silence counters (radio partial + idle auto-end)
+- `max_s` capture budget
+
+After unmute, `audio.mute_edge_pad_ms` (default 300) discards a short settle
+window and does not count it as user silence. Operator can speak after the
+post-TTS arm cue with the full timeout remaining.
 
 ### Soft end phrases (default on)
 

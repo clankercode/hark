@@ -120,6 +120,32 @@ def pad_pcm16_silence(
     return (b"\x00\x00" * n_lead) + pcm16 + (b"\x00\x00" * n_trail)
 
 
+def radio_stt_window_pcm(
+    seg_pcm: bytes,
+    overlap_tail: bytes,
+    *,
+    overlap_ms: int,
+    sample_rate: int = 16000,
+) -> tuple[bytes, bytes]:
+    """Build an STT window with real PCM lookback (B085) and next-segment tail.
+
+    Returns ``(stt_pcm, new_overlap_tail)``. Prefers real previous-segment PCM
+    over synthetic silence; empty ``overlap_tail`` yields the segment alone.
+    """
+    ov_ms = max(0, int(overlap_ms))
+    if ov_ms <= 0:
+        return seg_pcm, b""
+    stt_pcm = (overlap_tail + seg_pcm) if overlap_tail else seg_pcm
+    ov_bytes = int(sample_rate * (ov_ms / 1000.0)) * 2
+    if ov_bytes > 0 and len(seg_pcm) >= ov_bytes:
+        new_tail = seg_pcm[-ov_bytes:]
+    elif seg_pcm:
+        new_tail = seg_pcm
+    else:
+        new_tail = b""
+    return stt_pcm, new_tail
+
+
 def effective_radio_segment_pad_ms(
     pad_ms: int | float,
     radio_partial_silence_s: float,
@@ -479,6 +505,8 @@ def capture_utterance(
     # B079: default ≥250 ms so word onsets are not clipped when the gate lags.
     # Values outside 250–500 are clamped (except 0 which disables pre-roll).
     preroll_ms: int = 300,
+    # B084: after TTS mute releases, discard this many ms and freeze silence clocks
+    mute_edge_pad_ms: int = 300,
     initial_timeout_s: float = 45.0,
     device: int | str | None = None,
     should_stop: Callable[[bytes, float], bool] | None = None,
@@ -575,10 +603,48 @@ def capture_utterance(
 
         # Gate clock starts only after discard so TTS tail does not burn timeout
         start = time.monotonic()
-        for i in range(max_blocks):
+        wait_blocks = 0  # only counts when not muted (B084)
+        blocks_used = 0  # non-mute blocks against max_s (B084 freezes max too)
+        mute_pad_blocks = 0
+        was_tts_muted = False
+        edge_pad_blocks = max(0, int(float(mute_edge_pad_ms) / 20.0))
+
+        def _tts_muted() -> bool:
+            try:
+                from hark.audio.mic_mute import tts_mute_depth
+
+                return tts_mute_depth() > 0
+            except Exception:
+                return False
+
+        # While-loop so TTS mute / edge-pad do not burn max_s or initial_timeout
+        while blocks_used < max_blocks:
             data, overflowed = stream.read(block)
             del overflowed
             samples = data.reshape(-1)
+
+            # B084: while Hark holds TTS mute, freeze open/silence/max clocks
+            muted_now = _tts_muted()
+            if muted_now:
+                was_tts_muted = True
+                if opened:
+                    silent_blocks = 0
+                continue
+            if was_tts_muted:
+                was_tts_muted = False
+                mute_pad_blocks = edge_pad_blocks
+                if opened:
+                    silent_blocks = 0
+            if mute_pad_blocks > 0:
+                mute_pad_blocks -= 1
+                if opened:
+                    silent_blocks = 0
+                # Still seed preroll while waiting so post-pad open has history
+                if not opened and preroll_blocks > 0:
+                    preroll.append(samples.copy())
+                continue
+
+            blocks_used += 1
             rms = float(np.sqrt(np.mean(samples**2)) + 1e-12)
             db = 20.0 * np.log10(rms)
             if db > peak_db:
@@ -609,7 +675,8 @@ def capture_utterance(
                                 pass
                 else:
                     speech_blocks = max(0, speech_blocks - 1)
-                if i >= timeout_blocks and not opened:
+                wait_blocks += 1
+                if wait_blocks >= timeout_blocks and not opened:
                     raise TimeoutError(
                         f"no speech detected "
                         f"(peak_db={peak_db:.1f} peak_rms={peak_rms:.5f} "

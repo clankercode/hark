@@ -15,6 +15,7 @@ from hark.audio.capture import (
     clamp_pre_roll_ms,
     effective_radio_segment_pad_ms,
     pad_pcm16_silence,
+    radio_stt_window_pcm,
     write_wav_bytes,
 )
 from hark.audio.cues import (
@@ -597,6 +598,8 @@ def run_listen(
     )
     # B079: ≥250 ms pre-speech from the capture ring when the gate opens
     gate_pre_roll_ms = clamp_pre_roll_ms(getattr(cfg.listen, "pre_roll_ms", 300))
+    gate_mute_pad_ms = int(getattr(cfg.audio, "mute_edge_pad_ms", 300) or 0)
+    radio_overlap_ms = int(getattr(cfg.listen, "radio_segment_overlap_ms", 300) or 0)
     nudge_no_open_text = (
         no_open_nudge_text
         if no_open_nudge_text is not None
@@ -786,6 +789,7 @@ def run_listen(
                             open_margin_db=gate_open_margin,
                             initial_timeout_s=gate_timeout_s,
                             preroll_ms=gate_pre_roll_ms,
+                            mute_edge_pad_ms=gate_mute_pad_ms,
                         )
                     except TimeoutError as exc:
                         if recording_cued:
@@ -1001,6 +1005,8 @@ def run_listen(
             # after speech has opened auto-finishes (same path as soft-end).
             pieces: list[bytes] = []
             text_segments: list[str] = []
+            # B085: last segment tail for STT window overlap (real PCM, not silence)
+            segment_overlap_tail = b""
             started = time.monotonic()
             partial_seq = 0
             last_partial_text = ""
@@ -1056,6 +1062,7 @@ def run_listen(
                         abs_open_db=gate_abs_open,
                         open_margin_db=gate_open_margin,
                         preroll_ms=gate_pre_roll_ms,
+                        mute_edge_pad_ms=gate_mute_pad_ms,
                     )
                 except TimeoutError:
                     agent_act = poll_listen_action(stream)
@@ -1184,9 +1191,15 @@ def run_listen(
                     else cap.pcm16
                 )
                 pieces.append(seg_pcm)
-                # STT this segment alone, then assemble text (B082-class fix:
-                # cumulative re-STT of growing WAV often drops earlier words).
-                seg_wav = write_wav_bytes(seg_pcm, cap.sample_rate)
+                # B085: STT window includes real PCM lookback from prior segment
+                stt_pcm, segment_overlap_tail = radio_stt_window_pcm(
+                    seg_pcm,
+                    segment_overlap_tail,
+                    overlap_ms=radio_overlap_ms,
+                    sample_rate=cap.sample_rate,
+                )
+                # STT this window alone, then assemble text (B083).
+                seg_wav = write_wav_bytes(stt_pcm, cap.sample_rate)
                 stt_seq += 1
                 tr, latency_ms = _transcribe_logged(
                     stt,

@@ -80,6 +80,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "cue_start_path",
         "cue_stop_path",
         "answer_arm_cue",
+        "mute_edge_pad_ms",
         # Conference hold (B017): pause full TTS while Zoom/Teams/Meet is active
         "hold_during_conference",
         "conference_chime_only",
@@ -109,6 +110,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "radio_partial_silence_s",
         "radio_idle_end_silence_s",
         "radio_segment_pad_ms",
+        "radio_segment_overlap_ms",
         "stream_partials",
         "empty_stt_retry",
         "empty_stt_nudge",
@@ -239,6 +241,8 @@ class AudioConfig:
     # After TTS (ask / tts --listen / confirm): beep when listen arms, not when
     # speech opens. Avoids a multi-second silent wait that felt like lag.
     answer_arm_cue: bool = True
+    # B084: after TTS mute releases, discard this many ms (not user silence)
+    mute_edge_pad_ms: int = 300
     # Hold full TTS while a conference app is active (Zoom/Teams/Meet…); default ON
     hold_during_conference: bool = True
     # Soft chime while held instead of speaking the full question immediately
@@ -310,6 +314,8 @@ class ListenConfig:
     # phonemes aren't hard-cut at the energy gate (B075). Clamped to stay well
     # under radio_partial_silence_s (see effective_radio_segment_pad_ms).
     radio_segment_pad_ms: int = 250
+    # B085: real PCM lookback from ring into each radio STT window (ms)
+    radio_segment_overlap_ms: int = 300
     # Radio mode: emit interim STT to agent with HOLD warnings (before end phrase)
     stream_partials: bool = True
     # After empty STT (gate opened but no text): one automatic re-listen
@@ -512,6 +518,7 @@ cue_volume = 0.22            # generated start/stop beep volume (0–1)
 # cue_start_path = "/path/to/record-start.wav"
 # cue_stop_path  = "/path/to/record-stop.wav"
 answer_arm_cue = true        # after TTS: beep when listen ready (not when speech opens)
+# mute_edge_pad_ms = 300     # B084: discard after TTS unmute (not counted as user silence)
 # Hold full TTS during Zoom/Teams/Meet (process list + optional audio streams)
 hold_during_conference = true
 conference_chime_only = true # soft cue while held; full question after call ends
@@ -539,6 +546,7 @@ end_mode = "silence"         # silence | radio
 end_silence_s = 2.1          # quiet seconds before ending silence-mode capture
 # radio_partial_silence_s = 0.6  # radio only: quiet before interim STT/partial (B037)
 # radio_segment_pad_ms = 250     # radio only: silence pad each side of segment STT (B075)
+# radio_segment_overlap_ms = 300 # radio only: real PCM lookback into next STT window (B085)
 # radio_end_silence_s = 2.5      # legacy; segment cadence is radio_partial_silence_s
 # radio_idle_end_silence_s = 6.3 # radio answer only: post-speech quiet → auto-finish
 #                                # (default 3× end_silence_s; before first open: no-op)
@@ -1209,6 +1217,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
                 else os.environ.get("HARK_CUE_STOP")
             ),
             answer_arm_cue=bool(audio_raw.get("answer_arm_cue", True)),
+            mute_edge_pad_ms=int(audio_raw.get("mute_edge_pad_ms", 300)),
             hold_during_conference=bool(
                 audio_raw.get(
                     "hold_during_conference",
@@ -1291,6 +1300,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
                 listen_raw, end_silence_s=end_silence_s
             ),
             radio_segment_pad_ms=int(listen_raw.get("radio_segment_pad_ms", 250)),
+            radio_segment_overlap_ms=int(listen_raw.get("radio_segment_overlap_ms", 300)),
             stream_partials=bool(listen_raw.get("stream_partials", True)),
             empty_stt_retry=bool(listen_raw.get("empty_stt_retry", True)),
             empty_stt_nudge=bool(listen_raw.get("empty_stt_nudge", True)),
@@ -1469,6 +1479,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "cue_start_path": cfg.audio.cue_start_path,
             "cue_stop_path": cfg.audio.cue_stop_path,
             "answer_arm_cue": cfg.audio.answer_arm_cue,
+            "mute_edge_pad_ms": cfg.audio.mute_edge_pad_ms,
             "hold_during_conference": cfg.audio.hold_during_conference,
             "conference_chime_only": cfg.audio.conference_chime_only,
             "conference_process_names": list(cfg.audio.conference_process_names),
@@ -1496,6 +1507,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "radio_partial_silence_s": cfg.listen.radio_partial_silence_s,
             "radio_idle_end_silence_s": cfg.listen.radio_idle_end_silence_s,
             "radio_segment_pad_ms": cfg.listen.radio_segment_pad_ms,
+            "radio_segment_overlap_ms": cfg.listen.radio_segment_overlap_ms,
             "stream_partials": cfg.listen.stream_partials,
             "empty_stt_retry": cfg.listen.empty_stt_retry,
             "empty_stt_nudge": cfg.listen.empty_stt_nudge,
