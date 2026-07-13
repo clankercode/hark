@@ -331,6 +331,99 @@ def _log_empty_stt(
     )
 
 
+
+def _estimate_wav_audio_ms(wav_bytes: bytes, *, sample_rate: int = 16000) -> int:
+    """Best-effort audio duration from a mono 16-bit PCM WAV payload."""
+    n = len(wav_bytes or b"")
+    if n <= 44 or sample_rate <= 0:
+        return 0
+    # Standard PCM WAV header is 44 bytes; 2 bytes/sample mono.
+    pcm = max(0, n - 44)
+    return int(1000 * pcm / (2 * sample_rate))
+
+
+def _transcribe_logged(
+    stt: Any,
+    wav_bytes: bytes,
+    *,
+    stream_id: str | None,
+    seq: int,
+    mode: str,
+    purpose: str = "listen",
+    audio_ms: int | None = None,
+    sample_rate: int = 16000,
+) -> tuple[Any, int]:
+    """Call cloud STT and emit stt.request / stt.response on system.jsonl (B038).
+
+    Every upload is logged — including radio interim segments that never hit
+    UsageStore.record_stt — so operators can see partial cadence and failures.
+    ``seq`` is the 1-based STT call index within the listen stream (correlate
+    with ``listen.partial`` / ambient.partial via stream_id + stt_seq).
+    Returns ``(Transcript, latency_ms)``.
+    """
+    provider = getattr(stt, "name", None) or "unknown"
+    nbytes = len(wav_bytes or b"")
+    if audio_ms is None:
+        audio_ms = _estimate_wav_audio_ms(wav_bytes, sample_rate=sample_rate)
+    syslog(
+        "stt.request",
+        component="stt",
+        level="info",
+        message="STT upload",
+        stream_id=stream_id,
+        seq=seq,
+        provider=provider,
+        bytes=nbytes,
+        audio_ms=int(audio_ms or 0),
+        mode=mode,
+        purpose=purpose,
+    )
+    t0 = time.monotonic()
+    try:
+        tr = stt.transcribe(wav_bytes)
+        latency_ms = int(1000 * (time.monotonic() - t0))
+        text = (getattr(tr, "text", None) or "").strip()
+        prov = getattr(tr, "provider", None) or provider
+        syslog(
+            "stt.response",
+            component="stt",
+            level="info",
+            message="STT ok" if text else "STT empty",
+            stream_id=stream_id,
+            seq=seq,
+            provider=prov,
+            latency_ms=latency_ms,
+            ok=True,
+            bytes=nbytes,
+            audio_ms=int(audio_ms or 0),
+            chars=len(text),
+            empty=not bool(text),
+            mode=mode,
+            purpose=purpose,
+            text=text[:200] if text else "",
+        )
+        return tr, latency_ms
+    except Exception as exc:
+        latency_ms = int(1000 * (time.monotonic() - t0))
+        syslog(
+            "stt.response",
+            component="stt",
+            level="error",
+            message=str(exc)[:200] or "STT failed",
+            stream_id=stream_id,
+            seq=seq,
+            provider=provider,
+            latency_ms=latency_ms,
+            ok=False,
+            error=str(exc)[:300],
+            bytes=nbytes,
+            audio_ms=int(audio_ms or 0),
+            mode=mode,
+            purpose=purpose,
+        )
+        raise
+
+
 def run_listen(
     cfg: HarkConfig,
     *,
@@ -461,6 +554,8 @@ def run_listen(
     store = UsageStore()
     configure_cues_from_config(cfg)
     stream = stream_id or new_stream_id()
+    # 1-based STT upload counter for this listen stream (B038 system.jsonl)
+    stt_seq = 0
     # Partials only meaningful when waiting for an end phrase
     stream_partials = mode is EndMode.RADIO and getattr(
         cfg.listen, "stream_partials", True
@@ -645,9 +740,17 @@ def run_listen(
                             cancelled=True,
                             stream_id=stream,
                         )
-                    t_api = time.monotonic()
-                    tr = stt.transcribe(cap.wav)
-                    latency_ms = int(1000 * (time.monotonic() - t_api))
+                    stt_seq += 1
+                    tr, latency_ms = _transcribe_logged(
+                        stt,
+                        cap.wav,
+                        stream_id=stream,
+                        seq=stt_seq,
+                        mode=mode.value,
+                        purpose="silence",
+                        audio_ms=cap.duration_ms,
+                        sample_rate=cap.sample_rate,
+                    )
                     if not (tr.text or "").strip():
                         phase = (
                             "nudge"
@@ -806,9 +909,16 @@ def run_listen(
                     raise
                 pieces.append(cap.pcm16)
                 wav = write_wav_bytes(b"".join(pieces), cap.sample_rate)
-                t_api = time.monotonic()
-                tr = stt.transcribe(wav)
-                latency_ms = int(1000 * (time.monotonic() - t_api))
+                stt_seq += 1
+                tr, latency_ms = _transcribe_logged(
+                    stt,
+                    wav,
+                    stream_id=stream,
+                    seq=stt_seq,
+                    mode=mode.value,
+                    purpose="radio",
+                    sample_rate=cap.sample_rate,
+                )
                 last_provider = tr.provider
                 if _echo_overlap(tr.text, last_tts):
                     pieces.clear()
@@ -885,6 +995,7 @@ def run_listen(
                             kind=partial_kind,
                             provider=tr.provider,
                         )
+                        ev["stt_seq"] = stt_seq
                         try:
                             on_partial(ev)
                         except Exception:
@@ -895,6 +1006,7 @@ def run_listen(
                             level="info",
                             stream_id=stream,
                             seq=partial_seq,
+                            stt_seq=stt_seq,
                             text=body_so_far[:300],
                             provider=tr.provider,
                             partial=True,
@@ -941,9 +1053,16 @@ def run_listen(
                 # Final STT on accumulated audio if agent finished or we fell through
                 if agent_act == "finish" or agent_act is None:
                     wav = write_wav_bytes(b"".join(pieces), 16000)
-                    t_api = time.monotonic()
-                    tr = stt.transcribe(wav)
-                    latency_ms = int(1000 * (time.monotonic() - t_api))
+                    stt_seq += 1
+                    tr, latency_ms = _transcribe_logged(
+                        stt,
+                        wav,
+                        stream_id=stream,
+                        seq=stt_seq,
+                        mode=mode.value,
+                        purpose="radio_final",
+                        sample_rate=16000,
+                    )
                     body = (tr.text or "").strip()
                     if agent_act == "finish":
                         store.record_stt(

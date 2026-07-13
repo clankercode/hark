@@ -12,6 +12,7 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   (end phrases / agent `listen-end` still required) and does **not** change
   silence-mode `end_silence_s`. Legacy `radio_end_silence_s` kept for config BC.
   See `docs/AUDIO_DESIGN.md`.
+- STT request timeline (B038): every cloud STT upload (silence + radio partials) emits `stt.request` / `stt.response` on `system.jsonl` with `stream_id`, `seq`, `provider`, `bytes`/`audio_ms`, `latency_ms`, `ok`/`error`. Radio `listen.partial` / ambient.partial include `stt_seq` for correlation.
 - Ambient timeout heartbeat (B033): continuous Mode A still cycles on
   `ambient.timeout_s` (default 300s), but emission of `ambient.timeout` to
   monitor NDJSON/syslog is gated by `ambient.surface_timeouts` (default **on**).
