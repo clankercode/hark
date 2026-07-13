@@ -1,0 +1,46 @@
+---
+complexity: medium
+created_at: "2026-07-13T12:40:10Z"
+depends_on: []
+estimate_hours: 1
+id: B039
+priority: high
+status: pending
+tags:
+    - ambient
+    - radio
+    - stt
+    - dogfood
+    - end-phrase
+title: 'Radio: partials lag/chunk poorly; bare ''send it'' does not finalize'
+updated_at: "2026-07-13T12:40:10Z"
+---
+## Dogfood (2026-07-13, stream s19f5b78a9b120e97e)
+Radio ambient after wake (hello clanker). Operator spoke a long prompt.
+
+### Partial chunks
+- 8× `ambient.partial` / `listen.partial` over ~4 minutes; early gaps **~45–55s** between seq 1–4 (not ~2.1s).
+- Mode A monitor UI showed nearly identical truncated openings every time → looked “stuck”; full text *did* grow in ambient.jsonl (289→1893 chars) but chunking is sparse and some steps were rewrite/diff not clean prefix-extend.
+- Operator expectation: frequent, incremental partial STT chunks suitable for preprocessing; agent should HOLD until final.
+
+### End phrase not accepted
+- Operator said **“Send it.”** twice (seq 7–8 each added “ Send it.”).
+- Stream **never** emitted `ambient.prompt` / `final=true` for that stream_id.
+- Config end_phrases require product-scoped forms (`okay hark send`, `hark send`, `end prompt`, …). Bare **“send it”** / “Send it.” is **not** matched — feels broken in radio dogfood even if by design.
+
+## Wanted
+1. **Partials:** denser, correctly incremental radio STT partials (see also B037 shorter radio silence for partial cadence; B038 STT request logging for visibility).
+2. **Finalize:** either
+   - document clearly that “send it” alone never ends radio, **and/or**
+   - soft-end / utterance-final match for common closers like “send it”, “send that”, “that's all send it” when `end_mode=radio` (optional config, default off or on after dogfood), **and/or**
+   - agent listen-end when operator clearly finished (already in skill) — ensure Mode A path is reliable.
+3. Tests: fixture utterances ending with “send it” / “okay hark send”; assert which path finalizes.
+4. Monitor consumers: prefer full `text` field / length in for-monitor lines so agents don’t think partials are frozen when only the opening is shown.
+
+## Evidence
+- ambient.jsonl stream `s19f5b78a9b120e97e` seq 1–8 partial only; last text ends “…this is over. Send it. Send it.”
+- system.jsonl: listen.speech_opened mode=radio; listen.partial seq 1–8; no final for stream
+- Related: B037 (radio partial silence), B038 (STT upload logs), soft_end_phrases for silence mode (may not apply to radio)
+
+## Priority
+High — blocks confident radio dogfood and confuses Mode A agents.
