@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-13T13:45:24Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-07-13T13:12:00Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 3
 id: B046
 priority: medium
-started_at: null
-status: pending
+started_at: "2026-07-13T13:45:24Z"
+status: in_progress
 tags: []
 title: Duck or pause media during STT capture windows
-updated_at: "2026-07-13T13:12:00Z"
+updated_at: "2026-07-13T13:45:24Z"
 ---
 ## Problem
 Background music bleeds into the mic path and energy gate / cloud STT, causing false opens, noisy transcripts, and empty-STT retries (see B012 family).

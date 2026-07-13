@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-13T13:45:24Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-07-13T13:12:00Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 3
 id: B045
 priority: medium
-started_at: null
-status: pending
+started_at: "2026-07-13T13:45:24Z"
+status: in_progress
 tags: []
 title: Duck other media volume during TTS playback
-updated_at: "2026-07-13T13:12:00Z"
+updated_at: "2026-07-13T13:45:24Z"
 ---
 ## Problem
 TTS announcements play over loud music and are hard to hear (or force operators to pause media manually).
