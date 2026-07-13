@@ -26,3 +26,5 @@ Make the hark (handsfree) skill installable via the npx skills ecosystem, and op
 Research pi-* extension release patterns under ~/src/pi-* for CI and package.json structure.
 
 Package name decision: npm package MUST be @ultradyn/hark (not @clankercode/hark).
+
+Operator published @ultradyn/hark@0.1.0 to npm. Remaining: full skills ecosystem polish, automated release CI trust, sync skill updates on release.
