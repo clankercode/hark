@@ -33,7 +33,7 @@ def test_activation_anywhere_in_snippet():
 def test_no_false_wake_on_normal_speech():
     assert match_activation("please hark back to the earlier design") is None
     assert match_activation("the herald of spring arrived") is None
-    # bare "hark" without hey/ok prefix should not fire
+    # idiom "hark back …" is not a wake
     assert match_activation("hark back to the design") is None
 
 
@@ -60,6 +60,64 @@ def test_hello_hark_fuzzy():
     hit = match_activation("hello hook", anywhere=True)
     assert hit is not None
     assert "hark" in hit.phrase
+
+
+def test_yo_and_sup_name_wake():
+    hit = match_activation("yo herald", anywhere=True)
+    assert hit is not None
+    assert "herald" in hit.phrase
+    hit = match_activation("yo hark ship it", anywhere=True)
+    assert hit is not None
+    assert "hark" in hit.phrase
+    assert "ship" in hit.remainder
+    hit = match_activation("yo harold please", anywhere=True)
+    assert hit is not None
+    assert "herald" in hit.phrase
+    hit = match_activation("sup herald", anywhere=True)
+    assert hit is not None
+    assert hit.phrase == "sup herald"
+    hit = match_activation("sup harold status", anywhere=True)
+    assert hit is not None
+    assert "herald" in hit.phrase
+    assert "status" in hit.remainder
+    hit = match_activation("sup hark", anywhere=True)
+    assert hit is not None
+    assert "hark" in hit.phrase
+
+
+def test_bare_herald_and_harold_wake():
+    for text in ("herald", "harold", "herold"):
+        hit = match_activation(text, anywhere=True)
+        assert hit is not None, f"expected bare wake for {text!r}"
+        assert hit.phrase == "herald"
+        assert hit.remainder == ""
+        assert hit.backend == "text-bare"
+
+
+def test_bare_herald_with_prompt_remainder():
+    hit = match_activation("harold open the PR", anywhere=True)
+    assert hit is not None
+    assert hit.phrase == "herald"
+    assert "open" in hit.remainder
+
+
+def test_bare_hark_alone_wakes_but_idiom_does_not():
+    hit = match_activation("hark", anywhere=True)
+    assert hit is not None
+    assert hit.phrase == "hark"
+    assert match_activation("hark back to the design") is None
+    # mid-sentence product name is not a wake
+    assert match_activation("the herald of spring arrived", anywhere=True) is None
+
+
+def test_filler_then_bare_product_wakes():
+    hit = match_activation("um harold", anywhere=True)
+    assert hit is not None
+    assert hit.phrase == "herald"
+    hit = match_activation("uh hark status", anywhere=True)
+    assert hit is not None
+    assert hit.phrase == "hark"
+    assert "status" in hit.remainder
 
 
 def test_text_probe_backend():

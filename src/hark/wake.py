@@ -25,6 +25,8 @@ DEFAULT_ACTIVATION_PHRASES: tuple[str, ...] = (
     "okay hark",
     "ok hark",
 )
+DEFAULT_WAKE_NAMES: tuple[str, ...] = ("hark", "herald")
+DEFAULT_WAKE_MODE = "names"
 
 _WS = re.compile(r"\s+")
 _PUNCT = re.compile(r"[\.\!\?\,\;\:…]+")
@@ -39,7 +41,7 @@ class WakeHit:
     backend: str = "text"
 
 
-# Common small-model mishears for product wake words
+# Common small-model mishears for product wake words (seed aliases).
 _HARK_ALIASES = frozenset(
     {
         "hark",
@@ -63,7 +65,200 @@ _HERALD_ALIASES = frozenset(
         "herrold",
     }
 )
-_PREFIXES = ("hey", "hello", "okay", "ok", "hi")
+# Built-in seed aliases keyed by canonical name (only applied when that name is active).
+_SEED_NAME_ALIASES: dict[str, frozenset[str]] = {
+    "hark": _HARK_ALIASES,
+    "herald": _HERALD_ALIASES,
+}
+# High-confidence bare tokens (narrower than full seed aliases).
+_BARE_SEED: dict[str, frozenset[str]] = {
+    "hark": frozenset({"hark"}),
+    "herald": frozenset(
+        {"herald", "harold", "herold", "herrold", "erald"}
+    ),
+}
+# Greating / attention prefixes before a product name (fuzzy path).
+_PREFIXES = ("hey", "hello", "okay", "ok", "hi", "yo", "sup")
+# Leading fillers vosk often prefixes on short snips (stripped for bare match).
+_LEADING_FILLERS = frozenset(
+    {
+        "um",
+        "uh",
+        "erm",
+        "ah",
+        "oh",
+        "so",
+        "well",
+        "like",
+        "and",
+        "yes",
+        "yeah",
+    }
+)
+
+
+@dataclass
+class WakePolicy:
+    """How ambient activation is customized and expanded.
+
+    * **names** (default): configure product names (hark/herald/…). Matching
+      is greating+name, bare name, seed+learned name aliases. Full-phrase
+      extras still match exactly when listed in ``phrases``.
+    * **phrases**: configure entire trigger phrases only. No name fuzzy/bare;
+      learned expansions are full-phrase alternates.
+    """
+
+    mode: str = DEFAULT_WAKE_MODE  # "names" | "phrases"
+    names: list[str] = field(default_factory=lambda: list(DEFAULT_WAKE_NAMES))
+    prefixes: tuple[str, ...] = _PREFIXES
+    # Exact full phrases (phrase-mode primary list, and/or extras in names mode)
+    phrases: list[str] = field(default_factory=list)
+    # alias token (lower) → canonical name (lower); includes learned
+    name_aliases: dict[str, str] = field(default_factory=dict)
+    # learned / extra full-phrase alternates
+    phrase_aliases: list[str] = field(default_factory=list)
+    learn: bool = True
+
+    def normalized_mode(self) -> str:
+        m = (self.mode or DEFAULT_WAKE_MODE).strip().lower()
+        if m in ("phrase", "phrases", "full", "full_phrase", "full-phrase"):
+            return "phrases"
+        return "names"
+
+    def canonical_names(self) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for n in self.names:
+            s = str(n).strip().lower()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    def name_token_map(self) -> dict[str, str]:
+        """Map any wakeable name token (seed + learned) → canonical name."""
+        m: dict[str, str] = {}
+        for canon in self.canonical_names():
+            m[canon] = canon
+            for seed in _SEED_NAME_ALIASES.get(canon, ()):
+                m[seed] = canon
+            for bare in _BARE_SEED.get(canon, ()):
+                m[bare] = canon
+        for alias, canon in self.name_aliases.items():
+            ak = str(alias).strip().lower()
+            ck = str(canon).strip().lower()
+            if ak and ck:
+                m[ak] = ck
+        return m
+
+    def bare_tokens(self) -> dict[str, str]:
+        """Tokens allowed as bare (no greating) wake → canonical name."""
+        m: dict[str, str] = {}
+        for canon in self.canonical_names():
+            m[canon] = canon
+            for bare in _BARE_SEED.get(canon, ()):
+                m[bare] = canon
+            # Learned aliases for this canon also bare-wake (operator taught them)
+            for alias, c in self.name_aliases.items():
+                if c.lower() == canon:
+                    m[alias.lower()] = canon
+        return m
+
+    def exact_phrases(self) -> list[str]:
+        """All full phrases that match exactly (configured + learned alternates)."""
+        raw = list(self.phrases) + list(self.phrase_aliases)
+        if self.normalized_mode() == "names" and not raw:
+            # Display/compat synthetic list only when no extras — matching uses names
+            return list(DEFAULT_ACTIVATION_PHRASES)
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in raw:
+            s = str(p).strip()
+            if not s:
+                continue
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
+
+    def display_phrases(self) -> list[str]:
+        """Phrases for doctor / ambient.armed / near-miss events."""
+        if self.normalized_mode() == "phrases":
+            return self.exact_phrases() or list(DEFAULT_ACTIVATION_PHRASES)
+        # names: greating×names samples + any full-phrase extras
+        samples: list[str] = []
+        names = self.canonical_names() or list(DEFAULT_WAKE_NAMES)
+        for pref in ("hey", "hello", "okay", "ok"):
+            for n in names:
+                samples.append(f"{pref} {n}")
+        extras = [p for p in self.phrases if p]
+        # de-dupe
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in samples + extras + list(self.phrase_aliases):
+            k = p.lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(p)
+        return out
+
+    def merge_learned(
+        self,
+        name_aliases: dict[str, str] | None = None,
+        phrase_aliases: list[str] | None = None,
+    ) -> WakePolicy:
+        na = dict(self.name_aliases)
+        if name_aliases:
+            for k, v in name_aliases.items():
+                na[str(k).strip().lower()] = str(v).strip().lower()
+        pa = list(self.phrase_aliases)
+        if phrase_aliases:
+            seen = {p.lower() for p in pa}
+            for p in phrase_aliases:
+                s = str(p).strip().lower()
+                if s and s not in seen:
+                    seen.add(s)
+                    pa.append(s)
+        return WakePolicy(
+            mode=self.mode,
+            names=list(self.names),
+            prefixes=self.prefixes,
+            phrases=list(self.phrases),
+            name_aliases=na,
+            phrase_aliases=pa,
+            learn=self.learn,
+        )
+
+
+def default_wake_policy() -> WakePolicy:
+    return WakePolicy(
+        mode=DEFAULT_WAKE_MODE,
+        names=list(DEFAULT_WAKE_NAMES),
+        phrases=[],
+    )
+
+
+def policy_from_phrases(
+    phrases: list[str] | tuple[str, ...] | None,
+) -> WakePolicy:
+    """Infer a policy from a flat phrase list (legacy / tests).
+
+    If any phrase mentions hark/herald → names mode with defaults.
+    Otherwise → phrases-only mode (exclusive custom triggers).
+    """
+    plist = [str(p).strip() for p in (phrases or DEFAULT_ACTIVATION_PHRASES) if p]
+    if not plist:
+        return default_wake_policy()
+    joined = " ".join(plist).lower()
+    if "hark" in joined or "herald" in joined:
+        return WakePolicy(
+            mode="names",
+            names=list(DEFAULT_WAKE_NAMES),
+            phrases=[p for p in plist if p.lower() not in {d.lower() for d in DEFAULT_ACTIVATION_PHRASES}],
+        )
+    return WakePolicy(mode="phrases", names=[], phrases=plist)
 
 
 def match_activation(
@@ -71,11 +266,14 @@ def match_activation(
     phrases: list[str] | tuple[str, ...] = DEFAULT_ACTIVATION_PHRASES,
     *,
     anywhere: bool = False,
+    policy: WakePolicy | None = None,
 ) -> WakeHit | None:
     """Match activation at start of text, or anywhere in a short wake snippet.
 
-    Also accepts common vosk mishears: \"hey hook\" → hey hark, \"hey harold\" → hey herald.
+    Prefer passing an explicit :class:`WakePolicy`. When *policy* is None, a
+    policy is inferred from *phrases* (legacy).
     """
+    pol = policy if policy is not None else policy_from_phrases(phrases)
     raw = text or ""
     norm = normalize_for_match(raw)
     norm = _PUNCT.sub(" ", norm)
@@ -83,11 +281,59 @@ def match_activation(
     if not norm:
         return None
 
+    # Exact full phrases (configured + learned phrase aliases)
+    exact = list(pol.exact_phrases()) if pol.normalized_mode() == "phrases" else list(
+        pol.phrases
+    ) + list(pol.phrase_aliases)
+    # Also try display/default-style phrases when provided via *phrases* arg
+    if policy is None and phrases:
+        exact = list(phrases) + [p for p in exact if p not in phrases]
     ordered = sorted(
-        (normalize_for_match(p) for p in phrases if p and str(p).strip()),
+        (normalize_for_match(p) for p in exact if p and str(p).strip()),
         key=len,
         reverse=True,
     )
+    hit = _match_exact_phrases(norm, raw, ordered, anywhere=anywhere)
+    if hit is not None:
+        return hit
+
+    if pol.normalized_mode() == "phrases":
+        # Phrases mode: no name fuzzy/bare — only exact + learned alternates
+        return None
+
+    # Names mode: greating+name, bare name, seeds + learned aliases
+    fuzzy = _match_fuzzy_wake(norm, pol)
+    if fuzzy is not None:
+        return fuzzy
+    bare = _match_bare_product(norm, pol)
+    if bare is not None:
+        return bare
+
+    # Legacy path when policy inferred from default phrases: also exact-match
+    # the classic DEFAULT list so "hey hark" hits even with empty extras.
+    if policy is None:
+        legacy = sorted(
+            (normalize_for_match(p) for p in phrases if p and str(p).strip()),
+            key=len,
+            reverse=True,
+        )
+        return _match_exact_phrases(norm, raw, legacy, anywhere=anywhere)
+    # Configured names mode: also accept exact hey <name> strings as phrases
+    samples = [
+        normalize_for_match(f"{pref} {n}")
+        for pref in pol.prefixes
+        for n in pol.canonical_names()
+    ]
+    return _match_exact_phrases(norm, raw, sorted(samples, key=len, reverse=True), anywhere=anywhere)
+
+
+def _match_exact_phrases(
+    norm: str,
+    raw: str,
+    ordered: list[str],
+    *,
+    anywhere: bool,
+) -> WakeHit | None:
     for p in ordered:
         if not p:
             continue
@@ -106,54 +352,164 @@ def match_activation(
                 return WakeHit(phrase=p, remainder=after, raw=raw, backend="text")
             if norm.endswith(" " + p):
                 return WakeHit(phrase=p, remainder="", raw=raw, backend="text")
-
-    # Fuzzy hey/okay + hark|herald mishears only when the active phrase list
-    # still includes a product wake (defaults or explicit). A full replace with
-    # only custom phrases (e.g. trigger_phrases = ["start prompt"]) stays exclusive.
-    if _phrases_allow_product_fuzzy(ordered):
-        fuzzy = _match_fuzzy_wake(norm)
-        if fuzzy is not None:
-            return fuzzy
     return None
 
 
-def _phrases_allow_product_fuzzy(normalized_phrases: list[str]) -> bool:
-    for p in normalized_phrases:
-        if "hark" in p or "herald" in p:
-            return True
-    return False
+def _content_start(words: list[str]) -> int:
+    """Index of first non-filler token (um/uh/yeah…), or 0 if none strip."""
+    i = 0
+    while i < len(words) and words[i] in _LEADING_FILLERS:
+        i += 1
+    return i
 
 
-def _match_fuzzy_wake(norm: str) -> WakeHit | None:
+def _match_fuzzy_wake(norm: str, policy: WakePolicy) -> WakeHit | None:
+    """Prefix + product name (configured names + seed/learned aliases)."""
+    token_map = policy.name_token_map()
+    if not token_map:
+        return None
+    prefixes = set(policy.prefixes)
     words = norm.split()
     for i, w in enumerate(words):
-        if w not in _PREFIXES:
+        if w not in prefixes:
             continue
         if i + 1 >= len(words):
             continue
         nxt = words[i + 1]
-        # strip trailing punctuation already done
-        if nxt in _HARK_ALIASES or nxt.startswith("har") and len(nxt) <= 6:
-            # avoid matching "hard drive" alone without hey — we require prefix
-            if nxt in _HARK_ALIASES or nxt in ("hark", "hook", "hawk", "hork"):
-                rem = " ".join(words[i + 2 :])
-                return WakeHit(
-                    phrase=f"{w} hark",
-                    remainder=rem,
-                    raw=norm,
-                    confidence=0.7,
-                    backend="text-fuzzy",
-                )
-        if nxt in _HERALD_ALIASES:
-            rem = " ".join(words[i + 2 :])
-            return WakeHit(
-                phrase=f"{w} herald",
-                remainder=rem,
-                raw=norm,
-                confidence=0.7,
-                backend="text-fuzzy",
-            )
+        canon = token_map.get(nxt)
+        if canon is None and nxt.startswith("har") and len(nxt) <= 6:
+            # Soft har* only for active seed families
+            for c in policy.canonical_names():
+                if c in ("hark", "herald") and c in token_map.values():
+                    if c == "hark" and nxt in _HARK_ALIASES:
+                        canon = "hark"
+                        break
+        if canon is None:
+            continue
+        rem = " ".join(words[i + 2 :])
+        return WakeHit(
+            phrase=f"{w} {canon}",
+            remainder=rem,
+            raw=norm,
+            confidence=0.7,
+            backend="text-fuzzy",
+        )
     return None
+
+
+def _match_bare_product(norm: str, policy: WakePolicy) -> WakeHit | None:
+    """Wake on bare product name without greating (after optional fillers)."""
+    bare_map = policy.bare_tokens()
+    if not bare_map:
+        return None
+    words = norm.split()
+    if not words:
+        return None
+    i = _content_start(words)
+    if i >= len(words):
+        return None
+    w = words[i]
+    canon = bare_map.get(w)
+    if canon is None:
+        return None
+    # Classic idiom — not a wake.
+    if canon == "hark" and i + 1 < len(words) and words[i + 1] == "back":
+        return None
+    rem = " ".join(words[i + 1 :])
+    return WakeHit(
+        phrase=canon,
+        remainder=rem,
+        raw=norm,
+        confidence=0.85,
+        backend="text-bare",
+    )
+
+
+def suggest_learn_from_near_miss(
+    miss: NearMiss,
+    policy: WakePolicy,
+) -> tuple[str, str, str | None] | None:
+    """If *miss* should expand the learned set, return (kind, value, canonical).
+
+    kind is ``name`` or ``phrase``. Does not write disk.
+    """
+    if not policy.learn:
+        return None
+    norm = _normalize_wake_text(miss.text)
+    if not norm:
+        return None
+    # Don't learn successful activations
+    if match_activation(norm, policy=policy, anywhere=True) is not None:
+        return None
+
+    mode = policy.normalized_mode()
+    words = norm.split()
+    if mode == "phrases":
+        # Learn short near-miss as full-phrase alternate when close enough
+        if miss.score < 0.5 or len(words) > 5:
+            return None
+        # Skip bare greating-only
+        if len(words) == 1 and words[0] in set(policy.prefixes):
+            return None
+        if norm in {p.lower() for p in policy.exact_phrases()}:
+            return None
+        return ("phrase", norm, None)
+
+    # names mode: extract product-like token and map to best configured name
+    names = policy.canonical_names()
+    if not names:
+        return None
+    token_map = policy.name_token_map()
+    candidates: list[str] = []
+    for w in words:
+        if w in set(policy.prefixes) or w in _LEADING_FILLERS:
+            continue
+        candidates.append(w)
+    if not candidates:
+        return None
+    best_alias = ""
+    best_canon = ""
+    best_sc = 0.0
+    for tok in candidates:
+        if tok in token_map:
+            continue  # already known
+        for canon in names:
+            sc = _name_similarity(tok, canon)
+            if sc > best_sc:
+                best_sc = sc
+                best_alias = tok
+                best_canon = canon
+    # Near-miss already passed intentionality gates — allow slightly lower
+    # char-sim for short product tokens (e.g. vosk "hoc"≈hark).
+    min_sc = (
+        0.28
+        if miss.reason
+        in ("prefix_product_near", "short_product_near", "family_token")
+        else _NEAR_MISS_PRODUCT_SIM
+    )
+    if best_sc < min_sc or not best_alias:
+        return None
+    if len(best_alias) < 2 or len(best_alias) > 12:
+        return None
+    return ("name", best_alias, best_canon)
+
+
+def _name_similarity(token: str, canon: str) -> float:
+    if not token or not canon:
+        return 0.0
+    if token == canon:
+        return 1.0
+    # Seed families
+    if canon == "hark" and token in _HARK_ALIASES:
+        return 1.0
+    if canon == "herald" and token in _HERALD_ALIASES:
+        return 1.0
+    raw = _char_similarity(token, canon)
+    if canon in ("hark", "herald"):
+        raw = max(raw, _product_token_score(token) * (1.0 if canon == "hark" else 0.95))
+    if token[0] != canon[0]:
+        raw *= 0.5
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -171,15 +527,15 @@ _NEAR_MISS_PREFIX_ONLY = True
 
 NEAR_MISS_INSTRUCTIONS = (
     "Plausible failed wake attempt(s) — not a successful activation. "
-    "Review attempts[].text against configured activation phrases. "
-    "If the operator is clearly trying to wake Hark, evaluate whether to add "
-    "or adjust a phrase/alias: [ambient] extra_trigger_phrases (append) or "
-    "activation_phrases / trigger_phrases (replace list). Fuzzy product "
-    "mishears may also warrant a code/config alias. "
-    "After updating config, reload ambient: send SIGHUP to the ambient process "
-    "(kill -HUP <pid>) so phrases reload without full restart; or restart Mode A "
-    "ambient if needed. See docs/CUSTOM_WAKE.md. Diagnostic only — do not invent "
-    "answers or treat as a prompt."
+    "Review attempts[].text. Wake customization is either name-based "
+    "([ambient] wake_mode=names, names=[...]) or full-phrase "
+    "(wake_mode=phrases, trigger_phrases=[...]). Near-misses auto-expand "
+    "learned alternates under ~/.local/state/hark/wake_learned.json without "
+    "restart (ambient.wake_learned events). To pin permanently: names mode → "
+    "names / extra_names; phrases mode → trigger_phrases / "
+    "extra_trigger_phrases. SIGHUP reloads config; learning does not need it. "
+    "See docs/CUSTOM_WAKE.md. Diagnostic only — do not invent answers or treat "
+    "as a prompt."
 )
 
 
@@ -323,6 +679,8 @@ def _phrase_similarity(norm: str, phrase: str) -> float:
 def plausible_near_miss(
     text: str,
     phrases: list[str] | tuple[str, ...] = DEFAULT_ACTIVATION_PHRASES,
+    *,
+    policy: WakePolicy | None = None,
 ) -> NearMiss | None:
     """Return a NearMiss if *text* looks like a failed activation attempt.
 
@@ -330,6 +688,7 @@ def plausible_near_miss(
     speech. Accepts short fragments with high phrase similarity, wake-family
     tokens, prefix+almost-product patterns, or bare activation prefixes.
     """
+    pol = policy if policy is not None else policy_from_phrases(phrases)
     raw = (text or "").strip()
     if not raw:
         return None
@@ -337,7 +696,7 @@ def plausible_near_miss(
     if not norm:
         return None
     # Already a hit — not a near-miss.
-    if match_activation(norm, phrases, anywhere=True) is not None:
+    if match_activation(norm, phrases, anywhere=True, policy=pol) is not None:
         return None
 
     words = norm.split()
@@ -346,7 +705,7 @@ def plausible_near_miss(
         return None
 
     ordered_phrases = [
-        _normalize_wake_text(p) for p in phrases if p and str(p).strip()
+        _normalize_wake_text(p) for p in pol.display_phrases() if p and str(p).strip()
     ]
     if not ordered_phrases:
         ordered_phrases = list(DEFAULT_ACTIVATION_PHRASES)
@@ -535,8 +894,18 @@ class WakeBackend(Protocol):
 class TextProbeBackend:
     name = "text_probe"
 
-    def __init__(self, phrases: list[str] | tuple[str, ...] | None = None) -> None:
-        self.phrases = list(phrases or DEFAULT_ACTIVATION_PHRASES)
+    def __init__(
+        self,
+        phrases: list[str] | tuple[str, ...] | None = None,
+        *,
+        policy: WakePolicy | None = None,
+    ) -> None:
+        self.policy = policy if policy is not None else policy_from_phrases(phrases)
+        self.phrases = list(
+            phrases
+            if phrases is not None
+            else self.policy.display_phrases()
+        )
         self.last_text: str = ""
         self.last_rms: float = 0.0
 
@@ -545,7 +914,9 @@ class TextProbeBackend:
         if pcm16_le.startswith(b"TXT:"):
             text = pcm16_le[4:].decode("utf-8", errors="replace")
             self.last_text = text
-            hit = match_activation(text, self.phrases, anywhere=True)
+            hit = match_activation(
+                text, self.phrases, anywhere=True, policy=self.policy
+            )
             if hit:
                 return WakeHit(
                     phrase=hit.phrase,
@@ -566,11 +937,17 @@ class VoskWakeBackend:
         model_path: str,
         phrases: list[str] | tuple[str, ...] | None = None,
         *,
+        policy: WakePolicy | None = None,
         # ~0.003 catches soft close-talk; quiet room often sits ~0.001
         energy_floor: float = 0.003,
     ) -> None:
         self.model_path = model_path
-        self.phrases = list(phrases or DEFAULT_ACTIVATION_PHRASES)
+        self.policy = policy if policy is not None else policy_from_phrases(phrases)
+        self.phrases = list(
+            phrases
+            if phrases is not None
+            else self.policy.display_phrases()
+        )
         self.energy_floor = energy_floor
         self._model = None
         self._Rec = None
@@ -619,7 +996,9 @@ class VoskWakeBackend:
         self.last_text = text
         if not text:
             return None
-        hit = match_activation(text, self.phrases, anywhere=True)
+        hit = match_activation(
+            text, self.phrases, anywhere=True, policy=self.policy
+        )
         if not hit:
             return None
         return WakeHit(
@@ -634,19 +1013,29 @@ class VoskWakeBackend:
 def build_wake_backend(
     engine: str,
     *,
-    phrases: list[str] | tuple[str, ...],
+    phrases: list[str] | tuple[str, ...] | None = None,
     model_path: str | None = None,
+    policy: WakePolicy | None = None,
 ) -> WakeBackend:
     engine = (engine or "vosk").lower()
+    pol = policy
+    plist = list(phrases) if phrases is not None else None
+    if pol is None and plist is not None:
+        pol = policy_from_phrases(plist)
+    elif pol is not None and plist is None:
+        plist = pol.display_phrases()
+    elif pol is None:
+        pol = default_wake_policy()
+        plist = pol.display_phrases()
     if engine in ("off", "none", "disabled"):
-        return TextProbeBackend(phrases)
+        return TextProbeBackend(plist, policy=pol)
     if engine in ("text_probe", "mock", "test"):
-        return TextProbeBackend(phrases)
+        return TextProbeBackend(plist, policy=pol)
     if engine == "vosk":
         if not model_path:
             raise RuntimeError(
                 "ambient.engine=vosk requires ambient.model_path "
                 "(run ./scripts/setup-ambient.sh)"
             )
-        return VoskWakeBackend(model_path, phrases)
+        return VoskWakeBackend(model_path, plist, policy=pol)
     raise ValueError(f"unknown ambient wake engine: {engine!r}")

@@ -1,86 +1,129 @@
 # Custom activation (wake) phrases
 
-Ambient mode scans short **local** mic snippets for an activation phrase, then
-opens **cloud STT** for the prompt body (`ambient.prompt`). Defaults include
-`hey hark` / `hey herald`. You can add or replace phrases without code changes.
+Ambient mode scans short **local** mic snippets for an activation, then opens
+**cloud STT** for the prompt body (`ambient.prompt`).
 
-## Config
+There are **two customization styles**. Pick one.
 
-Edit `~/.config/hark/config.toml` (or `HARK_CONFIG` / `hark --config …`):
+## 1. Name-based (default)
+
+Configure **product names** (defaults: `hark`, `herald`). Multiple names are
+fine. Matching is structural:
+
+- Greating + name: `hey` / `hello` / `hi` / `yo` / `ok` / `okay` / `sup` + name
+- Bare name: `herald`, `harold`, `hark` (optional fillers `um` / `uh`)
+- Seed mishears for built-in names (e.g. `hook`→hark, `harold`→herald)
+- **Learned** name alternates from failed wake attempts (no restart)
 
 ```toml
 [ambient]
-enabled = true
-engine = "vosk"   # production; use text_probe only in tests
-# model_path = "~/.local/share/hark/models/vosk-model-small-en-us-0.15"
-
-# Keep defaults and append custom wakes:
-extra_trigger_phrases = ["start prompt", "begin dictation"]
-
-# Or replace the entire list (no hey hark unless you include it):
-# trigger_phrases = ["start prompt"]
-
-# Aliases (same behavior):
-# activation_phrases = [...]           # replace defaults
-# extra_activation_phrases = [...]     # append
+wake_mode = "names"          # default; can omit
+names = ["hark", "herald"]
+# extra_names = ["alice"]    # append more canonical names
+learn_from_near_misses = true
+# Optional exact full-phrase extras still work alongside names:
+# extra_trigger_phrases = ["start prompt"]
 ```
 
-Resolved list order: base (`activation_phrases` / `trigger_phrases` or
-defaults) then extras, de-duplicated case-insensitively.
+`hark back …` and mid-sentence uses (`the herald of spring`) do **not** wake.
 
-`hark config show` / doctor report the active phrases after resolution.
+## 2. Full-phrase
 
-## Apply changes: SIGHUP vs restart
+Configure **entire trigger phrases** only. No name fuzzy/bare. Matching is
+exact (plus learned full-phrase alternates).
+
+```toml
+[ambient]
+wake_mode = "phrases"
+trigger_phrases = ["start prompt", "begin dictation"]
+# extra_trigger_phrases = ["begin recording"]
+learn_from_near_misses = true
+```
+
+Legacy: setting `trigger_phrases` / `activation_phrases` to a list that does
+**not** mention hark/herald infers `phrases` mode. Lists that include
+hey-hark-style product wakes stay in **names** mode.
+
+## Dynamic learning (no restart)
+
+Failed wake attempts that look intentional (`ambient.wake_near_miss`) **auto-
+expand** alternates:
+
+| Mode | Learns | Stored as |
+|------|--------|-----------|
+| names | Alternate **name tokens** (e.g. vosk `hoc`→`hark`) | `name_aliases` |
+| phrases | Alternate **full phrases** (e.g. `start promt`) | `phrase_aliases` |
+
+Persisted at:
+
+```text
+~/.local/state/hark/wake_learned.json
+```
+
+Ambient hot-reloads this file by mtime on each snippet and after each learn
+write. Emits `ambient.wake_learned`. **No SIGHUP or process restart required.**
+
+To pin a learned alias permanently in config:
+
+- Names: add to `names` / `extra_names`, or keep relying on the learned file
+- Phrases: add to `trigger_phrases` / `extra_trigger_phrases`
+
+Disable with `learn_from_near_misses = false`.
+
+## Config keys (summary)
+
+| Key | Role |
+|-----|------|
+| `wake_mode` | `names` (default) or `phrases` |
+| `names` / `activation_names` / `wake_names` | Canonical names (names mode) |
+| `extra_names` | Append names |
+| `trigger_phrases` / `activation_phrases` | Full phrase list (phrases mode) or legacy |
+| `extra_trigger_phrases` / `extra_activation_phrases` | Append full phrases |
+| `learn_from_near_misses` | Auto-expand from near-misses (default true) |
+
+Edit `~/.config/hark/config.toml` (or `HARK_CONFIG` / `hark --config …`).
+
+`hark config show` / doctor report active mode, names, and display phrases.
+
+## Apply config edits: SIGHUP vs restart
 
 | Method | When | What happens |
 |--------|------|----------------|
-| **SIGHUP** | Ambient loop already running | Re-reads config; updates wake phrases in place (vosk model kept). Emits `ambient.reloaded` NDJSON. Engine/model path changes rebuild the backend. |
-| **Restart** | Always safe | Full process restart (`hark ambient` / Mode A ambient path again). |
+| **Learning** | Near-miss while ambient runs | Writes `wake_learned.json`; applies next snippet |
+| **SIGHUP** | You edited config.toml | Re-reads config; updates policy in place. Emits `ambient.reloaded` |
+| **Restart** | Always safe | Full process restart |
 
 ```bash
-# Find ambient / Mode A process, then:
 kill -HUP "$(pgrep -f 'hark.*ambient' | head -1)"
-# or: kill -HUP <pid>
 ```
-
-SIGINT / SIGTERM still mean graceful stop (finish in-flight listen, then exit).
-SIGHUP does **not** shut down.
-
-If HUP is inconvenient (systemd unit without reload), edit config and restart
-the ambient process the same way you started it.
 
 ## Debug snips
 
-With `[ambient] debug = true` (default in the sample config), wake hits and
-scored misses are saved under:
+With `[ambient] debug = true`, wake hits/misses under:
 
 ```text
 ~/.local/state/hark/debug/wake/YYYY-MM-DD/
-  HHMMSS-mmm-hit.wav + .json
-  HHMMSS-mmm-miss.wav + .json
 ```
 
-Sidecar JSON includes `matched`, `phrase`, `text`, `rms`, `backend`. Retention
-defaults to 7 days (`debug_retention_days`).
+## Agent / skill configuration help
 
-## Tests (CI, no mic/cloud)
+When the operator asks to change how they wake Hark, the Mode A skill should:
+
+1. Ask **name-based** vs **full-phrase** if unclear.
+2. Edit the right keys (table above); do not invent CLI flags that do not exist.
+3. SIGHUP ambient after config edits; mention that **learning** does not need HUP.
+4. Optionally inspect `wake_learned.json` and promote stable aliases into config.
+
+## Tests
 
 ```bash
-uv run pytest tests/test_custom_triggers.py tests/test_custom_wake_e2e.py -q
+uv run pytest tests/test_wake_policy.py tests/test_custom_triggers.py tests/test_custom_wake_e2e.py -q
 ```
-
-Coverage:
-
-- Config resolution (`extra_trigger_phrases` / `trigger_phrases`)
-- `TextProbeBackend` scoring `TXT:start prompt …` (mock PCM)
-- One ambient cycle: custom wake → mocked `run_listen` → `ambient.prompt`
-- `apply_config_reload` hot phrase update + engine rebuild
-- Ambient loop: reload flag → `ambient.reloaded` → custom wake → prompt
 
 ## Related
 
-- `src/hark/config.py` — `resolve_activation_phrases`
-- `src/hark/wake.py` — match + backends
-- `src/hark/ambient.py` — loop, SIGHUP apply
-- `src/hark/lifecycle.py` — `request_reload` / SIGHUP handler
-- Skill note: `skill/hark/SKILL.md` (Ambient bullet)
+- `src/hark/wake.py` — `WakePolicy`, match, near-miss, learn suggest
+- `src/hark/wake_learn.py` — persist/load learned aliases
+- `src/hark/config.py` — `resolve_wake_policy`
+- `src/hark/ambient.py` — loop, learn hot-apply, SIGHUP
+- Skill: `skill/hark/SKILL.md` (Ambient + wake config)

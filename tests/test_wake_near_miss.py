@@ -72,7 +72,6 @@ def test_plausible_accepts_fixture_style_misses():
         "a hawk",
         "hello",
         "hey ha",
-        "harold",
         "hi harkk",
         "hey",
         "hey har",
@@ -108,7 +107,18 @@ def test_plausible_rejects_noise_and_long_speech():
 
 
 def test_plausible_rejects_successful_activations():
-    for text in ("hey hark", "hey hook", "hey harold", "hello herald", "ok hark status"):
+    for text in (
+        "hey hark",
+        "hey hook",
+        "hey harold",
+        "hello herald",
+        "ok hark status",
+        "yo herald",
+        "harold",
+        "herald",
+        "hark",
+        "um harold",
+    ):
         assert match_activation(text, anywhere=True) is not None
         assert plausible_near_miss(text) is None
 
@@ -145,9 +155,9 @@ def test_make_wake_near_miss_event_shape():
     assert ev["group_index"] == 1
     assert len(ev["attempts"]) == 2
     assert ev["attempts"][0]["text"] == "hey hoc"
-    assert "extra_trigger_phrases" in ev["instructions"]
+    assert "trigger_phrases" in ev["instructions"] or "names" in ev["instructions"]
     assert "restart" in ev["instructions"].lower() or "SIGHUP" in ev["instructions"]
-    assert "activation_phrases" in ev["instructions"]
+    assert "CUSTOM_WAKE" in ev["instructions"] or "wake_mode" in ev["instructions"]
     assert isinstance(ev["event_id"], str) and ev["event_id"]
     assert ev["observed_at"].endswith("Z")
 

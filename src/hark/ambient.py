@@ -26,13 +26,24 @@ from hark.partial import make_final_event, new_stream_id
 from hark.speech import run_listen, run_tts
 from hark.syslog import log as syslog
 from hark.wake import (
-    DEFAULT_ACTIVATION_PHRASES,
+    NearMiss,
     NearMissAccumulator,
     WakeBackend,
     WakeHit,
+    WakePolicy,
     build_wake_backend,
+    default_wake_policy,
     make_wake_near_miss_event,
     plausible_near_miss,
+    suggest_learn_from_near_miss,
+)
+from hark.wake_learn import (
+    LearnedWake,
+    learn_name_alias,
+    learn_phrase_alias,
+    learned_event,
+    load_learned,
+    load_learned_if_changed,
 )
 
 # Default spoken wake example in ambient boot TTS (names mode / stock config).
@@ -94,6 +105,75 @@ class AmbientResult:
     partial: bool = False
 
 
+def _apply_policy_to_backend(backend: WakeBackend, policy: WakePolicy) -> None:
+    if hasattr(backend, "policy"):
+        backend.policy = policy  # type: ignore[attr-defined]
+    if hasattr(backend, "phrases"):
+        backend.phrases = policy.display_phrases()  # type: ignore[attr-defined]
+
+
+def _maybe_learn_from_miss(
+    miss: NearMiss,
+    *,
+    policy: WakePolicy,
+    learned: LearnedWake | None,
+    out: TextIO | None,
+) -> tuple[WakePolicy, LearnedWake | None]:
+    """Persist a learned alias from a near-miss; hot-apply without restart."""
+    suggestion = suggest_learn_from_near_miss(miss, policy)
+    if suggestion is None:
+        return policy, learned
+    kind, value, canonical = suggestion
+    if kind == "name" and canonical:
+        state, changed = learn_name_alias(value, canonical, learned=learned)
+        if not changed:
+            return policy, state
+        new_pol = policy.merge_learned(name_aliases={value: canonical})
+        if out is not None:
+            ev = learned_event(
+                kind="name",
+                value=value,
+                canonical=canonical,
+                mode=new_pol.normalized_mode(),
+                total_name_aliases=len(state.name_aliases),
+                total_phrase_aliases=len(state.phrase_aliases),
+            )
+            out.write(json.dumps(ev, separators=(",", ":")) + "\n")
+            out.flush()
+        syslog(
+            "ambient.wake_learned",
+            component="ambient",
+            learn_kind="name",
+            value=value,
+            canonical=canonical,
+        )
+        return new_pol, state
+    if kind == "phrase":
+        state, changed = learn_phrase_alias(value, learned=learned)
+        if not changed:
+            return policy, state
+        new_pol = policy.merge_learned(phrase_aliases=[value])
+        if out is not None:
+            ev = learned_event(
+                kind="phrase",
+                value=value,
+                canonical=None,
+                mode=new_pol.normalized_mode(),
+                total_name_aliases=len(state.name_aliases),
+                total_phrase_aliases=len(state.phrase_aliases),
+            )
+            out.write(json.dumps(ev, separators=(",", ":")) + "\n")
+            out.flush()
+        syslog(
+            "ambient.wake_learned",
+            component="ambient",
+            learn_kind="phrase",
+            value=value,
+        )
+        return new_pol, state
+    return policy, learned
+
+
 def _wait_for_wake(
     backend: WakeBackend,
     *,
@@ -105,6 +185,8 @@ def _wait_for_wake(
     debug_retention_days: float = 7.0,
     near_miss_acc: NearMissAccumulator | None = None,
     phrases: list[str] | tuple[str, ...] | None = None,
+    policy: WakePolicy | None = None,
+    learned: LearnedWake | None = None,
 ) -> WakeHit | None:
     """Record short windows until activation or deadline. Reuses backend (no reload).
 
@@ -113,15 +195,18 @@ def _wait_for_wake(
 
     Plausible failed activations are grouped and emitted as
     ``ambient.wake_near_miss`` on *out* (see NearMissAccumulator schedule).
+    Near-misses may expand learned aliases immediately (no restart).
     """
     snippet = max(0.8, min(snippet_s, 2.5))
     last_debug = 0.0
     snips_since_purge = 0
     acc = near_miss_acc
+    pol = policy or getattr(backend, "policy", None) or default_wake_policy()
+    learned_state = learned
     phrase_list = list(
         phrases
         if phrases is not None
-        else getattr(backend, "phrases", None) or DEFAULT_ACTIVATION_PHRASES
+        else getattr(backend, "phrases", None) or pol.display_phrases()
     )
     while time.monotonic() < deadline:
         if shutdown_requested():
@@ -193,10 +278,26 @@ def _wait_for_wake(
             )
             return hit
 
+        # Hot-reload learned aliases written by other processes / previous cycles
+        learned_state = load_learned_if_changed(learned_state)
+        if learned_state is not None and pol.learn:
+            pol = pol.merge_learned(
+                name_aliases=learned_state.name_aliases,
+                phrase_aliases=learned_state.phrase_aliases,
+            )
+            _apply_policy_to_backend(backend, pol)
+            phrase_list = pol.display_phrases()
+
         # Plausible failed wake → Mode A monitor (grouped), never spam on noise
         if acc is not None and text:
-            miss = plausible_near_miss(text, phrase_list)
+            miss = plausible_near_miss(text, phrase_list, policy=pol)
             if miss is not None:
+                # Dynamically expand alternates (names or full phrases) — no restart
+                pol, learned_state = _maybe_learn_from_miss(
+                    miss, policy=pol, learned=learned_state, out=out
+                )
+                _apply_policy_to_backend(backend, pol)
+                phrase_list = pol.display_phrases()
                 group = acc.add(miss)
                 if group is not None:
                     ev = make_wake_near_miss_event(
@@ -358,6 +459,16 @@ def run_ambient(
     if not amb.enabled and not once:
         return AmbientResult(activated=False, phrase=None, text=None)
 
+    policy = amb.wake_policy or default_wake_policy()
+    if isinstance(policy, WakePolicy) and amb.learn_from_near_misses:
+        learned0 = load_learned()
+        policy = policy.merge_learned(
+            name_aliases=learned0.name_aliases,
+            phrase_aliases=learned0.phrase_aliases,
+        )
+    else:
+        learned0 = None
+
     if backend is None:
         if not amb.model_path and amb.engine == "vosk":
             raise RuntimeError(
@@ -367,7 +478,11 @@ def run_ambient(
             amb.engine,
             phrases=amb.activation_phrases,
             model_path=amb.model_path,
+            policy=policy if isinstance(policy, WakePolicy) else None,
         )
+    else:
+        if isinstance(policy, WakePolicy):
+            _apply_policy_to_backend(backend, policy)
 
     deadline = time.monotonic() + (timeout_s or amb.timeout_s or 300.0)
 
@@ -381,6 +496,8 @@ def run_ambient(
         debug_retention_days=float(amb.debug_retention_days),
         near_miss_acc=near_miss_acc,
         phrases=amb.activation_phrases,
+        policy=policy if isinstance(policy, WakePolicy) else None,
+        learned=learned0,
     )
 
     if hit is None:
@@ -409,7 +526,20 @@ def apply_config_reload(
     # Stay armed while the ambient loop is running
     new_cfg.ambient.enabled = True
 
-    phrases = list(new_cfg.ambient.activation_phrases)
+    policy = new_cfg.ambient.wake_policy or default_wake_policy()
+    if isinstance(policy, WakePolicy) and new_cfg.ambient.learn_from_near_misses:
+        learned = load_learned()
+        policy = policy.merge_learned(
+            name_aliases=learned.name_aliases,
+            phrase_aliases=learned.phrase_aliases,
+        )
+        new_cfg.ambient.wake_policy = policy
+    phrases = list(
+        policy.display_phrases()
+        if isinstance(policy, WakePolicy)
+        else new_cfg.ambient.activation_phrases
+    )
+    new_cfg.ambient.activation_phrases = phrases
     engine_changed = (new_cfg.ambient.engine or "").lower() != (
         cfg.ambient.engine or ""
     ).lower()
@@ -417,6 +547,8 @@ def apply_config_reload(
 
     info: dict[str, Any] = {
         "phrases": phrases,
+        "wake_mode": getattr(new_cfg.ambient, "wake_mode", None),
+        "names": list(getattr(new_cfg.ambient, "names", []) or []),
         "engine": new_cfg.ambient.engine,
         "model_path": new_cfg.ambient.model_path,
         "rebuilt_backend": False,
@@ -432,10 +564,14 @@ def apply_config_reload(
             new_cfg.ambient.engine,
             phrases=phrases,
             model_path=new_cfg.ambient.model_path,
+            policy=policy if isinstance(policy, WakePolicy) else None,
         )
         info["rebuilt_backend"] = True
-    elif hasattr(backend, "phrases"):
-        backend.phrases = phrases
+    else:
+        if isinstance(policy, WakePolicy):
+            _apply_policy_to_backend(backend, policy)
+        elif hasattr(backend, "phrases"):
+            backend.phrases = phrases
 
     return new_cfg, backend, info
 
@@ -566,11 +702,22 @@ def run_ambient_loop(
         out.flush()
         return 1
 
+    policy = cfg.ambient.wake_policy or default_wake_policy()
+    if isinstance(policy, WakePolicy) and cfg.ambient.learn_from_near_misses:
+        learned_boot = load_learned()
+        policy = policy.merge_learned(
+            name_aliases=learned_boot.name_aliases,
+            phrase_aliases=learned_boot.phrase_aliases,
+        )
+        cfg.ambient.wake_policy = policy
+        cfg.ambient.activation_phrases = policy.display_phrases()
+
     # Load model once
     backend = build_wake_backend(
         cfg.ambient.engine,
         phrases=cfg.ambient.activation_phrases,
         model_path=cfg.ambient.model_path,
+        policy=policy if isinstance(policy, WakePolicy) else None,
     )
     # Persist near-miss grouping across wake cycles for Mode A monitor
     near_miss_acc = NearMissAccumulator()
@@ -580,6 +727,16 @@ def run_ambient_loop(
     except Exception:
         pass
 
+    mode = (
+        policy.normalized_mode()
+        if isinstance(policy, WakePolicy)
+        else cfg.ambient.wake_mode
+    )
+    names = (
+        policy.canonical_names()
+        if isinstance(policy, WakePolicy)
+        else list(cfg.ambient.names)
+    )
     boot = {
         "schema": "hark.event.v1",
         "kind": "ambient.armed",
@@ -587,13 +744,16 @@ def run_ambient_loop(
         "observed_at": utc_now_iso(),
         "engine": cfg.ambient.engine,
         "model_path": cfg.ambient.model_path,
+        "wake_mode": mode,
+        "names": names,
         "phrases": list(cfg.ambient.activation_phrases),
         "snippet_s": cfg.ambient.snippet_s,
         "instructions": (
-            "Ambient armed. Say an activation phrase (defaults: hey hark / "
-            "hey herald; see ambient.activation_phrases / extra_trigger_phrases), "
-            "then your prompt. SIGHUP reloads config. Mic mutes during TTS. "
-            "Energy-gated vosk (quiet frames skipped)."
+            "Ambient armed. Wake mode is name-based (defaults: hark/herald; "
+            "say hey/hello/yo/sup + name, or bare herald/harold) or full-phrase "
+            "(trigger_phrases). Near-misses auto-learn alternates without restart "
+            "(wake_learned.json). Config: docs/CUSTOM_WAKE.md. SIGHUP reloads "
+            "config. Mic mutes during TTS. Energy-gated vosk (quiet frames skipped)."
         ),
     }
     out.write(json.dumps(boot, separators=(",", ":")) + "\n")
@@ -603,6 +763,8 @@ def run_ambient_loop(
         component="ambient",
         engine=cfg.ambient.engine,
         model_path=cfg.ambient.model_path,
+        wake_mode=mode,
+        names=names,
         phrases=list(cfg.ambient.activation_phrases),
     )
 

@@ -17,7 +17,13 @@ from hark.listen_end import (
     parse_end_mode,
 )
 from hark.paths import default_config_path, default_herdr_socket
-from hark.wake import DEFAULT_ACTIVATION_PHRASES
+from hark.wake import (
+    DEFAULT_ACTIVATION_PHRASES,
+    DEFAULT_WAKE_MODE,
+    DEFAULT_WAKE_NAMES,
+    WakePolicy,
+)
+from hark.wake_learn import load_learned
 
 
 KNOWN_TOP_KEYS = frozenset(
@@ -83,6 +89,14 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     }),
     "ambient": frozenset({
         "enabled",
+        # Wake customization: names (default) or full phrases
+        "wake_mode",  # "names" | "phrases"
+        "activation_mode",  # alias of wake_mode
+        "names",
+        "activation_names",  # alias of names
+        "wake_names",  # alias of names
+        "extra_names",
+        "learn_from_near_misses",  # default true
         "activation_phrases",
         "trigger_phrases",  # alias of activation_phrases
         "extra_activation_phrases",  # append to defaults (or to base list)
@@ -206,9 +220,14 @@ class AmbientConfig:
     """When not answering a bound question: listen for activation → new prompt."""
 
     enabled: bool = False
+    # names (default) | phrases — see WakePolicy / docs/CUSTOM_WAKE.md
+    wake_mode: str = "names"
+    names: list[str] = field(default_factory=lambda: ["hark", "herald"])
+    # Display / exact extras / phrase-mode list (resolved)
     activation_phrases: list[str] = field(
         default_factory=lambda: list(DEFAULT_ACTIVATION_PHRASES)
     )
+    learn_from_near_misses: bool = True
     # local | vosk | text_probe — never cloud during wake scan
     engine: str = "vosk"
     model_path: str | None = None
@@ -217,6 +236,8 @@ class AmbientConfig:
     # Dev: save wake audio+text under state/debug/wake (7-day cleanup)
     debug: bool = False
     debug_retention_days: float = 7.0
+    # Full wake policy (names/phrases + learned aliases); set by load_config
+    wake_policy: Any = None
 
 
 @dataclass
@@ -343,26 +364,30 @@ empty_stt_nudge = true       # TTS "Sorry, I didn't catch that." then re-listen 
 # Local 2–3s snippets scan for activation; cloud STT only after wake.
 # Setup: ./scripts/setup-ambient.sh
 #
-# Custom trigger / wake phrases (any of these):
-#   activation_phrases / trigger_phrases  — full list (replaces defaults if set)
-#   extra_activation_phrases / extra_trigger_phrases — appended to base list
-# After edit: kill -HUP <ambient-pid> reloads phrases without full restart
-# (see docs/CUSTOM_WAKE.md). Restart also works.
+# Wake customization — pick ONE style (see docs/CUSTOM_WAKE.md):
 #
-# Examples:
-#   extra_trigger_phrases = ["start prompt", "begin dictation"]
-#   trigger_phrases = ["start prompt"]   # ONLY this wake (no hey hark)
+# 1) Name-based (default): set product names; greating+name / bare name wake.
+#    Near-misses auto-learn alternate name tokens (no restart).
+#      wake_mode = "names"
+#      names = ["hark", "herald"]
+#      # extra_names = ["alice"]
+#
+# 2) Full-phrase: entire trigger strings only (no name fuzzy).
+#    Near-misses auto-learn alternate full phrases (no restart).
+#      wake_mode = "phrases"
+#      trigger_phrases = ["start prompt", "begin dictation"]
+#
+# Legacy: activation_phrases / extra_trigger_phrases still work.
+# Config edits: kill -HUP <ambient-pid>. Learning needs neither HUP nor restart.
 [ambient]
 enabled = false
-activation_phrases = [
-  "hey hark",
-  "hey herald",
-  "hello hark",
-  "hello herald",
-  "okay hark",
-  "ok hark",
-]
-# extra_trigger_phrases = ["start prompt"]
+wake_mode = "names"
+names = ["hark", "herald"]
+# extra_names = ["alice"]
+# wake_mode = "phrases"
+# trigger_phrases = ["start prompt"]
+# extra_trigger_phrases = ["begin dictation"]
+learn_from_near_misses = true
 engine = "vosk"              # vosk | text_probe (tests)
 # model_path = "~/.local/share/hark/models/vosk-model-small-en-us-0.15"
 snippet_s = 2.5
@@ -426,37 +451,150 @@ def _dedupe_phrases(phrases: list[str]) -> list[str]:
     return out
 
 
+def _build_ambient_config(
+    ambient_raw: dict[str, Any],
+    *,
+    ambient_enabled: bool,
+) -> AmbientConfig:
+    policy = resolve_wake_policy(ambient_raw)
+    return AmbientConfig(
+        enabled=ambient_enabled,
+        wake_mode=policy.normalized_mode(),
+        names=list(policy.canonical_names()),
+        activation_phrases=policy.display_phrases(),
+        learn_from_near_misses=policy.learn,
+        engine=str(ambient_raw.get("engine", "vosk")),
+        model_path=_resolve_vosk_model_path(
+            str(ambient_raw["model_path"])
+            if ambient_raw.get("model_path")
+            else os.environ.get("HARK_VOSK_MODEL")
+        ),
+        snippet_s=float(ambient_raw.get("snippet_s", 2.5)),
+        timeout_s=float(ambient_raw.get("timeout_s", 300)),
+        debug=bool(
+            ambient_raw.get(
+                "debug",
+                os.environ.get("HARK_DEBUG", "").lower()
+                in ("1", "true", "yes", "on"),
+            )
+        ),
+        debug_retention_days=float(ambient_raw.get("debug_retention_days", 7)),
+        wake_policy=policy,
+    )
+
+
 def resolve_activation_phrases(ambient_raw: dict[str, Any]) -> list[str]:
-    """Build ambient wake/trigger phrase list from config.
+    """Build display/exact phrase list (legacy helper; prefer resolve_wake_policy)."""
+    policy = resolve_wake_policy(ambient_raw)
+    return policy.display_phrases()
 
-    Keys (any combination):
-      activation_phrases / trigger_phrases — replace defaults when set
-      extra_activation_phrases / extra_trigger_phrases — append always
 
-    Example — keep defaults and add a custom wake::
+def resolve_wake_policy(
+    ambient_raw: dict[str, Any],
+    *,
+    load_learned_state: bool = True,
+) -> WakePolicy:
+    """Resolve name-based vs full-phrase wake policy from ambient TOML.
 
-        [ambient]
-        extra_trigger_phrases = ["start prompt", "begin dictation"]
+    **names** (default): ``names`` / ``extra_names``; greating+name + bare +
+    seed/learned aliases. Optional full-phrase extras via
+    ``extra_trigger_phrases``.
 
-    Example — only custom wakes (no hey hark)::
+    **phrases**: ``trigger_phrases`` / ``activation_phrases`` (+ extras);
+    no name fuzzy; learned phrase alternates expand the list.
 
-        [ambient]
-        trigger_phrases = ["start prompt", "begin recording"]
+    Inference when ``wake_mode`` omitted:
+      - explicit ``names`` / ``extra_names`` → names
+      - explicit primary ``trigger_phrases``/``activation_phrases`` without
+        names keys → phrases (legacy exclusive custom)
+      - else → names with defaults hark/herald
     """
+    mode_raw = ambient_raw.get("wake_mode")
+    if mode_raw is None:
+        mode_raw = ambient_raw.get("activation_mode")
+
+    names_raw = None
+    for key in ("names", "activation_names", "wake_names"):
+        if key in ambient_raw and ambient_raw[key] is not None:
+            names_raw = ambient_raw[key]
+            break
+    extra_names = _as_list_str(ambient_raw.get("extra_names"), [])
+
     primary = ambient_raw.get("activation_phrases")
     if primary is None:
         primary = ambient_raw.get("trigger_phrases")
-    if primary is None:
-        base = list(DEFAULT_ACTIVATION_PHRASES)
-    else:
-        base = _as_list_str(primary, [])
-
     extras: list[str] = []
     for key in ("extra_activation_phrases", "extra_trigger_phrases"):
         if key in ambient_raw and ambient_raw[key] is not None:
             extras.extend(_as_list_str(ambient_raw[key], []))
 
-    return _dedupe_phrases(base + extras)
+    if mode_raw is not None:
+        mode = str(mode_raw).strip().lower()
+        if mode in ("phrase", "phrases", "full", "full_phrase", "full-phrase"):
+            mode = "phrases"
+        else:
+            mode = "names"
+    elif names_raw is not None or extra_names:
+        mode = "names"
+    elif primary is not None:
+        # Legacy: exclusive custom list without product names → phrases mode.
+        # Default hey-hark list (or any list mentioning hark/herald) → names.
+        primary_list = _as_list_str(primary, [])
+        joined = " ".join(primary_list).lower()
+        if "hark" in joined or "herald" in joined:
+            mode = "names"
+        else:
+            mode = "phrases"
+    else:
+        mode = DEFAULT_WAKE_MODE
+
+    learn = _as_bool(ambient_raw.get("learn_from_near_misses"), default=True)
+
+    if mode == "phrases":
+        if primary is None:
+            base = list(DEFAULT_ACTIVATION_PHRASES)
+        else:
+            base = _as_list_str(primary, [])
+        phrases = _dedupe_phrases(base + extras)
+        policy = WakePolicy(
+            mode="phrases",
+            names=[],
+            phrases=phrases,
+            learn=learn,
+        )
+    else:
+        if names_raw is None:
+            names = list(DEFAULT_WAKE_NAMES)
+        else:
+            names = _as_list_str(names_raw, list(DEFAULT_WAKE_NAMES))
+        names = _dedupe_phrases(names + extra_names)
+        # Full-phrase extras still allowed alongside names
+        phrase_extras: list[str] = []
+        if primary is not None:
+            # User set both names mode and a phrase list — treat primary as extras
+            # only when they look like non-default custom adds; if it's the old
+            # default hey-hark list, ignore (names cover it).
+            primary_list = _as_list_str(primary, [])
+            default_set = {p.lower() for p in DEFAULT_ACTIVATION_PHRASES}
+            if any(p.lower() not in default_set for p in primary_list):
+                phrase_extras.extend(
+                    p for p in primary_list if p.lower() not in default_set
+                )
+        phrase_extras.extend(extras)
+        policy = WakePolicy(
+            mode="names",
+            names=names or list(DEFAULT_WAKE_NAMES),
+            phrases=_dedupe_phrases(phrase_extras),
+            learn=learn,
+        )
+
+    if load_learned_state and learn:
+        learned = load_learned()
+        policy = policy.merge_learned(
+            name_aliases=learned.name_aliases,
+            phrase_aliases=learned.phrase_aliases,
+        )
+    return policy
 
 
 def _warn_unknown_keys(
@@ -663,27 +801,9 @@ def load_config(path: Path | None = None) -> HarkConfig:
                 listen_raw.get("soft_end_phrases"), list(DEFAULT_SOFT_END_PHRASES)
             ),
         ),
-        ambient=AmbientConfig(
-            enabled=ambient_enabled,
-            activation_phrases=resolve_activation_phrases(
-                ambient_raw if isinstance(ambient_raw, dict) else {}
-            ),
-            engine=str(ambient_raw.get("engine", "vosk")),
-            model_path=_resolve_vosk_model_path(
-                str(ambient_raw["model_path"])
-                if ambient_raw.get("model_path")
-                else os.environ.get("HARK_VOSK_MODEL")
-            ),
-            snippet_s=float(ambient_raw.get("snippet_s", 2.5)),
-            timeout_s=float(ambient_raw.get("timeout_s", 300)),
-            debug=bool(
-                ambient_raw.get(
-                    "debug",
-                    os.environ.get("HARK_DEBUG", "").lower()
-                    in ("1", "true", "yes", "on"),
-                )
-            ),
-            debug_retention_days=float(ambient_raw.get("debug_retention_days", 7)),
+        ambient=_build_ambient_config(
+            ambient_raw if isinstance(ambient_raw, dict) else {},
+            ambient_enabled=ambient_enabled,
         ),
         stt=SttConfig(provider=stt_provider),
         tts=TtsConfig(
@@ -798,7 +918,10 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
         },
         "ambient": {
             "enabled": cfg.ambient.enabled,
+            "wake_mode": cfg.ambient.wake_mode,
+            "names": list(cfg.ambient.names),
             "activation_phrases": list(cfg.ambient.activation_phrases),
+            "learn_from_near_misses": cfg.ambient.learn_from_near_misses,
             "engine": cfg.ambient.engine,
             "model_path": cfg.ambient.model_path,
             "snippet_s": cfg.ambient.snippet_s,

@@ -25,6 +25,14 @@ def test_resolve_extra_appends_defaults():
         assert p in phrases
 
 
+def test_custom_only_phrases_skip_bare_product_fuzzy():
+    """Replacing defaults with non-product phrases keeps bare herald exclusive."""
+    phrases = resolve_activation_phrases({"trigger_phrases": ["start prompt"]})
+    assert match_activation("harold", phrases, anywhere=True) is None
+    assert match_activation("yo hark", phrases, anywhere=True) is None
+    assert match_activation("start prompt ship it", phrases, anywhere=True) is not None
+
+
 def test_resolve_trigger_phrases_replaces_defaults():
     phrases = resolve_activation_phrases({"trigger_phrases": ["start prompt"]})
     assert phrases == ["start prompt"]
@@ -38,7 +46,9 @@ def test_resolve_activation_and_extra_merge():
             "extra_activation_phrases": ["start prompt"],
         }
     )
-    assert phrases == ["hey hark", "start prompt"]
+    # Names mode (hark present): display list includes name greating samples + extras
+    assert "hey hark" in phrases
+    assert "start prompt" in phrases
 
 
 def test_load_config_extra_trigger_phrases(tmp_path):

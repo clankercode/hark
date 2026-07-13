@@ -58,7 +58,12 @@ Always address **`session_id/pane_id`**. Prefer bound **`event_id`** from watch 
 - **R2/R3** (permissions, destructive): always confirm. **R0/R1**: confirm only when unsure.  
 - **Listen end:** default silence/Smart Turn. If `[listen] end_mode = "radio"`, keep listening through long pauses until a **product-scoped** end phrase (`okay hark send`, `end prompt`, `hark over`). Cancel: `hark cancel` (not casual “cancel that”).  
 - **Partials (radio only):** you may receive `ambient.partial` / `partial=true` with interim text, HOLD warnings, and **`agent_control`**. You **MUST NOT** deliver to a pane until `final=true` / `ambient.prompt` for that `stream_id` — but you **MAY** end capture early (below).  
-- **Ambient:** optional `[ambient]` wake via local short snippets; cloud STT after activation. Defaults include `hey hark` / `hey herald`. Custom wakes: set `trigger_phrases` / `activation_phrases` (replace list) or `extra_trigger_phrases` (append), e.g. `extra_trigger_phrases = ["start prompt"]`. After editing config, **SIGHUP** the ambient process to reload phrases without full restart (`kill -HUP <pid>`); restart also works. See [docs/CUSTOM_WAKE.md](../../docs/CUSTOM_WAKE.md).  
+- **Ambient:** optional `[ambient]` wake via local short snippets; cloud STT after activation. Defaults: names `hark` / `herald` (say hey/hello/yo/sup + name, or bare herald/harold). **Two customization styles** (pick one) — see [docs/CUSTOM_WAKE.md](../../docs/CUSTOM_WAKE.md):
+  1. **Name-based** (default): `[ambient] wake_mode = "names"`, `names = ["hark", "herald"]`, optional `extra_names`. Greating+name and bare name; seed mishears for hark/herald.
+  2. **Full-phrase:** `wake_mode = "phrases"`, `trigger_phrases = ["start prompt", …]` (no name fuzzy).
+  - **Learning:** failed wake near-misses auto-expand alternates into `~/.local/state/hark/wake_learned.json` **without restart** (`ambient.wake_learned`). Names mode learns name tokens; phrases mode learns full phrases. Disable with `learn_from_near_misses = false`.
+  - After **config.toml** edits: **SIGHUP** ambient (`kill -HUP <pid>`) or restart Mode A. Learning does not need HUP.
+  - When the operator asks you to reconfigure wake: choose names vs phrases, edit the right keys, SIGHUP, confirm with a spoken test wake.
 
 
 ## Dogfooding (always on)

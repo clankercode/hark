@@ -59,7 +59,12 @@ def run_doctor(
         "ambient": {
             "enabled": cfg.ambient.enabled,
             "engine": cfg.ambient.engine,
+            "wake_mode": getattr(cfg.ambient, "wake_mode", "names"),
+            "names": list(getattr(cfg.ambient, "names", []) or []),
             "activation_count": len(cfg.ambient.activation_phrases),
+            "learn_from_near_misses": bool(
+                getattr(cfg.ambient, "learn_from_near_misses", True)
+            ),
             "model_path": cfg.ambient.model_path,
             "model_ok": bool(
                 cfg.ambient.model_path

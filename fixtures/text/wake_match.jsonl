@@ -3,12 +3,22 @@
 {"id":"anywhere-mid-snippet","input":"um yes hey hark ship it","anywhere":true,"expect_match":true,"expect_phrase":"hey hark","expect_remainder_contains":"ship"}
 {"id":"no-false-hark-back","input":"please hark back to the earlier design","anywhere":false,"expect_match":false}
 {"id":"no-false-herald-of","input":"the herald of spring arrived","anywhere":false,"expect_match":false}
-{"id":"no-bare-hark","input":"hark back to the design","anywhere":false,"expect_match":false}
+{"id":"no-false-herald-of-anywhere","input":"the herald of spring arrived","anywhere":true,"expect_match":false}
+{"id":"no-hark-back-idiom","input":"hark back to the design","anywhere":false,"expect_match":false}
 {"id":"fuzzy-hey-hook","input":"hey hook","anywhere":true,"expect_match":true,"expect_phrase_contains":"hark"}
 {"id":"fuzzy-hey-harold","input":"hey harold please","anywhere":true,"expect_match":true,"expect_phrase_contains":"herald"}
 {"id":"fuzzy-hey-hawk","input":"hey hawk","anywhere":true,"expect_match":true,"expect_phrase_contains":"hark"}
 {"id":"fuzzy-hello-hook","input":"hello hook","anywhere":true,"expect_match":true,"expect_phrase_contains":"hark"}
 {"id":"hello-herald","input":"hello herald","anywhere":true,"expect_match":true,"expect_phrase_contains":"herald"}
+{"id":"yo-herald","input":"yo herald","anywhere":true,"expect_match":true,"expect_phrase_contains":"herald"}
+{"id":"yo-hark-remainder","input":"yo hark ship it","anywhere":true,"expect_match":true,"expect_phrase_contains":"hark","expect_remainder_contains":"ship"}
+{"id":"sup-herald","input":"sup herald","anywhere":true,"expect_match":true,"expect_phrase":"sup herald"}
+{"id":"sup-harold-remainder","input":"sup harold status","anywhere":true,"expect_match":true,"expect_phrase_contains":"herald","expect_remainder_contains":"status"}
+{"id":"sup-hark","input":"sup hark","anywhere":true,"expect_match":true,"expect_phrase_contains":"hark"}
+{"id":"bare-harold","input":"harold","anywhere":true,"expect_match":true,"expect_phrase":"herald"}
+{"id":"bare-herald","input":"herald","anywhere":true,"expect_match":true,"expect_phrase":"herald"}
+{"id":"bare-hark","input":"hark","anywhere":true,"expect_match":true,"expect_phrase":"hark"}
+{"id":"um-harold","input":"um harold","anywhere":true,"expect_match":true,"expect_phrase":"herald"}
 {"id":"miss-a-hawk","input":"a hawk","anywhere":true,"expect_match":false}
 {"id":"miss-hey-hoc","input":"hey hoc","anywhere":true,"expect_match":false}
 {"id":"miss-hello-alone","input":"hello","anywhere":true,"expect_match":false}
