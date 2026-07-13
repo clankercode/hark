@@ -54,20 +54,21 @@ jobs:
       - name: npm pack --dry-run
         run: npm pack --dry-run
 
-      - name: npx skills discovers package skills
+      # `skills --list` renders names as styled list items: a leading box-drawing
+      # prefix (e.g. "│    hark") plus ANSI colour codes when colour is forced (CI).
+      # Strip ANSI first, then match each name as the sole token on its line so the
+      # assertions don't depend on the exact decoration.
+      - name: npx skills discovers skills (package + monorepo)
         working-directory: ${{ github.workspace }}
         run: |
-          out="$(npx --yes skills@1.5.16 add ./packages/ultradyn-hark --list 2>&1)"
-          echo "$out"
-          echo "$out" | grep -q 'Found 2 skills'
-          echo "$out" | grep -qE '^\s+hark\s*$'
-          echo "$out" | grep -qE '^\s+handsfree\s*$'
-
-      - name: npx skills discovers monorepo skills/
-        working-directory: ${{ github.workspace }}
-        run: |
-          out="$(npx --yes skills@1.5.16 add . --list 2>&1)"
-          echo "$out"
-          echo "$out" | grep -q 'Found 2 skills'
-          echo "$out" | grep -qE '^\s+hark\s*$'
-          echo "$out" | grep -qE '^\s+handsfree\s*$'
+          assert_two_skills() {
+            local src="$1" raw clean
+            raw="$(npx --yes skills@1.5.16 add "$src" --list 2>&1)"
+            clean="$(printf '%s\n' "$raw" | sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+            printf '%s\n' "$clean"
+            printf '%s\n' "$clean" | grep -q 'Found 2 skills'
+            printf '%s\n' "$clean" | grep -qE '^[^[:alnum:]]*hark[[:space:]]*$'
+            printf '%s\n' "$clean" | grep -qE '^[^[:alnum:]]*handsfree[[:space:]]*$'
+          }
+          assert_two_skills ./packages/ultradyn-hark
+          assert_two_skills .
