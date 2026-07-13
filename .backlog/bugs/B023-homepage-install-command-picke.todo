@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T09:13:47Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T09:16:07Z"
 complexity: medium
 created_at: "2026-07-13T09:11:11Z"
 depends_on: []
+duration_minutes: 2.339167633333333
 estimate_hours: 1
 id: B023
 priority: high
 started_at: "2026-07-13T09:13:47Z"
-status: in_progress
+status: done
 tags: []
 title: Homepage install command picker (bash/npm/pnpm/bun) component
-updated_at: "2026-07-13T09:13:47Z"
+updated_at: "2026-07-13T09:16:07Z"
 ---
 ## Goal
 Enhance the static site install section with a segmented control / radio-group for package manager installers.
