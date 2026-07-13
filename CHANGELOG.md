@@ -6,6 +6,9 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- Site OG card (B030 follow-up): social preview is designed as `site/og-image.html`
+  and rendered to `site/og.png` via `~/.llm-general/skills/` (`og-social-previews` +
+  `headless-browser-screenshots` + visual review). See `site/README.md`.
 - Config.toml live-reload (B036): ambient Mode A watches the active config path
   (`HARK_CONFIG` / `~/.config/hark/config.toml`) by mtime poll + debounce and applies
   the same `apply_config_reload` path as SIGHUP (phrases, names, `listen.end_mode`,

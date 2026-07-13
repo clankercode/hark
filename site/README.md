@@ -22,6 +22,28 @@ text color and underline cleanly in body, eyebrow, and verse.
 **Performance:** system font stacks only (no Google Fonts), static SVG diagram (no
 canvas loop), minimal CSS/JS. Prefer editing tokens over adding dependencies.
 
+## Open Graph / Twitter card
+
+Source of truth: **`og-image.html`** (fixed 1200×630). Rendered PNG: **`og.png`**.
+
+Uses the skill stack under `~/.llm-general/skills/`:
+
+1. **`og-social-previews`** — card design + meta workflow  
+2. **`headless-browser-screenshots`** — Playwright render  
+3. **`visual-review-and-fix`** — vision/geometry polish before ship  
+
+```bash
+# From repo root
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+node "$HOME/.llm-general/skills/headless-browser-screenshots/scripts/screenshot.mjs" \
+  --url site/og-image.html \
+  --out site/og.png \
+  --width 1200 --height 630
+```
+
+`index.html` points `og:image` / `twitter:image` at `https://hark.xk.io/og.png`.
+Do not screenshot the live homepage for social previews — edit the HTML card and re-render.
+
 ## Local preview
 
 ```bash
