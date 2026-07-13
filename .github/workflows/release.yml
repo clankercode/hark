@@ -61,16 +61,20 @@ jobs:
           echo "TAG_NAME=$tag_name" >> "$GITHUB_ENV"
           echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
 
-      # Optional gate: Python package tests (skills ship with monorepo CLI).
+      # Gate: Python tests (skills ship with monorepo CLI). sounddevice needs PortAudio.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install system audio libs
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 portaudio19-dev
       - name: Install Python deps + pytest
         working-directory: .
         run: |
           pip install -e ".[dev]"
           pytest -q --tb=line
-        continue-on-error: false
 
       # Trusted publishing requires npm >= 11.5.1; Node 22 ships older npm.
       - name: Upgrade npm (for OIDC trusted publishing)
