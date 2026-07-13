@@ -21,3 +21,10 @@ hark ask / listen failed with mic busy while ambient held MicLease. Agents had t
 - Listen/ask/tts --listen should pause ambient (or share lease) and resume after
 - No "mic busy" during normal Mode A answer loop
 - Start cue still plays on speech open after TTS
+
+
+## Implemented (2026-07-13)
+- `hark.mic_coord.pause_ambient_for_mic` — writes state/ambient.pause, waits for mic free
+- `run_listen` wraps MicLease with pause
+- Ambient `_wait_for_wake` holds MicLease per snippet only and skips while pause exists
+- Tests: tests/test_mic_coord.py
