@@ -30,6 +30,7 @@ class PlayResult:
 
 
 # Cross-process FIFO speaker: synth may run in parallel; play is serial (B092).
+# Ticket is claimed at *launch* (before synth) so N concurrent jobs keep order.
 _play_tls = threading.local()
 _play_lock_name = "tts_play.lock"
 _play_queue_name = "tts_play_queue.json"
@@ -47,35 +48,117 @@ def tts_play_queue_path() -> Path:
     return state_dir() / _play_queue_name
 
 
-def _queue_read(path: Path) -> dict[str, int]:
+def _queue_read(path: Path) -> dict[str, object]:
     import json
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        cancelled = data.get("cancelled") or []
         return {
             "next": int(data.get("next", 0)),
             "serving": int(data.get("serving", 0)),
+            "cancelled": [int(x) for x in cancelled],
         }
     except Exception:
-        return {"next": 0, "serving": 0}
+        return {"next": 0, "serving": 0, "cancelled": []}
 
 
-def _queue_write(path: Path, state: dict[str, int]) -> None:
+def _queue_write(path: Path, state: dict[str, object]) -> None:
     import json
 
+    cancelled = sorted({int(x) for x in (state.get("cancelled") or [])})
+    # Drop cancelled tickets already behind the head
+    serving = int(state["serving"])
+    cancelled = [c for c in cancelled if c >= serving]
     path.write_text(
-        json.dumps({"next": int(state["next"]), "serving": int(state["serving"])}),
+        json.dumps(
+            {
+                "next": int(state["next"]),
+                "serving": serving,
+                "cancelled": cancelled,
+            }
+        ),
         encoding="utf-8",
     )
 
 
-@contextmanager
-def exclusive_playback() -> Iterator[None]:
-    """FIFO global TTS speaker (fcntl + ticket). Re-entrant in the same thread.
+def _skip_cancelled_heads(st: dict[str, object]) -> dict[str, object]:
+    """Advance serving past any tickets marked cancelled."""
+    cancelled = set(int(x) for x in (st.get("cancelled") or []))
+    serving = int(st["serving"])
+    while serving in cancelled:
+        cancelled.discard(serving)
+        serving += 1
+    st["serving"] = serving
+    st["cancelled"] = sorted(cancelled)
+    return st
 
-    Concurrent ``hark tts`` processes synthesize freely, then take a ticket and
-    play in launch order without audio overlap. Nested multi-chunk holds do not
-    take a second ticket.
+
+def _advance_serving(st: dict[str, object]) -> dict[str, object]:
+    """Move serving past the current head and any following cancelled tickets."""
+    st["serving"] = int(st["serving"]) + 1
+    return _skip_cancelled_heads(st)
+
+
+def claim_tts_play_ticket() -> int:
+    """Reserve FIFO place *before* synth so launch order is preserved (B092).
+
+    Call once per outer utterance (not per multi-chunk). Then
+    :func:`exclusive_playback` with that ticket. On failure before play, call
+    :func:`abandon_tts_play_ticket` so the queue cannot stall.
+    """
+    import fcntl
+
+    lock_path = tts_play_lock_path()
+    queue_path = tts_play_queue_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        st = _queue_read(queue_path)
+        ticket = int(st["next"])
+        st["next"] = ticket + 1
+        if int(st["serving"]) > int(st["next"]):
+            st["serving"] = ticket
+        _queue_write(queue_path, st)
+        return ticket
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def abandon_tts_play_ticket(ticket: int) -> None:
+    """Drop a claimed ticket without playing (synth error / early return)."""
+    import fcntl
+
+    lock_path = tts_play_lock_path()
+    queue_path = tts_play_queue_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        st = _queue_read(queue_path)
+        if int(st["serving"]) == ticket:
+            _queue_write(queue_path, _advance_serving(st))
+        else:
+            cancelled = list(st.get("cancelled") or [])
+            if ticket not in cancelled:
+                cancelled.append(int(ticket))
+            st["cancelled"] = cancelled
+            # If cancelled ticket is somehow at head, skip it
+            _queue_write(queue_path, _skip_cancelled_heads(st))
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+@contextmanager
+def exclusive_playback(ticket: int | None = None) -> Iterator[None]:
+    """Hold the global TTS speaker for *ticket* (FIFO). Re-entrant same thread.
+
+    Prefer claiming with :func:`claim_tts_play_ticket` **before** synthesize so
+    five concurrent ``hark tts`` keep launch order even if synth finishes out
+    of order. If *ticket* is None, claim now (play-time claim).
     """
     depth = int(getattr(_play_tls, "depth", 0) or 0)
     if depth > 0:
@@ -88,30 +171,22 @@ def exclusive_playback() -> Iterator[None]:
 
     import fcntl
 
+    if ticket is None:
+        ticket = claim_tts_play_ticket()
+
     lock_path = tts_play_lock_path()
     queue_path = tts_play_queue_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
-    ticket: int | None = None
+    advanced = False
     try:
-        # Claim FIFO ticket
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        st = _queue_read(queue_path)
-        ticket = int(st["next"])
-        st["next"] = ticket + 1
-        # Recover if serving ran ahead of a crashed holder (tickets wrap rarely)
-        if st["serving"] > st["next"]:
-            st["serving"] = ticket
-        _queue_write(queue_path, st)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-
         # Wait until we are head of line, then hold lock through playback
         while True:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            st = _queue_read(queue_path)
+            st = _skip_cancelled_heads(_queue_read(queue_path))
+            _queue_write(queue_path, st)
             if int(st["serving"]) == ticket:
                 break
-            # Stale lock recovery: if serving lags forever, still wait (v1)
             fcntl.flock(fd, fcntl.LOCK_UN)
             time.sleep(0.03)
 
@@ -121,11 +196,17 @@ def exclusive_playback() -> Iterator[None]:
         finally:
             _play_tls.depth = 0
             st = _queue_read(queue_path)
-            # Advance only if we still own the head (avoid double-advance)
             if int(st["serving"]) == ticket:
-                st["serving"] = ticket + 1
-                _queue_write(queue_path, st)
+                _queue_write(queue_path, _advance_serving(st))
+                advanced = True
             fcntl.flock(fd, fcntl.LOCK_UN)
+    except BaseException:
+        if not advanced:
+            try:
+                abandon_tts_play_ticket(ticket)
+            except Exception:
+                pass
+        raise
     finally:
         os.close(fd)
 

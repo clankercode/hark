@@ -19,7 +19,9 @@ def test_exclusive_playback_serializes_fifo(tmp_path, monkeypatch):
     def worker(name: str, hold: float, delay_before: float = 0.0) -> None:
         if delay_before:
             time.sleep(delay_before)
-        with pb.exclusive_playback():
+        ticket = pb.claim_tts_play_ticket()
+        # Simulate slower "synth" for earlier tickets so late claimers finish first
+        with pb.exclusive_playback(ticket=ticket):
             order.append(f"{name}:in")
             time.sleep(hold)
             order.append(f"{name}:out")
@@ -33,6 +35,30 @@ def test_exclusive_playback_serializes_fifo(tmp_path, monkeypatch):
     t2.join()
     # FIFO by ticket claim order (a before b), not finish order
     assert order == ["a:in", "a:out", "b:in", "b:out"]
+
+
+def test_five_tickets_play_in_launch_order(tmp_path, monkeypatch):
+    """5 concurrent jobs: reverse synth finish order must still play 0..4."""
+    monkeypatch.setattr(pb, "tts_play_lock_path", lambda: tmp_path / "tts_play.lock")
+    monkeypatch.setattr(pb, "tts_play_queue_path", lambda: tmp_path / "tts_play_queue.json")
+    play_order: list[int] = []
+    barrier = threading.Barrier(5)
+
+    def worker(i: int) -> None:
+        ticket = pb.claim_tts_play_ticket()  # launch-order claim
+        barrier.wait()  # all tickets reserved before any play
+        # Higher i "synths" faster — would race ahead without FIFO tickets
+        time.sleep(0.05 * (4 - i))
+        with pb.exclusive_playback(ticket=ticket):
+            play_order.append(i)
+            time.sleep(0.02)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert play_order == [0, 1, 2, 3, 4]
 
 
 def test_exclusive_playback_reentrant(tmp_path, monkeypatch):
@@ -102,9 +128,15 @@ def test_run_tts_pipelines_next_chunk_synth(monkeypatch):
         ),
     )
     # exclusive_playback identity for unit test (no flock races with parallel suites)
-    from contextlib import nullcontext
+    from contextlib import contextmanager
 
-    monkeypatch.setattr("hark.speech.exclusive_playback", nullcontext)
+    @contextmanager
+    def _fake_exclusive(ticket=None):
+        yield
+
+    monkeypatch.setattr("hark.speech.exclusive_playback", _fake_exclusive)
+    monkeypatch.setattr("hark.speech.claim_tts_play_ticket", lambda: 0)
+    monkeypatch.setattr("hark.speech.abandon_tts_play_ticket", lambda t: None)
 
     long = ("Sentence number one with padding words here. " * 20) + (
         "Sentence number two with more padding. " * 20
