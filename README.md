@@ -98,7 +98,7 @@ Then:
 
 ```bash
 hark doctor
-# In Claude Code / compatible agents:
+# In Claude Code / Grok / Pi / OpenCode / agy / compatible agents:
 #   /hark
 ```
 
@@ -113,10 +113,11 @@ npx skills add ultradyn/hark -g -y
 
 You still need the **Python `hark` CLI** on `PATH` for Mode A.
 
-**Monitor-capable harness required.** Mode A needs a long-lived Monitor on `hark watch --for-monitor`. Claude Code and Grok provide this natively; on other harnesses install a plugin that does:
+**Monitor-capable harness required.** Mode A needs a long-lived Monitor on `hark watch --for-monitor`. Claude Code and Grok provide this natively; on other harnesses install a plugin or use agentapi:
 
 - **Pi** — [pi-monitor](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`): `Monitor` tool that runs a background command and delivers regex-matching stdout into the session
 - **OpenCode** — [opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg): `monitor_start` / `monitor_list` / `monitor_fetch` / `monitor_kill` — background output delivered back into the owning session
+- **Antigravity (`agy`)** — agentapi inject wakes the session when the Mode A feed has new lines
 
 ### npm package (`@ultradyn/hark`)
 

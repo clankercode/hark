@@ -4,9 +4,9 @@
 
 Handsfree voice for your coding-agent **herd** in [Herdr](https://herdr.dev/).
 
-This package ships the **`hark`** and **`handsfree`** agent skills (Mode A). Load the skill in Claude Code, Grok, Pi, OpenCode, or any agent with skill + Monitor support — the agent arms Herdr watch, speaks blocked questions, listens via cloud STT, and delivers replies safely.
+This package ships the **`hark`** and **`handsfree`** agent skills (Mode A). Load the skill in Claude Code, Grok, Pi, OpenCode, Antigravity (`agy`), or any agent with skill + Monitor support — the agent arms Herdr watch, speaks blocked questions, listens via cloud STT, and delivers replies safely.
 
-**Monitor tool:** Claude Code and Grok provide it natively. On **Pi**, install [pi-monitor](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`); on **OpenCode**, install [opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg). Both deliver a background `hark watch --for-monitor` feed into the session.
+**Monitor tool:** Claude Code and Grok provide it natively. On **Pi**, install [pi-monitor](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`); on **OpenCode**, install [opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg); on **Antigravity (`agy`)**, use agentapi inject. Plugins / agentapi deliver a background `hark watch --for-monitor` (or `hark monitor --for-monitor`) feed into the session.
 
 | | |
 |--|--|

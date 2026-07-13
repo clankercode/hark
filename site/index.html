@@ -13,7 +13,7 @@
     <meta property="og:title" content="Hark — handsfree voice for your agent herd" />
     <meta
       property="og:description"
-      content="Fleet control without the keyboard. Blocked agents speak; you answer by voice. Skill-first setup for Claude, Grok, Pi, OpenCode, and more."
+      content="Fleet control without the keyboard. Blocked agents speak; you answer by voice. Skill-first setup for Claude, Grok, Pi, OpenCode, Antigravity (agy), and more."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://hark.xk.io/" />
@@ -32,7 +32,7 @@
     <meta name="twitter:title" content="Hark — handsfree voice for your agent herd" />
     <meta
       name="twitter:description"
-      content="Fleet control without the keyboard. Blocked agents speak; you answer by voice. Skill-first setup for Claude, Grok, Pi, OpenCode, and more."
+      content="Fleet control without the keyboard. Blocked agents speak; you answer by voice. Skill-first setup for Claude, Grok, Pi, OpenCode, Antigravity (agy), and more."
     />
     <meta name="twitter:image" content="https://hark.xk.io/og.png" />
     <meta
@@ -329,7 +329,7 @@
               <span class="term__title">you · one shot</span>
             </div>
             <div class="term__body">
-              <div class="dim"># In Claude / Grok / Pi / OpenCode (with Monitor)…</div>
+              <div class="dim"># In Claude / Grok / Pi / OpenCode / agy (with Monitor)…</div>
               <div><span class="prompt">›</span> <span class="cmd">/hark</span></div>
               <div class="dim"># or: use the hark skill · handsfree alias</div>
               <div class="out">agent: running hark doctor…</div>
@@ -356,7 +356,6 @@
             <code>hark watch --for-monitor</code>. Without that, blocks won’t interrupt the session.
           </p>
         </div>
-
         <ul class="logo-strip" aria-label="Compatible agents and orchestrators">
           <li class="logo-strip__item">
             <img
@@ -409,6 +408,19 @@
           <li class="logo-strip__item">
             <img
               class="logo-strip__logo"
+              src="assets/logos/antigravity.svg"
+              width="28"
+              height="28"
+              alt="Antigravity logo"
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="logo-strip__label">Antigravity</span>
+            <span class="logo-strip__hint">agy</span>
+          </li>
+          <li class="logo-strip__item">
+            <img
+              class="logo-strip__logo"
               src="assets/logos/codex.svg"
               width="28"
               height="28"
@@ -417,19 +429,6 @@
               decoding="async"
             />
             <span class="logo-strip__label">Codex</span>
-          </li>
-          <li class="logo-strip__item logo-strip__item--muted">
-            <img
-              class="logo-strip__logo"
-              src="assets/logos/antigravity.svg"
-              width="28"
-              height="28"
-              alt="Antigravity logo placeholder"
-              loading="lazy"
-              decoding="async"
-            />
-            <span class="logo-strip__label">Antigravity</span>
-            <span class="logo-strip__hint">agy</span>
           </li>
         </ul>
 
@@ -536,6 +535,25 @@
                     <span class="agent-cell">
                       <img
                         class="agent-cell__logo"
+                        src="assets/logos/antigravity.svg"
+                        width="20"
+                        height="20"
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span>Antigravity <span class="agent-cell__aka">agy</span></span>
+                    </span>
+                  </td>
+                  <td class="ok">agentapi</td>
+                  <td>Google Antigravity CLI; long-lived feed via agentapi inject (see B049 / docs)</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="agent-cell">
+                      <img
+                        class="agent-cell__logo"
                         src="assets/logos/codex.svg"
                         width="20"
                         height="20"
@@ -549,25 +567,6 @@
                   </td>
                   <td class="maybe">If Monitor exists</td>
                   <td>Any agent with shell + long-lived watch can drive Hark</td>
-                </tr>
-                <tr>
-                  <td>
-                    <span class="agent-cell">
-                      <img
-                        class="agent-cell__logo"
-                        src="assets/logos/antigravity.svg"
-                        width="20"
-                        height="20"
-                        alt=""
-                        aria-hidden="true"
-                        loading="lazy"
-                        decoding="async"
-                      />
-                      <span>Antigravity <span class="agent-cell__aka">agy</span></span>
-                    </span>
-                  </td>
-                  <td class="maybe">If Monitor exists</td>
-                  <td>Placeholder — swap in an official mark when available; same shell + watch pattern</td>
                 </tr>
               </tbody>
             </table>
