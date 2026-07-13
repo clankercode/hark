@@ -11,6 +11,8 @@
 2. Monitor(persistent, command="hark watch --for-monitor --statuses blocked,done")
 ```
 
+The Monitor tool is native in Claude Code / Grok. On Pi use [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`); on OpenCode use [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg).
+
 ## Blocked event (monitor line)
 
 ```json

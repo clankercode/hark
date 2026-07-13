@@ -63,6 +63,18 @@ blocked → extract question + risk + fingerprint
        → idempotent delivery record
 ```
 
+## Monitor / harness compatibility
+
+Mode A needs the orchestrator to hold a **long-lived Monitor** on `hark watch --for-monitor`. Availability by harness:
+
+| Harness | Monitor | How |
+|---------|---------|-----|
+| Claude Code, Grok | Native | Built-in long-lived Monitor tool |
+| Pi | Plugin | [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`) — runs a background command and delivers regex-matching stdout into the session |
+| OpenCode | Plugin | [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg) — `monitor_start` / `monitor_list` / `monitor_fetch` / `monitor_kill` deliver background output back into the owning session |
+
+Point the plugin at `hark watch --for-monitor --statuses blocked,done`. Without a Monitor, blocks won't interrupt the session.
+
 ## Related docs
 
 - [PROTOCOL.md](PROTOCOL.md) — HEP  

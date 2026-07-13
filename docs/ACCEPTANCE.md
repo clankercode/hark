@@ -74,7 +74,7 @@ Each criterion is testable. Implementation is not complete until these pass (or 
 
 | ID | Criterion |
 |----|-----------|
-| F1 | `hark watch` lines work with Grok/Claude Monitor |
+| F1 | `hark watch` lines work with Grok/Claude native Monitor, and with plugin Monitors on Pi ([pi-monitor](https://github.com/clankercode/pi-monitor)) / OpenCode ([opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg)) |
 | F2 | Skill alone describes Mode A with multi-session + keys + done judgment + bound `answer` |
 | F3 | Skill forbids auto-answer without human speech |
 | F4 | Skill places orchestrator **outside** Herdr |
