@@ -105,6 +105,24 @@
   }
 }
 
+/* Product / external brand links (e.g. Herdr) — inherit tone, underline on hover */
+a.product-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+a.product-link:hover {
+  color: var(--herald);
+  text-decoration-color: var(--herald);
+}
+
+.verse a.product-link {
+  font-style: italic;
+}
+
 /* --- Eyebrow / kicker --- */
 .eyebrow {
   display: inline-flex;

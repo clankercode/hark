@@ -15,6 +15,10 @@ Marketing / docs landing for [clankercode/hark](https://github.com/clankercode/h
 
 Change brand colors or type scale in **tokens only**; components consume `var(--…)`.
 
+**Product links:** wrap partner names (e.g. Herdr) in
+`<a class="product-link" href="https://herdr.dev/">Herdr</a>` so they inherit local
+text color and underline cleanly in body, eyebrow, and verse.
+
 ## Local preview
 
 ```bash
