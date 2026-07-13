@@ -6,6 +6,9 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- **Install freshness (B100):** `hark doctor` reports PATH / `uv tool` install vs
+  local source (`install: stale|frozen|editable`), missing cmds (e.g. `start`/`stop`),
+  and reinstall hint `uv tool install -e . --force`. Skill SETUP + dogfood notes.
 - fix(ambient, B104): dual-write HEP wake events to ambient.jsonl even when ambient stdout is redirected (e.g. restart log), so Mode A `hark monitor` always sees ambient.prompt/partials.
 - fix(monitor, B102): singleflight lock on `hark monitor` (`monitor.pid` + flock)
   so a second consumer refuses instead of duplicating HEP wakes; skill documents
