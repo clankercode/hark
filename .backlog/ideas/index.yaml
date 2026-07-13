@@ -17,8 +17,15 @@ ideas:
       status: done
       tags: []
       title: TTS/STT ducking when music or other media is playing
-    - file: I003-live-web-dashboard-stream-even.todo
+    - complexity: high
+      depends_on: []
+      estimate_hours: 16
+      file: I003-live-web-dashboard-stream-even.todo
       id: I003
+      priority: high
+      status: in_progress
+      tags: []
+      title: 'Live web dashboard: stream events, Herdr state, chatlogs + mic dictation'
     - file: I004-add-support-for-local-models-l.todo
       id: I004
     - file: I005-add-ability-to-voice-control-c.todo
