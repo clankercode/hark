@@ -42,3 +42,7 @@ bugs:
     - file: B041-the-main-binary-should-have-a.todo
     - file: B042-some-of-the-fonts-on-the-stati.todo
     - file: B043-static-site-homepage-navbar-do.todo
+    - file: B044-detect-active-media-playback-p.todo
+    - file: B045-duck-other-media-volume-during.todo
+    - file: B046-duck-or-pause-media-during-stt.todo
+    - file: B047-config-docs-and-doctor-checks.todo
