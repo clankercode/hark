@@ -187,11 +187,20 @@ def resolve_static_root() -> Path | None:
 PLACEHOLDER_HTML = """<!doctype html>
 <meta charset=\"utf-8\"><title>hark dashboard</title>
 <body style=\"font-family:system-ui;background:#0b0f19;color:#f3f4f6;
-display:grid;place-items:center;height:100vh;margin:0\">
-<div style=\"text-align:center\"><h1>hark serve is running</h1>
-<p>webui bundle not found — build it with <code>npm run build</code> in
-<code>webui/</code> (see docs/DASHBOARD.md).</p>
-<p><a style=\"color:#a5b4fc\" href=\"/api/v1/health\">/api/v1/health</a></p></div>
+display:grid;place-items:center;height:100vh;margin:0;padding:1.5rem\">
+<div style=\"text-align:center;max-width:36rem\">
+<h1>hark webui is running</h1>
+<p>webui bundle not found (or was missing when this process started).</p>
+<ol style=\"text-align:left;line-height:1.5\">
+<li>From the repo: <code>./scripts/build-webui.sh</code>
+  (or <code>cd webui &amp;&amp; npm install &amp;&amp; npm run build</code>)</li>
+<li><strong>Restart</strong> the server: stop it, then
+  <code>hark webui</code> again — a plain browser refresh is not enough if
+  the process started before the build.</li>
+</ol>
+<p>See <code>docs/DASHBOARD.md</code>. API:
+<a style=\"color:#a5b4fc\" href=\"/api/v1/health\">/api/v1/health</a></p>
+</div>
 """
 
 
@@ -487,12 +496,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------- static
 
     def _serve_static(self, path: str) -> None:
-        root = self.server.static_root
+        # Re-resolve so a build after `hark webui` started is picked up without
+        # requiring an immediate restart (still recommend restart for cleanliness).
+        root = resolve_static_root()
+        if root is not None:
+            self.server.static_root = root
+        else:
+            root = self.server.static_root
         if root is None:
             body = PLACEHOLDER_HTML.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -507,6 +523,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         if target.name == "index.html" or target.suffix == ".webmanifest":
+            self.send_header("Cache-Control", "no-cache")
+        elif target.name == "sw.js":
+            # Service worker must revalidate so a post-build update is not stuck
             self.send_header("Cache-Control", "no-cache")
         else:
             self.send_header("Cache-Control", "public, max-age=31536000, immutable")

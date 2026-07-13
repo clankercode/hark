@@ -1,6 +1,6 @@
 /* hark dashboard service worker — install-enabler + static cache only.
    Never touches /api (SSE streams, auth cookies, live data). */
-const CACHE = "hark-static-v1";
+const CACHE = "hark-static-v2";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();

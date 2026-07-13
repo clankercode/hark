@@ -6,6 +6,8 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- fix(dashboard): re-resolve webui static root on each request so a build after `hark webui` started is picked up; clearer placeholder (build + restart); SW cache bump.
+
 - CLI: prefer **`hark webui`** (and `hark dashboard`) for the live web dashboard; `hark serve` remains an alias.
 
 - **Wake enrollment (I006):** `hark wake-enroll` — beep-paced capture of 5–10 activation samples (`ready` / `accept` / `reject` / `end` cues), local WAV + manifest under `~/.local/state/hark/wake_enroll/`, optional wake-backend scoring to seed `wake_learned` (B077 denylist). Dry-run for beep dogfood.

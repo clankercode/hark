@@ -36,7 +36,7 @@ they do not work over plain `http://100.x.y.z` (see Security below).
 
 Webui development: `cd webui && npm run dev` (proxies `/api` to a local
 `hark serve`) or `npm run dev:fixtures` (replays the golden contract fixtures,
-no backend). Ship it with `scripts/build-webui.sh` (staged into the wheel).
+no backend). Ship it with `scripts/build-webui.sh` (staged into the wheel). **After building, restart `hark webui`** — a browser refresh alone does not reload a process that started when the bundle was missing (fixed to re-scan, but restart is still the reliable path).
 
 ## Transport
 
