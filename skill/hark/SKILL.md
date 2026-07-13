@@ -205,8 +205,9 @@ Requires Mode A workers writing state (`./scripts/run-mode-a.sh` or `hark daemon
 
 - **Pi** — [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`)
 - **OpenCode** — [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg)
+- **Antigravity (`agy`)** — agentapi inject (wake the session on feed lines)
 
-Point either at: `hark monitor --for-monitor`.
+Point plugins / agentapi at: `hark monitor --for-monitor`.
 
 Optional: `hark monitor --replay 0` to skip replay; `--full` for uncompacted JSON.
 

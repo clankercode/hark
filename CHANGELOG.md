@@ -6,6 +6,10 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- First-class orchestrator listing (B050): **Antigravity (`agy`)** joins Claude,
+  Grok, Pi, and OpenCode on the homepage Supports table (Monitor: **agentapi**),
+  skill Monitor notes, README, and package docs. Listing only — agentapi Mode A
+  path is B049.
 - Skill: document Herdr **local / SSH / mixed** multi-session setup (`[[herdr.sessions]]`
   with optional per-session `ssh`) for Mode A agents — see `skill/hark/SKILL.md`.
 - Site homepage (B043): sticky nav chrome spans full viewport width (content still
