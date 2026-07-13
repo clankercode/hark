@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Angular G monogram — dark-bg friendly mark for Grok / xAI CLI -->
+  <path
+    fill="#eef1f7"
+    fill-rule="evenodd"
+    d="M16 3.5c-6.9 0-12.5 5.6-12.5 12.5S9.1 28.5 16 28.5c3.55 0 6.75-1.48 9-3.86l-2.55-2.55A8.9 8.9 0 0 1 16 24.9c-4.9 0-8.9-4-8.9-8.9s4-8.9 8.9-8.9 8.9 4 8.9 8.9v1.1h-6.4v-3.6h10.15v2.5c0 6.9-5.6 12.5-12.15 12.5Z"
+  />
+</svg>

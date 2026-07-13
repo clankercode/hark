@@ -34,6 +34,32 @@ is blocked. Edit stacks in `css/tokens.css`.
 **Performance:** static SVG diagram (no canvas loop), minimal CSS/JS; three
 webfont families only. Prefer editing tokens over adding dependencies.
 
+### Compatible-agent logos (B048)
+
+Local monochrome SVGs live in **`assets/logos/`** (dark-bg fills, no CDN):
+
+| File | Agent |
+|------|--------|
+| `claude.svg` | Claude Code |
+| `grok.svg` | Grok Build / Grok CLI |
+| `pi.svg` | Pi |
+| `opencode.svg` | OpenCode |
+| `codex.svg` | Codex / others |
+| `antigravity.svg` | Antigravity (agy) — placeholder mark |
+
+Homepage `#supports` shows a **logo strip** plus logos in the compatibility table
+(`.logo-strip`, `.agent-cell` in `css/components.css`).
+
+**Adding a logo**
+
+1. Drop a square SVG in `assets/logos/` (32×32 viewBox recommended). Use light
+   fills (`#eef1f7` / brand accents) so marks read on `--bg-void`.
+2. Wire it in `index.html` — strip item + table row (`alt` on strip images;
+   decorative `alt=""` + adjacent name in the table).
+3. Prefer local files over hotlinked brand CDNs (broken/offline-proof).
+4. Keep names short for mobile; the table wraps in `.supports-table-wrap` for
+   horizontal scroll when needed.
+
 ## Open Graph / Twitter card
 
 Source of truth: **`og-image.html`** (fixed 1200×630). Rendered PNG: **`og.png`**.

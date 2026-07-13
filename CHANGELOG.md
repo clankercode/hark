@@ -14,6 +14,9 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   tools are missing. **Conference hold (B017) still wins over duck** — see
   `docs/AUDIO_DESIGN.md` and `docs/plans/I002-media-ducking.md`. Detection only;
   no volume changes yet.
+- Site Supports section (B048): local SVG marks under `site/assets/logos/` for
+  Claude Code, Grok, Pi, OpenCode, Codex, plus Antigravity (agy) placeholder —
+  logo strip + table cells, dark-bg friendly, no CDN. See `site/README.md`.
 - Skill: document Herdr **local / SSH / mixed** multi-session setup (`[[herdr.sessions]]`
   with optional per-session `ssh`) for Mode A agents — see `skill/hark/SKILL.md`.
 - Site homepage (B043): sticky nav chrome spans full viewport width (content still

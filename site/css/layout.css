@@ -330,12 +330,29 @@
   color: var(--signal);
 }
 
+.supports-card {
+  padding: 0;
+  /* Allow horizontal scroll on narrow viewports without clipping table */
+  overflow: hidden;
+}
+
+.supports-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.supports-table {
+  min-width: 34rem;
+}
+
 .supports-table td.ok {
   color: var(--safe);
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .supports-table td.maybe {
@@ -344,6 +361,12 @@
   font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* First column keeps herald mono via .risk-table; logos sit inside .agent-cell */
+.supports-table td:first-child {
+  white-space: nowrap;
 }
 
 .supports-footnote {
