@@ -29,8 +29,8 @@ def test_activation_anywhere_in_snippet():
 def test_no_false_wake_on_normal_speech():
     assert match_activation("please hark back to the earlier design") is None
     assert match_activation("the herald of spring arrived") is None
-    # without anywhere, mid-phrase start-only fails exact match
-    assert match_activation("noise hey hark") is None
+    # bare "hark" without hey/ok prefix should not fire
+    assert match_activation("hark back to the design") is None
 
 
 def test_fuzzy_hey_hook_is_hark():
