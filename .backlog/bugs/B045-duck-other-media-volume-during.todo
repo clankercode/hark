@@ -1,0 +1,43 @@
+---
+complexity: medium
+created_at: "2026-07-13T13:12:00Z"
+depends_on:
+    - B044
+estimate_hours: 3
+id: B045
+priority: medium
+status: pending
+tags:
+    - audio
+    - ducking
+    - tts
+title: Duck other media volume during TTS playback
+updated_at: "2026-07-13T13:12:00Z"
+---
+## Problem
+TTS announcements play over loud music and are hard to hear (or force operators to pause media manually).
+
+## Depends on
+B044 — need duckable sink-input list + prior volumes.
+
+## Design notes
+- Context manager (e.g. `duck_media_during(...)`) around TTS play in `speech.speak` / `play_audio` path:
+  1. Snapshot volumes of non-Hark RUNNING sink-inputs
+  2. Set each to `volume * duck_level` via `pactl set-sink-input-volume <idx> <pct>%`
+  3. Play TTS
+  4. Always restore prior volumes (try/finally); log restore failures to syslog
+- **Default on** once implemented (dogfood), with kill-switch `audio.duck_media_during_tts = true`.
+- Config keys (implement here or land with B047 — must ship with this behavior):
+  - `duck_media_during_tts` (bool, default true)
+  - `duck_level` (float 0.0–1.0, default ~0.2 of prior volume)
+  - optional `duck_exclude_apps` list
+- **Conference interaction**: if B017 hold applies / conference active, do not fight hold; skip ducking or no-op (hold already suppresses full TTS until free).
+- Fail-open: if duck set fails, still play TTS at normal volume.
+- Do **not** permanently change default sink volume — only per-sink-input.
+
+## Acceptance
+- [ ] TTS play path ducks other media and restores volumes even on exception/cancel
+- [ ] Config kill-switch disables behavior
+- [ ] Unit tests mock pactl volume set/get; no live audio required
+- [ ] Syslog/meta records duck applied (indices count, level) for dogfood
+- [ ] Conference-active path does not leave media stuck ducked
