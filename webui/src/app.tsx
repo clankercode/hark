@@ -153,7 +153,7 @@ export function App() {
             {notifyEnabled.value ? "🔔" : "🔕"}
           </button>
         )}
-        <span style="color:var(--text-faint);font-size:11px">
+        <span class="serverver" style="color:var(--text-faint);font-size:11px">
           {serverInfo.value ? `${serverInfo.value.server} ${serverInfo.value.version}` : ""}
         </span>
       </header>

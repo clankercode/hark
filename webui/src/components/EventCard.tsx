@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { api } from "../lib/api";
+// EventCard renders one dense log row (flat, hairline-separated — not a card).
 import { kindOf, severityOf, timeOf } from "../lib/stream";
 import type { Envelope, HepPayload, LogPayload, UsagePayload } from "../lib/types";
 
@@ -121,6 +122,7 @@ function Body({ e }: { e: Envelope }) {
 export function EventCard({ e }: { e: Envelope }) {
   const sev = severityOf(e);
   const eid = (e.payload as { event_id?: string }).event_id;
+  const showRaw = useSignal(false);
   return (
     <article class="event" style={`--sev:${SEV_COLOR[sev]}`} data-eid={eid} data-cursor={e.cursor}>
       <div class="head">
@@ -128,12 +130,17 @@ export function EventCard({ e }: { e: Envelope }) {
         <span class="src">{e.source}</span>
         {targetOf(e) && <span class="target">{targetOf(e)}</span>}
         <span class="when">{fmtTime(timeOf(e))}</span>
+        <button
+          class="rawtoggle"
+          aria-label="toggle raw payload"
+          title="raw payload"
+          onClick={() => (showRaw.value = !showRaw.value)}
+        >
+          {showRaw.value ? "▾" : "▸"}
+        </button>
       </div>
       <Body e={e} />
-      <details class="raw">
-        <summary>raw</summary>
-        <pre>{JSON.stringify(e.payload, null, 2)}</pre>
-      </details>
+      {showRaw.value && <pre class="rawpre">{JSON.stringify(e.payload, null, 2)}</pre>}
     </article>
   );
 }

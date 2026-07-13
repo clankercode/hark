@@ -218,12 +218,12 @@ export function HerdrView() {
           {s.agents.length === 0 ? (
             <div style="color:var(--text-faint)">no panes</div>
           ) : (
-            <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;flex-direction:column;gap:0">
               {s.agents.map((a) => (
                 <button
                   key={a.pane_id}
-                  class="navitem"
-                  style="border:1px solid var(--line-soft)"
+                  class="panerow"
+                  style={`--prow:${STATUS_COLOR[a.status] ?? "var(--info)"}`}
                   onClick={() => (selectedPane.value = { session_id: a.session_id, pane_id: a.pane_id })}
                 >
                   <span style="min-width:70px">{a.pane_id}</span>

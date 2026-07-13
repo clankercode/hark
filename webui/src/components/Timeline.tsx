@@ -46,7 +46,7 @@ export function Timeline({
     new Date(t).toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit" });
 
   return (
-    <div style="padding:6px var(--pad) 0;display:flex;align-items:flex-end;gap:8px">
+    <div style="padding:6px var(--pad) 8px;display:flex;align-items:flex-end;gap:8px">
       <span style="color:var(--text-faint);font-size:10px">{fmt(t0)}</span>
       <div style="flex:1;display:flex;align-items:flex-end;gap:1px;height:26px">
         {buckets.map((b, i) => (
