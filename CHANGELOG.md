@@ -6,6 +6,14 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- Radio soft finalize (B039): soft end phrases default **on** for radio dogfood.
+  Bare utterance-final `send it` / `send that` finalize; bare `over` finalizes only
+  when sentence-final (sole utterance or after `.`/`!`/`?`) — not “turn it over” /
+  “over the weekend”. Product phrases (`okay hark send`, `hark over`, …) unchanged.
+  Disable with `listen.soft_end_phrases_enabled = false` or
+  `HARK_SOFT_END_PHRASES_ENABLED=0`. Monitor compact `ambient.partial` lines already
+  include `text_len`. Partial cadence density remains B037.
+
 - Ambient timeout heartbeat (B033): continuous Mode A still cycles on
   `ambient.timeout_s` (default 300s), but emission of `ambient.timeout` to
   monitor NDJSON/syslog is gated by `ambient.surface_timeouts` (default **on**).
