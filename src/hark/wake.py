@@ -497,7 +497,11 @@ def suggest_learn_from_near_miss(
     )
     if best_sc < min_sc or not best_alias:
         return None
-    if len(best_alias) < 2 or len(best_alias) > 12:
+    # Min length 3 + stopword denylist (is→iris from TTS bleed, etc.).
+    # Seeds remain separate via _SEED_NAME_ALIASES / name_token_map.
+    from hark.wake_learn import is_learnable_name_alias
+
+    if not is_learnable_name_alias(best_alias):
         return None
     return ("name", best_alias, best_canon)
 
