@@ -1,0 +1,277 @@
+"""Herdr client: CLI subprocess + optional Unix socket JSON-RPC."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from hark.config import SessionConfig, resolve_session_socket
+
+
+class HerdrError(Exception):
+    """Herdr unreachable, version too old, or protocol error."""
+
+
+@dataclass
+class AgentInfo:
+    session_id: str
+    pane_id: str
+    agent: str | None
+    status: str
+    revision: int = 0
+    workspace_id: str | None = None
+    tab_id: str | None = None
+    terminal_id: str | None = None
+    cwd: str | None = None
+    focused: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def target(self) -> str:
+        return f"{self.session_id}/{self.pane_id}"
+
+
+@dataclass
+class HerdrSessionHealth:
+    session_id: str
+    ok: bool
+    version: str | None = None
+    socket: str | None = None
+    agent_count: int = 0
+    error: str | None = None
+    protocol: int | None = None
+
+
+class HerdrClient:
+    """Talk to one Herdr session via `herdr` CLI (env socket/session)."""
+
+    MIN_VERSION = (0, 7, 1)
+
+    def __init__(
+        self,
+        session: SessionConfig,
+        herdr_bin: str | None = None,
+    ) -> None:
+        self.session = session
+        self.herdr_bin = herdr_bin or session.herdr_bin or shutil.which("herdr") or "herdr"
+        self.socket_path = resolve_session_socket(session)
+
+    def _env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["HERDR_SOCKET_PATH"] = str(self.socket_path)
+        if self.session.id and self.session.id != "local":
+            env.setdefault("HERDR_SESSION", self.session.id)
+        return env
+
+    def run_json(
+        self,
+        args: list[str],
+        *,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        cmd = [self.herdr_bin, *args]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=self._env(),
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise HerdrError(f"herdr binary not found: {self.herdr_bin}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HerdrError(f"herdr timed out: {' '.join(cmd)}") from exc
+
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+            raise HerdrError(f"herdr {' '.join(args)} failed: {err[:400]}")
+
+        text = (proc.stdout or "").strip()
+        if not text:
+            raise HerdrError(f"herdr {' '.join(args)} returned empty stdout")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise HerdrError(
+                f"herdr {' '.join(args)} not JSON: {text[:200]!r}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise HerdrError(f"expected JSON object from herdr, got {type(data).__name__}")
+        return data
+
+    def version_string(self) -> str:
+        try:
+            proc = subprocess.run(
+                [self.herdr_bin, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=self._env(),
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            raise HerdrError(str(exc)) from exc
+        out = (proc.stdout or proc.stderr or "").strip()
+        # "herdr 0.7.1" or similar
+        for part in out.replace(",", " ").split():
+            if part[0].isdigit() and "." in part:
+                return part
+        return out or "unknown"
+
+    @staticmethod
+    def parse_version(ver: str) -> tuple[int, ...]:
+        nums: list[int] = []
+        for piece in ver.split("."):
+            digits = "".join(c for c in piece if c.isdigit())
+            if digits:
+                nums.append(int(digits))
+            if len(nums) >= 3:
+                break
+        return tuple(nums) if nums else (0,)
+
+    def check_version(self) -> str:
+        ver = self.version_string()
+        parsed = self.parse_version(ver)
+        if parsed < self.MIN_VERSION:
+            raise HerdrError(
+                f"Herdr {ver} < required {'.'.join(map(str, self.MIN_VERSION))}"
+            )
+        return ver
+
+    def socket_exists(self) -> bool:
+        return Path(self.socket_path).exists()
+
+    def list_agents(self) -> list[AgentInfo]:
+        data = self.run_json(["agent", "list"])
+        result = data.get("result") or data
+        agents_raw = result.get("agents") if isinstance(result, dict) else None
+        if agents_raw is None and isinstance(data.get("agents"), list):
+            agents_raw = data["agents"]
+        if not isinstance(agents_raw, list):
+            raise HerdrError("agent list missing agents[]")
+
+        out: list[AgentInfo] = []
+        for item in agents_raw:
+            if not isinstance(item, dict):
+                continue
+            pane_id = str(item.get("pane_id") or item.get("id") or "")
+            if not pane_id:
+                continue
+            status = str(
+                item.get("agent_status")
+                or item.get("status")
+                or item.get("state")
+                or "unknown"
+            )
+            out.append(
+                AgentInfo(
+                    session_id=self.session.id,
+                    pane_id=pane_id,
+                    agent=(str(item["agent"]) if item.get("agent") else None),
+                    status=status,
+                    revision=int(item.get("revision") or item.get("pane_revision") or 0),
+                    workspace_id=(
+                        str(item["workspace_id"]) if item.get("workspace_id") else None
+                    ),
+                    tab_id=str(item["tab_id"]) if item.get("tab_id") else None,
+                    terminal_id=(
+                        str(item["terminal_id"]) if item.get("terminal_id") else None
+                    ),
+                    cwd=str(item["cwd"]) if item.get("cwd") else None,
+                    focused=bool(item.get("focused", False)),
+                    raw=item,
+                )
+            )
+        return out
+
+    def health(self) -> HerdrSessionHealth:
+        sock = str(self.socket_path)
+        if not self.socket_exists() and not shutil.which(self.herdr_bin):
+            return HerdrSessionHealth(
+                session_id=self.session.id,
+                ok=False,
+                socket=sock,
+                error="herdr binary missing and socket absent",
+            )
+        try:
+            ver = self.check_version()
+            agents = self.list_agents()
+            return HerdrSessionHealth(
+                session_id=self.session.id,
+                ok=True,
+                version=ver,
+                socket=sock,
+                agent_count=len(agents),
+                protocol=14 if self.parse_version(ver) >= (0, 7, 1) else None,
+            )
+        except HerdrError as exc:
+            return HerdrSessionHealth(
+                session_id=self.session.id,
+                ok=False,
+                socket=sock,
+                error=str(exc),
+            )
+
+    def send_text(self, pane_id: str, text: str) -> None:
+        """Deliver freeform text to a pane (prefer agent.send when available)."""
+        # Try agent send; fall back to pane send_text shape.
+        try:
+            self.run_json(["agent", "send", pane_id, text])
+            return
+        except HerdrError:
+            pass
+        try:
+            self.run_json(["pane", "send-text", pane_id, text])
+            return
+        except HerdrError as exc:
+            raise HerdrError(
+                f"could not send text to {pane_id}: {exc}"
+            ) from exc
+
+    def send_keys(self, pane_id: str, keys: list[str]) -> None:
+        if not keys:
+            raise HerdrError("no keys to send")
+        try:
+            self.run_json(["agent", "keys", pane_id, *keys])
+            return
+        except HerdrError:
+            pass
+        try:
+            self.run_json(["pane", "send-keys", pane_id, *keys])
+            return
+        except HerdrError as exc:
+            raise HerdrError(f"could not send keys to {pane_id}: {exc}") from exc
+
+    def read_pane(self, pane_id: str, lines: int = 60) -> str:
+        """Read recent pane text (best-effort CLI shapes)."""
+        for args in (
+            ["agent", "read", pane_id, "--lines", str(lines)],
+            ["pane", "read", pane_id, "--lines", str(lines)],
+            ["agent", "read", pane_id],
+            ["pane", "read", pane_id],
+        ):
+            try:
+                data = self.run_json(args)
+            except HerdrError:
+                continue
+            result = data.get("result") or data
+            if isinstance(result, dict):
+                for key in ("text", "content", "output", "visible", "recent"):
+                    if isinstance(result.get(key), str):
+                        return result[key]
+                # nested
+                if isinstance(result.get("pane"), dict):
+                    pane = result["pane"]
+                    for key in ("text", "content"):
+                        if isinstance(pane.get(key), str):
+                            return pane[key]
+            if isinstance(result, str):
+                return result
+        raise HerdrError(f"could not read pane {pane_id}")

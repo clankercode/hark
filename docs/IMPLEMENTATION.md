@@ -14,22 +14,24 @@
 ```bash
 uv sync
 uv run hark doctor
+uv run hark status --json
+uv run hark watch --once --for-monitor
 python prototype/herdr_event_monitor.py --socket "$HERDR_SOCKET_PATH"
 ```
 
 ### Order
 
-1. Package layout `src/hark/`, entrypoint `hark`  
-2. Config + multi-session + doctor (Grok OAuth detect)  
-3. Herdr client: CLI wrap + socket (reuse probe)  
-4. `watch` poll merge → HEP + `--for-monitor`  
-5. `context` / `status` / fingerprint helper  
-6. `tts` / `listen` (xAI OAuth) + adaptive gate basics  
-7. `ask` + confirm policy (R2 always)  
-8. `answer` bound delivery + stale reject; `keys`  
-9. OpenAI + Google STT; MiniMax TTS  
-10. SSH tunnel helper  
-11. Socket subscribe path  
+1. [x] Package layout `src/hark/`, entrypoint `hark`  
+2. [x] Config + multi-session + doctor (Grok OAuth detect)  
+3. [x] Herdr client: CLI wrap (`agent list` / send / read best-effort)  
+4. [x] `watch` poll merge → HEP + `--for-monitor`  
+5. [x] `context` / `status` / fingerprint helper  
+6. [ ] `tts` / `listen` (xAI OAuth) + adaptive gate basics  
+7. [ ] `ask` + confirm policy (R2 always)  
+8. [ ] `answer` bound delivery store + stale reject; `keys` (CLI keys present; bound store pending)  
+9. [ ] OpenAI + Google STT; MiniMax TTS  
+10. [ ] SSH tunnel helper  
+11. [ ] Socket subscribe path  
 12. *(explicitly not v1)* `harkd`  
 
 ### Dev rule

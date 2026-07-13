@@ -53,15 +53,19 @@ skill/
 - Confirm auto R0/R1; always R2/R3
 - xAI via Grok Build OAuth preferred
 
-## Not yet done (expected)
+## Progress (2026-07-13 resume)
 
-- Python package / `hark` binary implementation
-- `git init` in this directory (optional; shell was broken from stale cwd)
+- Checkpoint commit: Phase 0 docs/skills/prototype
+- Phase 1 started: `src/hark` package via `uv`
+  - `hark doctor`, `config`, `status`, `watch --for-monitor`, `context`
+  - `reply` / `keys` best-effort; `answer` bound store still TODO
+  - speech (`tts`/`listen`/`ask`) not yet
 
-## Next for operator
+## Next
 
 ```bash
 cd /home/xertrov/src/grok/hark
-# reopen this folder in the agent/TUI
-git init && git add -A && git status
+uv sync
+uv run hark doctor
+# then: tts/listen via xAI OAuth, bound answer store, socket subscribe
 ```
