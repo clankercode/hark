@@ -67,6 +67,9 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "poll_ms",
         "heartbeat_s",
         "detect_false_done",
+        "pane_capture",
+        "pane_capture_lines",
+        "pane_capture_max_chars",
     }),
     "audio": frozenset({
         "half_duplex",
@@ -225,6 +228,11 @@ class WatchConfig:
     # When status is done/idle but trailing pane text looks like a menu/ask,
     # emit agent.needs_input (false done). Default on for dogfood.
     detect_false_done: bool = True
+    # Attach full recent pane text on agent wake HEP (blocked / needs_input / …).
+    # Mode A can decide without a mandatory second `hark context` fetch.
+    pane_capture: bool = True
+    pane_capture_lines: int = 100
+    pane_capture_max_chars: int = 12000
 
 
 @dataclass
@@ -518,6 +526,9 @@ debounce_ms = 250
 transport = "auto"           # auto | socket | poll
 poll_ms = 1000
 detect_false_done = true     # done/idle + menu-like pane → agent.needs_input
+pane_capture = true          # embed full pane text on blocked/needs_input/question_changed
+pane_capture_lines = 100     # herdr agent read --source recent-unwrapped --lines N
+pane_capture_max_chars = 12000  # cap body size in HEP / monitor compact
 
 [audio]
 half_duplex = true
@@ -1205,6 +1216,11 @@ def load_config(path: Path | None = None) -> HarkConfig:
                 watch_raw.get("detect_false_done"),
                 default=True,
             ),
+            pane_capture=_as_bool(watch_raw.get("pane_capture"), default=True),
+            pane_capture_lines=max(1, int(watch_raw.get("pane_capture_lines", 100))),
+            pane_capture_max_chars=max(
+                256, int(watch_raw.get("pane_capture_max_chars", 12000))
+            ),
         ),
         audio=AudioConfig(
             half_duplex=bool(audio_raw.get("half_duplex", True)),
@@ -1481,6 +1497,9 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "poll_ms": cfg.watch.poll_ms,
             "heartbeat_s": cfg.watch.heartbeat_s,
             "detect_false_done": cfg.watch.detect_false_done,
+            "pane_capture": cfg.watch.pane_capture,
+            "pane_capture_lines": cfg.watch.pane_capture_lines,
+            "pane_capture_max_chars": cfg.watch.pane_capture_max_chars,
         },
         "audio": {
             "half_duplex": cfg.audio.half_duplex,

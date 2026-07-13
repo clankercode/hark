@@ -34,9 +34,22 @@ Every stdout line from `hark watch` / event bus is one JSON object.
     "confidence": 0.9,
     "risk": "R2"
   },
-  "disposition": "pending"
+  "pane_capture": {
+    "text": "…recent unwrapped pane body (menu + trailing context)…",
+    "line_count": 42,
+    "char_count": 1800,
+    "truncated": false,
+    "source": "recent-unwrapped"
+  },
+  "disposition": "pending",
+  "instructions": "…prefer pane_capture.text; optional hark context work/w1:p6"
 }
 ```
+
+`pane_capture` is attached by default on `agent.blocked`, `agent.needs_input`, and
+`agent.question_changed` (config: `[watch] pane_capture`, `pane_capture_lines`,
+`pane_capture_max_chars`). Mode A may decide from the embedded body; use
+`hark context` only for a live re-read.
 
 Consumers **MUST ignore unknown fields**.
 
@@ -96,9 +109,10 @@ Consumers **MUST**:
 4. **Must** run `hark listen-end` when a done signal is clear and capture is still active (backup to soft/product end).  
 5. On `ambient.prompt` / final with the same `stream_id`: use that text; discard prior partials.
 
-## Monitor profile (`hark watch --for-monitor`)
+## Monitor profile (`hark watch --for-monitor` / `hark monitor --for-monitor`)
 
-Compact line, no secrets, no full terminal dump:
+Compact line, no secrets. Agent wake kinds still pass **bounded** `pane_capture`
+so orchestrators can answer menus without a mandatory second fetch:
 
 ```json
 {
@@ -111,7 +125,13 @@ Compact line, no secrets, no full terminal dump:
   "pane_id": "w1:p6",
   "question": "Allow running rm -rf build/?",
   "risk": "R2",
-  "instructions": "Use the hark skill; do not invent an answer. hark context work/w1:p6"
+  "pane_capture": {
+    "text": "…recent pane body…",
+    "char_count": 1800,
+    "truncated": false,
+    "source": "recent-unwrapped"
+  },
+  "instructions": "Use the hark skill; do not invent an answer. Pane capture attached (pane_capture.text) — decide from it when sufficient. Optional live re-read: hark context work/w1:p6"
 }
 ```
 

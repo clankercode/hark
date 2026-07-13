@@ -11,6 +11,9 @@ from typing import Any, Callable, TextIO
 from hark.config import HarkConfig, SessionConfig
 from hark.delivery import DeliveryStore
 from hark.events import (
+    DEFAULT_PANE_CAPTURE_LINES,
+    DEFAULT_PANE_CAPTURE_MAX_CHARS,
+    extract_question_excerpt,
     is_idle_like_status,
     looks_like_pending_question,
     make_agent_needs_input,
@@ -21,6 +24,7 @@ from hark.events import (
     make_watch_heartbeat,
     make_target_invalidated,
     monitor_profile,
+    prepare_pane_capture,
 )
 from hark.fingerprint import question_fingerprint
 from hark.herdr.client import AgentInfo, HerdrClient, HerdrError
@@ -59,13 +63,22 @@ class _WatchErrorLimiter:
 class EdgeTracker:
     """Edge-detect agent status changes; surface false-done menus as needs_input."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        pane_capture: bool = True,
+        pane_capture_lines: int = DEFAULT_PANE_CAPTURE_LINES,
+        pane_capture_max_chars: int = DEFAULT_PANE_CAPTURE_MAX_CHARS,
+    ) -> None:
         self._status: dict[tuple[str, str], str] = {}
         self._dedupe: set[tuple[str, str, str, str]] = set()
         # Last question fingerprint while awaiting input (blocked or false-done).
         self._last_fp: dict[tuple[str, str], str] = {}
         # Status value for which we already ran a false-done pane inspect.
         self._false_done_scanned: dict[tuple[str, str], str] = {}
+        self.pane_capture = pane_capture
+        self.pane_capture_lines = max(1, int(pane_capture_lines))
+        self.pane_capture_max_chars = max(64, int(pane_capture_max_chars))
 
     def process(
         self,
@@ -191,6 +204,41 @@ class EdgeTracker:
     def _watch_cares_about_input(interest: set[str]) -> bool:
         return bool(interest & {"blocked", "done", "idle"})
 
+    def _split_pane_text(
+        self, raw: str | None
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Return (stable question excerpt, optional full pane_capture).
+
+        Fingerprint/answer binding uses the trailing excerpt so scrollback
+        noise does not re-fire the same menu. HEP ``pane_capture`` carries the
+        full bounded body for Mode A decisions without a second fetch.
+        """
+        if not raw or not str(raw).strip():
+            return None, None
+        # Heuristics + FP: trailing ask block (matches answering.py).
+        trail = extract_question_excerpt(raw, max_chars=4000)
+        excerpt = extract_question_excerpt(raw) or None
+        # Prefer longer trail for false-done when excerpt is very short.
+        if not excerpt and trail:
+            excerpt = trail[:500] if len(trail) > 500 else trail
+        capture = None
+        if self.pane_capture:
+            capture = prepare_pane_capture(
+                raw,
+                max_lines=self.pane_capture_lines,
+                max_chars=self.pane_capture_max_chars,
+            )
+        # question.text uses excerpt when available; fall back to trail.
+        q_text = excerpt or (trail or None)
+        return q_text, capture
+
+    def _heuristic_text(self, raw: str | None) -> str | None:
+        """Text used for false-done menu heuristics (trailing viewport)."""
+        if not raw:
+            return None
+        trail = extract_question_excerpt(raw, max_chars=4000)
+        return trail or raw
+
     def _emit_blocked(
         self,
         agent: AgentInfo,
@@ -200,8 +248,10 @@ class EdgeTracker:
         cur: str,
         question_for: Callable[[AgentInfo], str | None] | None,
     ) -> list[dict[str, Any]]:
-        q_text = question_for(agent) if question_for else None
-        fp = question_fingerprint(q_text or "", None) if q_text else ""
+        raw = question_for(agent) if question_for else None
+        q_text, capture = self._split_pane_text(raw)
+        fp_src = extract_question_excerpt(raw or "") if raw else (q_text or "")
+        fp = question_fingerprint(fp_src or "", None) if (fp_src or q_text) else ""
         dkey = (agent.session_id, agent.pane_id, cur, fp)
         if fp and dkey in self._dedupe:
             return []
@@ -214,6 +264,7 @@ class EdgeTracker:
                 from_status=prev,
                 to_status=cur,
                 question_text=q_text,
+                pane_capture=capture,
             )
         ]
 
@@ -228,28 +279,37 @@ class EdgeTracker:
         also_completed: bool,
     ) -> list[dict[str, Any]]:
         self._false_done_scanned[key] = cur
-        q_text = question_for(agent)
+        raw = question_for(agent)
+        q_text, capture = self._split_pane_text(raw)
+        heuristic = self._heuristic_text(raw)
 
-        def _completed_only(q: str | None = None) -> list[dict[str, Any]]:
+        def _completed_only(
+            q: str | None = None, cap: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
             if not also_completed:
                 return []
             return [
                 make_agent_status_event(
-                    agent, from_status=prev, to_status=cur, question_text=q
+                    agent,
+                    from_status=prev,
+                    to_status=cur,
+                    question_text=q,
+                    pane_capture=cap if self.pane_capture else None,
                 )
             ]
 
-        if not q_text:
+        if not heuristic and not q_text:
             return _completed_only()
 
-        hit = looks_like_pending_question(q_text)
+        hit = looks_like_pending_question(heuristic)
         if not hit:
-            return _completed_only()
+            return _completed_only(q_text, capture)
 
-        fp = question_fingerprint(q_text, list(hit.choices) or None)
+        fp_src = extract_question_excerpt(raw or "") if raw else (q_text or "")
+        fp = question_fingerprint(fp_src or q_text or "", list(hit.choices) or None)
         dkey = (agent.session_id, agent.pane_id, "needs_input", fp)
         if fp and dkey in self._dedupe:
-            return _completed_only(q_text)
+            return _completed_only(q_text, capture)
         if fp:
             self._dedupe.add(dkey)
             self._last_fp[key] = fp
@@ -259,8 +319,9 @@ class EdgeTracker:
                 agent,
                 from_status=prev,
                 to_status=cur,
-                question_text=q_text,
+                question_text=q_text or heuristic or "",
                 hit=hit,
+                pane_capture=capture,
             )
         ]
         if also_completed and cur == "done":
@@ -269,13 +330,14 @@ class EdgeTracker:
                 from_status=prev,
                 to_status=cur,
                 question_text=q_text,
+                pane_capture=capture,
             )
             # Lower priority so needs_input wins attention in sorted UIs.
             completed["priority"] = min(int(completed.get("priority") or 50), 40)
             completed["false_done"] = True
             out.append(completed)
         elif also_completed and cur != "done":
-            out.extend(_completed_only(q_text))
+            out.extend(_completed_only(q_text, capture))
         return out
 
     def _same_status_events(
@@ -297,10 +359,12 @@ class EdgeTracker:
 
         # Re-block heuristic: still blocked, question text changed.
         if cur == "blocked" and "blocked" in interest:
-            q_text = question_for(agent)
-            if not q_text:
+            raw = question_for(agent)
+            q_text, capture = self._split_pane_text(raw)
+            if not q_text and not raw:
                 return []
-            fp = question_fingerprint(q_text, None)
+            fp_src = extract_question_excerpt(raw or "") if raw else (q_text or "")
+            fp = question_fingerprint(fp_src or "", None)
             prev_fp = self._last_fp.get(key)
             if not fp or fp == prev_fp:
                 if fp:
@@ -313,7 +377,10 @@ class EdgeTracker:
             self._dedupe.add(dkey)
             return [
                 make_agent_question_changed(
-                    agent, to_status=cur, question_text=q_text
+                    agent,
+                    to_status=cur,
+                    question_text=q_text or fp_src,
+                    pane_capture=capture,
                 )
             ]
 
@@ -326,13 +393,18 @@ class EdgeTracker:
             and self._false_done_scanned.get(key) != cur
         ):
             self._false_done_scanned[key] = cur
-            q_text = question_for(agent)
-            if not q_text:
+            raw = question_for(agent)
+            q_text, capture = self._split_pane_text(raw)
+            heuristic = self._heuristic_text(raw)
+            if not heuristic:
                 return []
-            hit = looks_like_pending_question(q_text)
+            hit = looks_like_pending_question(heuristic)
             if not hit:
                 return []
-            fp = question_fingerprint(q_text, list(hit.choices) or None)
+            fp_src = extract_question_excerpt(raw or "") if raw else (q_text or "")
+            fp = question_fingerprint(
+                fp_src or q_text or "", list(hit.choices) or None
+            )
             dkey = (agent.session_id, agent.pane_id, "needs_input", fp)
             if not fp or dkey in self._dedupe:
                 return []
@@ -343,8 +415,9 @@ class EdgeTracker:
                     agent,
                     from_status=cur,
                     to_status=cur,
-                    question_text=q_text,
+                    question_text=q_text or heuristic,
                     hit=hit,
+                    pane_capture=capture,
                 )
             ]
         return []
@@ -420,7 +493,21 @@ def run_watch(
                 continue
         clients.append(HerdrClient(s))
 
-    tracker = EdgeTracker()
+    pane_capture = bool(getattr(cfg.watch, "pane_capture", True))
+    pane_capture_lines = int(
+        getattr(cfg.watch, "pane_capture_lines", DEFAULT_PANE_CAPTURE_LINES)
+    )
+    pane_capture_max_chars = int(
+        getattr(cfg.watch, "pane_capture_max_chars", DEFAULT_PANE_CAPTURE_MAX_CHARS)
+    )
+    # When capture is off, still read a modest trailing block for question text.
+    read_lines = pane_capture_lines if pane_capture else 40
+
+    tracker = EdgeTracker(
+        pane_capture=pane_capture,
+        pane_capture_lines=pane_capture_lines,
+        pane_capture_max_chars=pane_capture_max_chars,
+    )
     self_ident = detect_self()
     store = DeliveryStore() if register_events else None
     poll_s = max(0.2, cfg.watch.poll_ms / 1000.0)
@@ -457,13 +544,20 @@ def run_watch(
     )
 
     def question_for(agent: AgentInfo) -> str | None:
+        """Return recent pane body (full capture source text when enabled).
+
+        EdgeTracker splits this into a stable question excerpt + pane_capture.
+        """
         if not read_questions:
             return None
         try:
             client = next(c for c in clients if c.session.id == agent.session_id)
-            text = client.read_pane(agent.pane_id, lines=40)
-            from hark.events import extract_question_excerpt
-
+            text = client.read_pane(agent.pane_id, lines=read_lines)
+            if not text or not str(text).strip():
+                return None
+            if pane_capture:
+                # Full body; EdgeTracker bounds via prepare_pane_capture.
+                return text
             return extract_question_excerpt(text) or None
         except (HerdrError, StopIteration):
             return None

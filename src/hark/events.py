@@ -159,9 +159,10 @@ def make_watch_armed(
         "disposition": "info",
         "instructions": (
             "Use the hark skill; do not invent answers. "
-            "On agent.blocked or agent.needs_input: hark context <session>/<pane>, "
-            "then ask/answer. needs_input may fire when status is done/idle but the "
-            "pane still shows a menu (false done)."
+            "On agent.blocked / agent.needs_input / agent.question_changed: prefer "
+            "embedded pane_capture.text when present; optional live re-read via "
+            "hark context <session>/<pane>. needs_input may fire when status is "
+            "done/idle but the pane still shows a menu (false done)."
         ),
     }
     if self_target:
@@ -230,24 +231,116 @@ def agent_to_target(agent: AgentInfo) -> dict[str, Any]:
     }
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+# Defaults for full pane capture on agent wake HEP (overridable via config).
+DEFAULT_PANE_CAPTURE_LINES = 100
+DEFAULT_PANE_CAPTURE_MAX_CHARS = 12000
+# Compact monitor may still pass a large body so Mode A can decide without
+# a second fetch; slightly below full default so logs stay bounded.
+MONITOR_PANE_CAPTURE_MAX_CHARS = 12000
+
+
+def strip_ansi(text: str | None) -> str:
+    return _ANSI_RE.sub("", text or "")
+
+
 def extract_question_excerpt(text: str, max_chars: int = 500) -> str:
     """Strip ANSI lightly and take trailing ask block."""
-    # crude ANSI strip
-    import re
-
-    cleaned = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text or "")
+    cleaned = strip_ansi(text)
     lines = [ln.rstrip() for ln in cleaned.splitlines()]
     # drop empty trailing
     while lines and not lines[-1].strip():
         lines.pop()
     if not lines:
         return ""
-    # take last ~25 non-empty-ish lines
+    # take last ~40 lines (viewport-ish ask block)
     block = lines[-40:]
     excerpt = "\n".join(block).strip()
     if len(excerpt) > max_chars:
         excerpt = excerpt[-max_chars:]
     return excerpt
+
+
+def prepare_pane_capture(
+    text: str | None,
+    *,
+    max_lines: int = DEFAULT_PANE_CAPTURE_LINES,
+    max_chars: int = DEFAULT_PANE_CAPTURE_MAX_CHARS,
+    source: str = "recent-unwrapped",
+) -> dict[str, Any] | None:
+    """Bound recent pane text for HEP attachment (Mode A wake events).
+
+    Prefer the same recent-unwrapped body Herdr exposes via ``agent read`` /
+    ``hark context``. Returns None when empty after cleaning.
+    """
+    cleaned = strip_ansi(text)
+    lines = [ln.rstrip() for ln in cleaned.splitlines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return None
+
+    max_lines = max(1, int(max_lines))
+    max_chars = max(64, int(max_chars))
+    truncated = False
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+        truncated = True
+    body = "\n".join(lines).strip()
+    if not body:
+        return None
+    if len(body) > max_chars:
+        body = body[-max_chars:]
+        truncated = True
+        # Avoid mid-line junk when char-capping from the end.
+        nl = body.find("\n")
+        if 0 <= nl < 200:
+            body = body[nl + 1 :]
+    return {
+        "text": body,
+        "line_count": body.count("\n") + 1 if body else 0,
+        "char_count": len(body),
+        "truncated": truncated,
+        "source": source,
+    }
+
+
+def _attach_pane_capture(
+    event: dict[str, Any],
+    pane_capture: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not pane_capture or not isinstance(pane_capture.get("text"), str):
+        return event
+    if not pane_capture["text"].strip():
+        return event
+    event["pane_capture"] = pane_capture
+    return event
+
+
+def _wake_instructions(
+    kind: str,
+    session_id: str,
+    pane_id: str,
+    *,
+    has_capture: bool,
+) -> str:
+    target = f"{session_id}/{pane_id}"
+    if kind == "agent.needs_input":
+        base = (
+            "False done / idle with pending human question on pane. "
+            "Treat like agent.blocked: do not invent an answer."
+        )
+    elif kind == "agent.question_changed":
+        base = "Question changed while still awaiting input. Do not invent an answer."
+    else:
+        base = "Use the hark skill; do not invent an answer."
+    if has_capture:
+        return (
+            f"{base} Pane capture attached (pane_capture.text) — decide from it when "
+            f"sufficient. Optional live re-read: hark context {target}"
+        )
+    return f"{base} hark context {target}"
 
 
 def make_agent_status_event(
@@ -257,6 +350,7 @@ def make_agent_status_event(
     to_status: str,
     question_text: str | None = None,
     choices: list[str] | None = None,
+    pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     kind = "agent.state_changed"
     priority = 40
@@ -295,6 +389,15 @@ def make_agent_status_event(
             "confidence": risk.confidence,
             "risk": risk.risk,
         }
+    if kind in ("agent.blocked", "agent.completed") and (
+        pane_capture or kind == "agent.blocked"
+    ):
+        has_cap = bool(pane_capture and pane_capture.get("text"))
+        if kind == "agent.blocked":
+            event["instructions"] = _wake_instructions(
+                kind, agent.session_id, agent.pane_id, has_capture=has_cap
+            )
+    _attach_pane_capture(event, pane_capture)
     return event
 
 
@@ -306,6 +409,7 @@ def make_agent_needs_input(
     question_text: str,
     hit: PendingQuestionHit | None = None,
     choices: list[str] | None = None,
+    pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Synthetic re-block: status is done/idle but pane still needs a human.
 
@@ -318,8 +422,9 @@ def make_agent_needs_input(
     fp = question_fingerprint(q_text, choice_list or None) if q_text else None
     reasons = list(hit.reasons) if hit else ["false_done"]
     conf = hit.confidence if hit else 0.7
+    has_cap = bool(pane_capture and pane_capture.get("text"))
 
-    return {
+    event: dict[str, Any] = {
         "schema": __schema__,
         "event_id": new_event_id(),
         "observed_at": utc_now_iso(),
@@ -343,12 +448,15 @@ def make_agent_needs_input(
             "confidence": max(risk.confidence, conf),
             "risk": risk.risk,
         },
-        "instructions": (
-            "False done / idle with pending human question on pane. "
-            "Treat like agent.blocked: do not invent an answer. "
-            f"hark context {agent.session_id}/{agent.pane_id}"
+        "instructions": _wake_instructions(
+            "agent.needs_input",
+            agent.session_id,
+            agent.pane_id,
+            has_capture=has_cap,
         ),
     }
+    _attach_pane_capture(event, pane_capture)
+    return event
 
 
 def make_agent_question_changed(
@@ -357,12 +465,14 @@ def make_agent_question_changed(
     to_status: str,
     question_text: str,
     choices: list[str] | None = None,
+    pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Still blocked (or needs input); the ask fingerprint changed."""
     q_text = question_text or ""
     risk = classify_question(q_text, choices)
     fp = question_fingerprint(q_text, choices) if q_text else None
-    return {
+    has_cap = bool(pane_capture and pane_capture.get("text"))
+    event: dict[str, Any] = {
         "schema": __schema__,
         "event_id": new_event_id(),
         "observed_at": utc_now_iso(),
@@ -384,7 +494,15 @@ def make_agent_question_changed(
             "confidence": risk.confidence,
             "risk": risk.risk,
         },
+        "instructions": _wake_instructions(
+            "agent.question_changed",
+            agent.session_id,
+            agent.pane_id,
+            has_capture=has_cap,
+        ),
     }
+    _attach_pane_capture(event, pane_capture)
+    return event
 
 
 def is_idle_like_status(status: str | None) -> bool:
@@ -448,29 +566,74 @@ def monitor_profile(event: dict[str, Any]) -> dict[str, Any]:
     if event.get("pending_reasons"):
         compact["pending_reasons"] = event["pending_reasons"]
 
+    # Full pane text capture (B094) — prefer event body over a second context fetch.
+    raw_cap = event.get("pane_capture")
+    cap_text: str | None = None
+    cap_truncated = False
+    if isinstance(raw_cap, dict) and isinstance(raw_cap.get("text"), str):
+        cap_text = raw_cap["text"]
+        cap_truncated = bool(raw_cap.get("truncated"))
+    elif isinstance(raw_cap, str) and raw_cap.strip():
+        cap_text = raw_cap
+    if cap_text is not None:
+        body = cap_text
+        if len(body) > MONITOR_PANE_CAPTURE_MAX_CHARS:
+            body = body[-MONITOR_PANE_CAPTURE_MAX_CHARS:]
+            cap_truncated = True
+            nl = body.find("\n")
+            if 0 <= nl < 200:
+                body = body[nl + 1 :]
+        compact["pane_capture"] = {
+            "text": body,
+            "char_count": len(body),
+            "truncated": cap_truncated
+            or (isinstance(raw_cap, dict) and bool(raw_cap.get("truncated"))),
+            "source": (
+                raw_cap.get("source")
+                if isinstance(raw_cap, dict)
+                else "recent-unwrapped"
+            ),
+        }
+        if isinstance(raw_cap, dict) and raw_cap.get("line_count") is not None:
+            compact["pane_capture"]["line_count"] = raw_cap.get("line_count")
+
     kind = event.get("kind")
+    has_capture = bool(compact.get("pane_capture"))
     if kind in ("agent.blocked", "agent.needs_input") and session_id and pane_id:
-        if kind == "agent.needs_input":
+        # Prefer event-level instructions (already capture-aware) when present.
+        if isinstance(event.get("instructions"), str) and event["instructions"].strip():
+            compact["instructions"] = event["instructions"]
+        elif kind == "agent.needs_input":
+            compact["instructions"] = _wake_instructions(
+                "agent.needs_input", str(session_id), str(pane_id), has_capture=has_capture
+            )
+        else:
+            compact["instructions"] = _wake_instructions(
+                "agent.blocked", str(session_id), str(pane_id), has_capture=has_capture
+            )
+    elif kind == "agent.question_changed" and session_id and pane_id:
+        if isinstance(event.get("instructions"), str) and event["instructions"].strip():
+            compact["instructions"] = event["instructions"]
+        else:
+            compact["instructions"] = _wake_instructions(
+                "agent.question_changed",
+                str(session_id),
+                str(pane_id),
+                has_capture=has_capture,
+            )
+    elif kind == "agent.completed":
+        if has_capture:
             compact["instructions"] = (
-                "False done: pane still needs input. Treat like blocked. "
-                f"hark context {session_id}/{pane_id}"
+                "Done event: judge if finished; do not auto-announce. "
+                "Pane capture attached — if it still shows a menu, treat as needs-input. "
+                f"Optional live re-read: hark context {session_id}/{pane_id}"
             )
         else:
             compact["instructions"] = (
-                "Use the hark skill; do not invent an answer. "
-                f"hark context {session_id}/{pane_id}"
+                "Done event: judge if finished; do not auto-announce. "
+                "If pane still shows a menu, treat as needs-input. "
+                f"Optional: hark context {session_id}/{pane_id}"
             )
-    elif kind == "agent.question_changed" and session_id and pane_id:
-        compact["instructions"] = (
-            "Question changed while still awaiting input. "
-            f"hark context {session_id}/{pane_id}"
-        )
-    elif kind == "agent.completed":
-        compact["instructions"] = (
-            "Done event: judge if finished; do not auto-announce. "
-            "If pane still shows a menu, treat as needs-input. "
-            f"Optional: hark context {session_id}/{pane_id}"
-        )
     elif kind == "watch.armed":
         compact["sessions"] = event.get("sessions")
         compact["instructions"] = event.get("instructions")

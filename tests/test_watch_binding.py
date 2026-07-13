@@ -68,8 +68,9 @@ def test_default_watch_reads_and_registers_fingerprinted_blocked_event(monkeypat
     client, store, events = _run_once(monkeypatch)
 
     blocked = next(event for event in events if event["kind"] == "agent.blocked")
-    assert client.read_pane_calls == [("w1:p1", 40)]
+    assert client.read_pane_calls == [("w1:p1", 100)]
     assert blocked["question"]["fingerprint"]
+    assert blocked.get("pane_capture") and "Allow this action?" in blocked["pane_capture"]["text"]
     assert store.events == [blocked]
 
 
@@ -77,7 +78,7 @@ def test_watch_emits_but_does_not_register_unbound_blocked_event(monkeypatch):
     client, store, events = _run_once(monkeypatch, read_error=HerdrError("unavailable"))
 
     blocked = next(event for event in events if event["kind"] == "agent.blocked")
-    assert client.read_pane_calls == [("w1:p1", 40)]
+    assert client.read_pane_calls == [("w1:p1", 100)]
     assert blocked["question"]["fingerprint"] is None
     assert store.events == []
 

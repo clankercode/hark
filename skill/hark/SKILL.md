@@ -243,7 +243,10 @@ Point plugins / agentapi at: `hark monitor --for-monitor`.
 
 Optional: `hark monitor --replay 0` to skip replay; `--full` for uncompacted JSON.
 
-`--for-monitor` lines are compact; use `event_id` + `hark context` for detail.  
+`--for-monitor` lines are compact but **agent wake events embed `pane_capture.text`**
+(recent unwrapped pane body, config-capped) so you can usually decide without a
+second fetch. Optional live re-read: `event_id` + `hark context` when the
+capture looks stale or truncated.  
 `done` wakes you to **judge**, not to auto-announce.
 
 ## Antigravity (`agy`) — experimental
@@ -300,7 +303,7 @@ run the guided checklist before arming handsfree:
 ## On `agent.blocked` / blocked monitor line
 
 1. Note `event_id`, `session_id`, `pane_id`, `risk` if present.  
-2. `hark context <session>/<pane> --lines 40`.  
+2. **Prefer embedded `pane_capture.text`** (full recent pane / menu) on the event — enough for multi-option menus without a second fetch. Optional live re-read when needed: `hark context <session>/<pane> --lines 80`.  
 3. Classify: free text vs menu vs permission.  
 4. Speak + listen (pick one):
    ```bash
@@ -318,12 +321,12 @@ run the guided checklist before arming handsfree:
 
 ## On `agent.needs_input` (false done)
 
-Herdr may report `done`/`idle` while the pane still shows a multi-option menu. Watch emits **`agent.needs_input`** (priority like blocked, `false_done: true`) when trailing text looks menu-like. **Treat exactly like `agent.blocked`** — context, speak, answer. Prefer bound `event_id` from the needs_input line.
+Herdr may report `done`/`idle` while the pane still shows a multi-option menu. Watch emits **`agent.needs_input`** (priority like blocked, `false_done: true`) when trailing text looks menu-like. **Treat exactly like `agent.blocked`** — use `pane_capture.text` when present, speak, answer. Prefer bound `event_id` from the needs_input line. Optional: `hark context` for a live re-read.
 
 ## On `done` / completed
 
 1. If a paired `agent.needs_input` already fired for this pane, handle that first (do not treat as finished).  
-2. Else `hark context … --lines 40`.  
+2. Prefer any attached `pane_capture`; else `hark context … --lines 80`.  
 3. Judge false done vs real completion (menu still on screen?).  
 4. TTS only when useful.  
 5. Then **stop** and wait for the next Monitor event.  
