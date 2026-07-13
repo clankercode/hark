@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T12:07:13Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T12:08:31Z"
 complexity: medium
 created_at: "2026-07-13T06:40:31Z"
 depends_on: []
+duration_minutes: 1.3095838479666666
 estimate_hours: 1
 id: B005
 priority: high
 started_at: "2026-07-13T12:07:13Z"
-status: in_progress
+status: done
 tags: []
 title: Herdr wire fixtures from real captures
-updated_at: "2026-07-13T12:07:13Z"
+updated_at: "2026-07-13T12:08:31Z"
 ---
 ## Problem
 fixtures/herdr/ is a placeholder. Need redacted agent-list / watch stream captures for contract tests.
