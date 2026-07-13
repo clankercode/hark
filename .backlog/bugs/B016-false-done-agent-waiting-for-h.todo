@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T09:28:02Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T09:35:08Z"
 complexity: medium
 created_at: "2026-07-13T07:40:20Z"
 depends_on: []
+duration_minutes: 7.1061772552
 estimate_hours: 1
 id: B016
 priority: high
 started_at: "2026-07-13T09:28:02Z"
-status: in_progress
+status: done
 tags: []
 title: 'False done: agent waiting for human input still emits agent.completed'
-updated_at: "2026-07-13T09:28:02Z"
+updated_at: "2026-07-13T09:35:08Z"
 ---
 ## Dogfood
 w7:p1 went agent.completed / status=done while the bottom of the pane still shows a multi-option human question (Nomad worker path). Skill says judge false done; easy to miss if agent only reacts to blocked.
