@@ -8,7 +8,11 @@ from pathlib import Path
 
 from hark.monitor_feed import (
     MODE_A_WAKE_KINDS,
+    ambient_feed_path,
+    append_ambient_jsonl,
     compact_mode_a_event,
+    emit_hep,
+    io_targets_path,
     replay_matching,
     should_surface,
 )
@@ -215,3 +219,80 @@ def test_compact_ambient_partial_includes_text_len():
     )
     assert c2["text"] == "hello radio"
     assert c2["text_len"] == len("hello radio")
+
+
+def test_emit_hep_dual_writes_when_stdout_redirected(tmp_path: Path, monkeypatch):
+    """B104: HEP wake events must hit ambient.jsonl even if out is a restart log."""
+    monkeypatch.setattr("hark.paths.state_dir", lambda: tmp_path)
+    restart = tmp_path / "ambient-restart.log"
+    feed = tmp_path / "ambient.jsonl"
+
+    event = {
+        "schema": "hark.event.v1",
+        "kind": "ambient.prompt",
+        "event_id": "b104-prompt-1",
+        "observed_at": "2026-07-13T22:03:00.000Z",
+        "text": "run the py-subagents job",
+        "final": True,
+        "partial": False,
+    }
+    with restart.open("a", encoding="utf-8") as out:
+        emit_hep(event, out)
+
+    restart_lines = restart.read_text(encoding="utf-8").splitlines()
+    feed_lines = feed.read_text(encoding="utf-8").splitlines()
+    assert len(restart_lines) == 1
+    assert len(feed_lines) == 1
+    assert json.loads(restart_lines[0])["event_id"] == "b104-prompt-1"
+    assert json.loads(feed_lines[0])["event_id"] == "b104-prompt-1"
+    assert json.loads(feed_lines[0])["kind"] == "ambient.prompt"
+
+
+def test_emit_hep_skips_dual_write_when_out_is_ambient_jsonl(
+    tmp_path: Path, monkeypatch
+):
+    """Workers that redirect stdout → ambient.jsonl must not double-append."""
+    monkeypatch.setattr("hark.paths.state_dir", lambda: tmp_path)
+    feed = ambient_feed_path(tmp_path)
+    event = {
+        "schema": "hark.event.v1",
+        "kind": "ambient.prompt",
+        "event_id": "b104-once",
+        "text": "hello",
+    }
+    with feed.open("a", encoding="utf-8") as out:
+        assert io_targets_path(out, feed) is True
+        emit_hep(event, out)
+
+    lines = feed.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event_id"] == "b104-once"
+
+
+def test_emit_hep_dual_writes_stringio_out(tmp_path: Path, monkeypatch):
+    """StringIO (tests / in-memory) still dual-writes to the feed path."""
+    monkeypatch.setattr("hark.paths.state_dir", lambda: tmp_path)
+    out = StringIO()
+    emit_hep(
+        {
+            "schema": "hark.event.v1",
+            "kind": "ambient.partial",
+            "event_id": "b104-partial",
+            "text": "half",
+            "partial": True,
+            "final": False,
+        },
+        out,
+    )
+    assert "b104-partial" in out.getvalue()
+    feed_text = (tmp_path / "ambient.jsonl").read_text(encoding="utf-8")
+    assert "b104-partial" in feed_text
+    assert "ambient.partial" in feed_text
+
+
+def test_append_ambient_jsonl_helper(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("hark.paths.state_dir", lambda: tmp_path)
+    ok = append_ambient_jsonl({"kind": "tts.truncated", "event_id": "t1"})
+    assert ok is True
+    text = (tmp_path / "ambient.jsonl").read_text(encoding="utf-8")
+    assert "tts.truncated" in text
