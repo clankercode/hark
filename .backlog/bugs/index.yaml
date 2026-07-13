@@ -87,3 +87,4 @@ bugs:
     - file: B086-mic-mute-desync-system-mute-st.todo
     - file: B087-when-webui-is-up-we-are-record.todo
     - file: B088-add-a-self-update-check-based.todo
+    - file: B089-add-start-stop-restart-command.todo
