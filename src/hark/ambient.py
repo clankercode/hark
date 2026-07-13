@@ -57,14 +57,17 @@ def primary_wake_label(cfg: HarkConfig) -> str:
     if mode in ("phrases", "phrase", "full", "full_phrase", "full-phrase"):
         return phrases[0] if phrases else DEFAULT_BOOT_WAKE_LABEL
 
+    # Exclusive full-phrase list (no product names) wins over default names=
+    # so custom-only configs speak "start prompt" not "hey hark".
+    if phrases:
+        joined = " ".join(phrases).lower()
+        if "hark" not in joined and "herald" not in joined:
+            return phrases[0]
+
     if names:
         return f"hey {names[0]}"
 
     if phrases:
-        joined = " ".join(phrases).lower()
-        # Exclusive custom list (no product names) → speak the first full phrase
-        if "hark" not in joined and "herald" not in joined:
-            return phrases[0]
         return phrases[0]
 
     return DEFAULT_BOOT_WAKE_LABEL
