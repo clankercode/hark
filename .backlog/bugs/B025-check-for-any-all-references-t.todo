@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-13T09:20:38Z"
+depends_on: []
+estimate_hours: 1
+id: B025
+priority: high
+status: pending
+tags: []
+title: Check for any/all references to clankercode and update to ultradyn (eg old gituhb urls or whatever)
+updated_at: "2026-07-13T09:20:38Z"
+---
+
+Check for any/all references to clankercode and update to ultradyn (eg old gituhb urls or whatever)
