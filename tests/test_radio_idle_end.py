@@ -38,7 +38,9 @@ def _stub_listen_deps(monkeypatch, speech, *, transcripts: list[str] | str = "he
     monkeypatch.setattr(
         speech,
         "resolve_stt",
-        lambda *args: SimpleNamespace(name="fake", transcribe=fake_transcribe),
+        lambda *args, **kwargs: SimpleNamespace(
+            name="fake", transcribe=fake_transcribe
+        ),
     )
     monkeypatch.setattr(speech, "pause_ambient_for_mic", lambda **kwargs: NullContext())
     monkeypatch.setattr(speech, "MicLease", lambda *args: NullContext())

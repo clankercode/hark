@@ -111,7 +111,7 @@ def _stub_listen_deps(monkeypatch, speech, *, transcript: str = "okay hark send"
     monkeypatch.setattr(
         speech,
         "resolve_stt",
-        lambda *args: SimpleNamespace(
+        lambda *args, **kwargs: SimpleNamespace(
             name="fake",
             transcribe=lambda wav: SimpleNamespace(text=transcript, provider="fake"),
         ),
@@ -167,7 +167,9 @@ def test_radio_stt_upload_includes_silence_pad(monkeypatch):
     monkeypatch.setattr(
         speech,
         "resolve_stt",
-        lambda *args: SimpleNamespace(name="fake", transcribe=fake_transcribe),
+        lambda *args, **kwargs: SimpleNamespace(
+            name="fake", transcribe=fake_transcribe
+        ),
     )
 
     result = speech.run_listen(cfg, end_mode="radio", post_tts_guard_s=0)
@@ -221,7 +223,9 @@ def test_silence_mode_does_not_pad_stt_upload(monkeypatch):
     monkeypatch.setattr(
         speech,
         "resolve_stt",
-        lambda *args: SimpleNamespace(name="fake", transcribe=fake_transcribe),
+        lambda *args, **kwargs: SimpleNamespace(
+            name="fake", transcribe=fake_transcribe
+        ),
     )
 
     result = speech.run_listen(cfg, end_mode="silence", post_tts_guard_s=0)
@@ -271,7 +275,9 @@ def test_radio_partials_still_work_with_pad(monkeypatch):
     monkeypatch.setattr(
         speech,
         "resolve_stt",
-        lambda *args: SimpleNamespace(name="fake", transcribe=fake_transcribe),
+        lambda *args, **kwargs: SimpleNamespace(
+            name="fake", transcribe=fake_transcribe
+        ),
     )
 
     result = speech.run_listen(
