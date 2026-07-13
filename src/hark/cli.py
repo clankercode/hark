@@ -250,19 +250,54 @@ def build_parser() -> argparse.ArgumentParser:
     stt_stats.add_argument("--json", action="store_true")
     stt_stats.add_argument("--reset", action="store_true", help="delete usage log")
 
-    logs = sub.add_parser("logs", help="unified system log (ambient+tts+stt+…)")
+    logs = sub.add_parser("logs", help="unified system log (ambient+tts+stt+…); raw follow with -f")
     logs.add_argument("-n", "--lines", type=int, default=40)
     logs.add_argument("--json", action="store_true")
     logs.add_argument(
         "--follow",
         "-f",
         action="store_true",
-        help="follow system.jsonl (like tail -f)",
+        help="follow system.jsonl (like tail -f); for colorful human view use watch-logs",
     )
     logs.add_argument(
         "--path",
         action="store_true",
         help="print log path only",
+    )
+
+    wl = sub.add_parser(
+        "watch-logs",
+        help="live colorful human-readable logs (system.jsonl; optional ambient/watch)",
+    )
+    wl.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=40,
+        help="show last N lines before follow (default 40; 0=none)",
+    )
+    wl.add_argument(
+        "-f",
+        "--follow",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="follow new lines (default: on; use --no-follow for snapshot)",
+    )
+    wl.add_argument(
+        "--no-color",
+        action="store_true",
+        help="disable ANSI colors (also when stdout is not a TTY, or NO_COLOR)",
+    )
+    wl.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_logs",
+        help="also follow ambient.jsonl and watch.jsonl under the state dir",
+    )
+    wl.add_argument(
+        "--path",
+        action="store_true",
+        help="print log path(s) only",
     )
 
     dae = sub.add_parser(
@@ -423,6 +458,8 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
         return cmd_stats(args)
     if cmd == "logs":
         return cmd_logs(args)
+    if cmd == "watch-logs":
+        return cmd_watch_logs(args)
     if cmd == "daemon":
         from hark.daemon import dispatch_daemon
 
@@ -617,6 +654,37 @@ def _print_log_rec(rec: dict, *, as_json: bool) -> None:
         if bits:
             extras = "  " + " ".join(bits)
     print(f"{tss}  {comp:8}  {ev:20}  {msg}{extras}")
+
+
+def cmd_watch_logs(args: argparse.Namespace) -> int:
+    """Live colorful human-readable log viewer (B041)."""
+    from hark.logview import (
+        follow_pretty,
+        header_line,
+        resolve_sources,
+        tail_pretty,
+        use_color,
+    )
+
+    sources = resolve_sources(include_all=bool(getattr(args, "all_logs", False)))
+    if args.path:
+        for label, path in sources:
+            print(f"{label}\t{path}" if len(sources) > 1 else str(path))
+        return OK
+
+    color = use_color(stream=sys.stdout, no_color=bool(args.no_color))
+    print(header_line(sources, color=color), file=sys.stderr)
+
+    lines = tail_pretty(sources, args.lines, color=color)
+    for line in lines:
+        print(line, flush=True)
+
+    if not args.follow:
+        if not lines:
+            eprint("hark watch-logs: empty or missing log(s)")
+        return OK
+
+    return follow_pretty(sources, color=color)
 
 
 def _client_for(cfg, session_id: str) -> HerdrClient:
