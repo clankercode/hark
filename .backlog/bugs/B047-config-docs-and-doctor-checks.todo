@@ -1,0 +1,41 @@
+---
+complexity: low
+created_at: "2026-07-13T13:12:00Z"
+depends_on:
+    - B045
+    - B046
+estimate_hours: 2
+id: B047
+priority: medium
+status: pending
+tags:
+    - audio
+    - ducking
+    - docs
+title: Config, docs, and doctor checks for media ducking
+updated_at: "2026-07-13T13:12:00Z"
+---
+## Problem
+Operators need discoverable knobs and docs for I002 ducking; doctor should explain missing Pulse tools.
+
+## Depends on
+B045, B046 — document the shipped behavior and config surface.
+
+## Scope
+- `[audio]` keys in `config.py` example TOML + load/serialize:
+  - `duck_media_during_tts` (default true)
+  - `duck_media_during_stt` (default true)
+  - `duck_level` (default 0.2)
+  - `pause_media_during_stt` (default false)
+  - optional exclude app list if implemented
+- Env overrides if the project pattern supports them (e.g. `HARK_DUCK_MEDIA_DURING_TTS`).
+- Docs: section in `docs/AUDIO_DESIGN.md` (relation to conference hold B017, half-duplex, cues).
+- `hark doctor`: note when pactl missing (ducking unavailable) vs present.
+- CHANGELOG entry under Unreleased when features land (may be filled by B045/B046 authors; this item ensures consistency).
+- Fixture/README note for pactl sink-input samples if stored under `fixtures/`.
+
+## Acceptance
+- [ ] Config load/round-trip tests for new keys
+- [ ] AUDIO_DESIGN.md documents defaults, fail-open, conference precedence
+- [ ] Doctor surfaces ducking readiness without failing hard
+- [ ] Example config.toml comments match defaults
