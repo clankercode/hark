@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-13T07:48:17Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T07:48:17Z"
 complexity: medium
 created_at: "2026-07-13T07:48:13Z"
 depends_on: []
+duration_minutes: 0.012490108583333333
 estimate_hours: 1
 id: B018
 priority: high
 started_at: "2026-07-13T07:48:17Z"
-status: in_progress
+status: done
 tags: []
 title: reply/send_text must submit with Enter by default
 updated_at: "2026-07-13T07:48:17Z"
