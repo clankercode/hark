@@ -18,7 +18,11 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   (~2 s) stay open; pre-open quiet still uses initial timeout / nudges;
   `radio_partial_silence_s` remains non-terminal segment cadence. Docs:
   AUDIO_DESIGN / SPEC / ACCEPTANCE C9b.
-
+- Radio segment boundary pad (B075): after each radio interim/final segment cut,
+  pad segment PCM with ~`radio_segment_pad_ms` (default 250) of silence each side
+  before STT so edge phonemes are less often clipped at the energy gate. Clamped
+  under the inter-segment quiet budget (`min(300, radio_partial_silence_s×400)`).
+  Silence `end_mode` unchanged. Config: `listen.radio_segment_pad_ms`.
 - **Live web dashboard** (I003 / B060–B067): `hark serve` — REST + SSE backend
   implementing the new versioned `hark.dashboard.v1` contract
   ([docs/DASHBOARD.md](docs/DASHBOARD.md), `schemas/dashboard-v1/`,

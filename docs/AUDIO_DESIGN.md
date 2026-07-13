@@ -122,6 +122,7 @@ Env: `HARK_LISTEN_END_MODE=radio`. Disable soft end with
 | `end_silence_s` | **silence** only | 2.1 s | Quiet that **ends** the answer window |
 | `radio_partial_silence_s` | **radio** only | 0.6 s | Quiet that ends a **segment** → cloud STT → optional `ambient.partial` (HOLD) |
 | `radio_idle_end_silence_s` | **radio** answer only | **3× `end_silence_s`** (~6.3 s) | After speech has opened at least once, continuous quiet this long **auto-finishes** (soft-end path, not cancel). Before first open: no-op (initial timeout / nudges) |
+| `radio_segment_pad_ms` | **radio** only | 250 | Silence pad each side of a segment before STT (B075); does not change cut timing |
 | `radio_end_silence_s` | legacy | 2.5 s | Kept for config BC; segment cadence is `radio_partial_silence_s` |
 | `stream_partials` | radio | `true` | Emit interim events when segment text grows |
 
@@ -137,6 +138,17 @@ timeout / nudge path. Shorter `radio_partial_silence_s` → more frequent
 partials for Mode A; raise it (e.g. 1.0–1.5) to cut STT cost when pauses are
 long. Do **not** lower `end_silence_s` to chase radio partials — that would
 change normal silence-mode answer windows.
+
+#### Radio segment boundary pad (B075)
+
+Energy-gate segment cuts can clip edge phonemes when the gate closes a little
+early/late. After each radio segment is cut (on `radio_partial_silence_s` quiet),
+Hark **pads** the segment PCM with pure silence on both sides before the STT
+upload (`radio_segment_pad_ms`, default 250). Pad is clamped to
+`min(300, radio_partial_silence_s * 1000 * 0.4)` so it stays well under the
+inter-segment hush budget and does not invent words. Mid-speech samples are
+unchanged. Silence `end_mode` is unaffected. Complements ambient/answer
+pre-roll (B079): that is **pre-open** lead-in; this is **post-cut** boundary pad.
 
 ### Soft end phrases (default on)
 
