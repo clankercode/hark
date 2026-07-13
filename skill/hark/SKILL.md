@@ -108,6 +108,13 @@ Monitor({
 
 **Ambient alone is insufficient.** A Monitor on `ambient.prompt` / ambient.jsonl / system.jsonl does **not** surface Herdr `agent.blocked` or `done`. Those events only arrive via `hark watch --for-monitor`.
 
+**No native Monitor tool?** Claude Code and Grok have one built in. On other harnesses, install a plugin that provides the equivalent long-lived background watch:
+
+- **Pi** — [`pi-monitor`](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`): `Monitor` tool that runs a background command and delivers matching stdout into the session.
+- **OpenCode** — [`opencode-monitor-bg`](https://github.com/clankercode/opencode-monitor-bg): `monitor_start` / `monitor_fetch` deliver background output back into the owning session.
+
+Point either at `hark watch --for-monitor --statuses blocked,done`.
+
 If radio partials / ambient prompts are used, **also** monitor (in addition to the required watch, never instead of it):
 
 ```text

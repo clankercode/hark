@@ -112,6 +112,11 @@ npx skills add ultradyn/hark -g -y
 
 You still need the **Python `hark` CLI** on `PATH` for Mode A.
 
+**Monitor-capable harness required.** Mode A needs a long-lived Monitor on `hark watch --for-monitor`. Claude Code and Grok provide this natively; on other harnesses install a plugin that does:
+
+- **Pi** — [pi-monitor](https://github.com/clankercode/pi-monitor) (`pi install npm:pi-monitor`)
+- **OpenCode** — [opencode-monitor-bg](https://github.com/clankercode/opencode-monitor-bg)
+
 ### npm package (`@ultradyn/hark`)
 
 ```bash
