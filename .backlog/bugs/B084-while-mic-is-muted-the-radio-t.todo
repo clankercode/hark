@@ -2,13 +2,100 @@
 complexity: medium
 created_at: "2026-07-13T16:52:09Z"
 depends_on: []
-estimate_hours: 1
+estimate_hours: 2
 id: B084
 priority: high
 status: pending
-tags: []
-title: while mic is muted, the radio thing that is trying to record still counts up time so it can disable it during that time. when we mute, we should include like 300ms of silence between the before sound and after sound, and we should not count that time as 'silence' from the user
-updated_at: "2026-07-13T16:52:09Z"
+tags:
+  - audio
+  - radio
+  - mute
+  - listen
+title: 'Mute during TTS: do not count muted time as user silence / listen timeout; pad ~300ms quiet around mute edges'
+updated_at: "2026-07-13T16:52:30Z"
 ---
 
-while mic is muted, the radio thing that is trying to record still counts up time so it can disable it during that time. when we mute, we should include like 300ms of silence between the before sound and after sound, and we should not count that time as 'silence' from the user
+## Problem
+
+While the **system mic is muted for TTS** (half-duplex: mute → speak → unmute),
+a concurrent or immediately following **listen / radio capture** still runs its
+clocks as if the operator were silent:
+
+1. **Initial wait / no-open timeout** (`initial_timeout_s`, post-wake ~15s) can
+   burn down during residual mute, leading to
+   `no speech detected (peak_rms=0)` / `ambient.error` even when the operator
+   speaks right after unmute (dogfood 2026-07-14: Sherpa wake OK, post-wake
+   listen `peak_rms=0.00000`).
+2. **Radio end / idle silence** (`end_silence_s`, `radio_partial_silence_s`,
+   `radio_idle_end_silence_s` / B074) can treat **mute-induced silence** as
+   “user finished” and auto-end or advance segments too early.
+3. Mute edges are abrupt: a short pad of true silence is useful so the energy
+   gate and STT do not see click / residual TTS tail as speech (or as a weird
+   open).
+
+## Desired behavior
+
+### Clock freeze while muted
+- Any listen timer that means **“user silence”** or **“wait for speech open”**
+  must **not advance** while Hark holds capture mute for TTS (or while
+  `BusySection` / mute context is active).
+- Applies at least to:
+  - `initial_timeout_s` / no-open path
+  - radio segment quiet → partial (`radio_partial_silence_s`)
+  - radio post-speech idle auto-end (B074 `radio_idle_end_silence_s`)
+  - soft/product end evaluation windows that depend on silence duration
+- When mute clears, clocks resume from zero for “new silence after unmute”
+  (or from a small grace), not from time spent muted.
+
+### Edge pad (~300 ms)
+- On **mute apply** and **mute release**, include ~**300 ms** of intentional
+  quiet handling (configurable, e.g. `audio.mute_edge_pad_ms` default 300):
+  - After TTS starts mute / before play: optional brief settle (if not already
+    covered by lead-in cues).
+  - **After unmute** (before counting user silence or arming “speak now”):
+    discard ~300 ms of capture **and** do not count that interval as
+    end_silence / initial_timeout.
+- Complements existing `discard_leading_ms`, `post_tts_guard_s`,
+  `audio_ok_after`, and arm-cue (B078): this is specifically **mute-hold time
+  exclusion + edge pad**, not a second arm beep.
+
+### UX
+- Operator hears: [record/arm cue after unmute] then can speak without the
+  system having already “used up” 10–15s of timeout while TTS was playing.
+- Radio long answers with TTS barge/hold should not soft-end mid-TTS mute.
+
+## Suggested approach
+
+- Single source of truth: `mic is held muted by hark TTS` (existing mute
+  context / `mic_mute` busy flag).
+- In `capture_utterance` / radio loop: when muted-by-us, pause silence/open
+  counters (and optionally pause wall-clock for initial_timeout).
+- After unmute: run `mute_edge_pad_ms` discard window with counters frozen.
+- Unit tests with fake mute timeline (no hardware): assert timeout does not
+  fire solely during muted interval; assert silence counter resets/pads.
+
+## Acceptance
+
+- [ ] Post-TTS / post-wake listen: operator can wait until after unmute + pad
+  and still open the gate within full `initial_timeout_s` (muted time excluded)
+- [ ] Radio: silence during TTS mute does not trigger segment partial end or
+  B074 idle auto-end
+- [ ] ~300 ms edge pad after unmute is discarded and not counted as user silence
+- [ ] Config key documented (audio or listen); default ~300 ms
+- [ ] Unit tests for clock freeze + pad without real mic
+- [ ] Dogfood: Sherpa/Vosk wake → TTS reply still in progress or just ended →
+  speak after beep → capture works (no peak_rms=0 timeout)
+
+## Non-goals
+
+- Changing conference hold policy (B017)
+- Full-duplex simultaneous TTS+listen
+- Hardware mute button semantics (mute-sync) beyond cooperating with app mute hold
+
+## Related
+
+- Dogfood: ambient.error after Sherpa wake, `reason=no_open`, peak_rms=0
+- `src/hark/audio/mic_mute.py`, BusySection / TTS mute in `speech.py`
+- `capture_utterance` discard / `audio_ok_after` / preroll (B079)
+- B074 radio idle end; B078 arm cue; B031 post-wake gate
+- Elgato Wave mute light (red while muted) — visual cue that clocks should freeze
