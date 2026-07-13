@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-07-13T14:19:32Z"
 depends_on:
@@ -7,13 +8,9 @@ depends_on:
 estimate_hours: 4
 id: B059
 priority: high
+started_at: null
 status: pending
-tags:
-    - dashboard
-    - webui
-    - dictation
-    - stt
-    - mic
+tags: []
 title: 'Dashboard: mic dictation (browser + host mic) with safe submit'
 updated_at: "2026-07-13T14:19:32Z"
 ---
@@ -30,3 +27,8 @@ Dictation round-trip per docs/plans/I003-dashboard.md.
 - [ ] /prompt path reaches Mode A monitor as ambient.prompt
 - [ ] Stale target rejected with clear UI feedback
 - [ ] Host-mic mode honors mic lease + ambient pause
+
+## Review fixes (pre-build)
+- Browser audio is webm/opus (Safari mp4/aac); STT provider path is WAV-only (Provider.transcribe(wav_bytes), providers hardcode audio/wav). Add explicit transcode-to-WAV step via ffmpeg; ffmpeg becomes a documented OPTIONAL dep gating browser dictation only (doctor check). Host-mic mode works without it.
+- Browser live partials are best-effort/v2 (radio partials come from the segmented live capture loop in speech.py, not a one-shot blob transcribe) — do not put them in acceptance.
+- Phone browser mic requires a secure context (HTTPS): depends on B060's TLS setup (tailscale serve) for remote use; localhost desktop is fine.
