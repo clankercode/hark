@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-13T12:45:23Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T12:45:23Z"
 complexity: medium
 created_at: "2026-07-13T12:45:12Z"
 depends_on: []
+duration_minutes: 0.007448662466666666
 estimate_hours: 1
 id: B040
 priority: high
 started_at: "2026-07-13T12:45:23Z"
-status: in_progress
+status: done
 tags: []
 title: Mode A monitors miss ambient.wake_near_miss; need unified hark monitor feed
 updated_at: "2026-07-13T12:45:23Z"
