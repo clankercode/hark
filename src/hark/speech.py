@@ -62,6 +62,68 @@ class ListenResult:
     meta_command: str | None = None
 
 
+def pack_tts_chunks(text: str, max_chars: int) -> list[str]:
+    """Split *text* into ≤ ``max_chars`` pieces at sentence/word boundaries (B091).
+
+    Never mid-word cuts when a space exists in the window. ``max_chars <= 0``
+    means a single chunk (no limit).
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+
+    # Prefer sentence ends, then clauses, then words.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    chunks: list[str] = []
+    buf = ""
+
+    def _flush() -> None:
+        nonlocal buf
+        if buf.strip():
+            chunks.append(buf.strip())
+        buf = ""
+
+    def _append_piece(piece: str) -> None:
+        nonlocal buf
+        piece = piece.strip()
+        if not piece:
+            return
+        if len(piece) > max_chars:
+            _flush()
+            # Word-pack oversized sentences
+            words = piece.split()
+            for w in words:
+                if not buf:
+                    if len(w) > max_chars:
+                        # single token longer than limit — hard split (rare)
+                        while len(w) > max_chars:
+                            chunks.append(w[:max_chars])
+                            w = w[max_chars:]
+                        buf = w
+                    else:
+                        buf = w
+                elif len(buf) + 1 + len(w) <= max_chars:
+                    buf = f"{buf} {w}"
+                else:
+                    _flush()
+                    buf = w
+            return
+        if not buf:
+            buf = piece
+        elif len(buf) + 1 + len(piece) <= max_chars:
+            buf = f"{buf} {piece}"
+        else:
+            _flush()
+            buf = piece
+
+    for s in sentences:
+        _append_piece(s)
+    _flush()
+    return chunks or [text[:max_chars]]
+
+
 def run_tts(
     cfg: HarkConfig,
     text: str,
@@ -87,14 +149,32 @@ def run_tts(
 
     ``use_cache``: when False, skip on-disk TTS phrase cache lookup and store
     (one-shot announces such as wake-label live-reload).
+
+    Long text (B091): ``tts.max_chars`` is a **per-chunk** synth limit. Full text
+    is packed at sentence/word boundaries and spoken as sequential chunks — no
+    silent mid-word hard truncate of the operator-facing reply.
     """
-    limit = max_chars if max_chars is not None else cfg.tts.max_chars
-    truncated = False
-    if limit and len(text) > limit:
-        text = text[:limit]
-        truncated = True
-    if not text.strip():
+    full_text = (text or "").strip()
+    if not full_text:
         raise ProviderError("empty TTS text")
+
+    limit = max_chars if max_chars is not None else cfg.tts.max_chars
+    chunks = pack_tts_chunks(full_text, int(limit) if limit else 0)
+    chunked = len(chunks) > 1
+    if chunked:
+        try:
+            from hark.syslog import log
+
+            log(
+                "tts.chunked",
+                component="tts",
+                chars=len(full_text),
+                max_chars=limit,
+                n_chunks=len(chunks),
+                chunk_lens=[len(c) for c in chunks],
+            )
+        except Exception:
+            pass
 
     # Mode A path (hark tts / ask): hold full question speech during conference.
     hold_meta: dict[str, Any] | None = None
@@ -104,16 +184,18 @@ def run_tts(
         policy = conference_policy
         if policy is None:
             policy = "hold" if cfg.audio.hold_during_conference else "force"
-        hold = apply_conference_hold(cfg, text, policy=policy)
+        hold = apply_conference_hold(cfg, full_text, policy=policy)
         hold_meta = hold.as_meta()
         if hold.skipped:
             return {
                 "ok": True,
                 "provider": "skipped",
                 "voice": voice or cfg.tts.voice or "eve",
-                "truncated": truncated,
-                "chars": len(text),
-                "words": len(text.split()),
+                "truncated": False,
+                "chunked": chunked,
+                "chunks": len(chunks),
+                "chars": len(full_text),
+                "words": len(full_text.split()),
                 "out": None,
                 "content_type": None,
                 "audio_ms": 0,
@@ -129,78 +211,100 @@ def run_tts(
     store = UsageStore()
     t0 = time.monotonic()
     voice_id = voice or cfg.tts.voice or "eve"
-    cached = lookup_cached_tts(voice_id, text) if use_cache else None
-    from_cache = False
     provider_name = provider or cfg.tts.provider
     content_type = "audio/mpeg"
-    audio_bytes: bytes
+    used_voice = voice_id
+    from_cache = False
+    audio_parts: list[bytes] = []
+    play_ms = 0
+    mute_applied = False
+    mute_repair: dict[str, Any] | None = None
+    duck_meta: dict[str, Any] | None = None
+    near = (
+        near_end_ms
+        if near_end_ms is not None
+        else int(cfg.audio.listen_pre_arm_ms)
+    )
+    do_duck = bool(getattr(cfg.audio, "duck_media_during_tts", True))
 
-    if cached is not None:
-        audio_bytes = cached
-        from_cache = True
-        provider_name = "cache"
-        latency_ms = int(1000 * (time.monotonic() - t0))
-        used_voice = voice_id
-    else:
+    def _synth_one(piece: str) -> tuple[bytes, str, str, str, bool]:
+        """Return (audio, provider, content_type, voice, from_cache)."""
+        cached = lookup_cached_tts(voice_id, piece) if use_cache else None
+        if cached is not None:
+            return cached, "cache", "audio/mpeg", voice_id, True
         tts = resolve_tts(
             provider or cfg.tts.provider,
             voice=voice_id,
             language=cfg.tts.language,
         )
-        try:
-            result = tts.synthesize(text, voice=voice_id)
-        except Exception as exc:
-            store.record_tts(
-                text=text,
-                provider=provider or cfg.tts.provider,
-                voice=voice_id,
-                ok=False,
-                error=str(exc)[:200],
-                latency_ms=int(1000 * (time.monotonic() - t0)),
-            )
-            raise
-        audio_bytes = result.audio
-        provider_name = result.provider
-        content_type = result.content_type
-        used_voice = result.voice or voice_id
-        latency_ms = int(1000 * (time.monotonic() - t0))
-        # Persist common-ish short phrases for reuse (skip one-shot announces)
-        if use_cache and len(text) <= 120:
+        result = tts.synthesize(piece, voice=voice_id)
+        if use_cache and len(piece) <= 120:
             try:
-                store_cached_tts(used_voice, text, audio_bytes)
+                store_cached_tts(result.voice or voice_id, piece, result.audio)
             except Exception:
                 pass
-
-    out_path = None
-    if out:
-        out_path = str(write_wav(out, audio_bytes))
-
-    play_ms = 0
-    mute_applied = False
-    mute_repair: dict[str, Any] | None = None
-    duck_meta: dict[str, Any] | None = None
-    if play:
-        near = (
-            near_end_ms
-            if near_end_ms is not None
-            else int(cfg.audio.listen_pre_arm_ms)
+        return (
+            result.audio,
+            result.provider,
+            result.content_type,
+            result.voice or voice_id,
+            False,
         )
-        do_duck = bool(getattr(cfg.audio, "duck_media_during_tts", True))
-        # Mic mute and media duck are independent; duck before play so media
-        # is quiet before TTS starts. Conference skip already returned above —
-        # when speaking after hold frees, duck as normal (exclude_conference).
-        try:
+
+    try:
+        # Mic mute + duck wrap all chunks so we don't unmute between parts
+        if play:
             with mic_muted_during_tts(enabled=do_mute) as mute_state:
                 mute_applied = mute_state.applied
                 with duck_media(cfg, enabled=do_duck, exclude_conference=True) as duck_state:
                     duck_meta = duck_state.as_meta()
-                    pr = play_wav_bytes(
-                        audio_bytes,
-                        on_near_end=on_near_end,
-                        near_end_ms=near if on_near_end else 0,
+                    for i, piece in enumerate(chunks):
+                        try:
+                            audio_bytes, p_name, c_type, v_used, fc = _synth_one(piece)
+                        except Exception as exc:
+                            store.record_tts(
+                                text=piece,
+                                provider=provider or cfg.tts.provider,
+                                voice=voice_id,
+                                ok=False,
+                                error=str(exc)[:200],
+                                latency_ms=int(1000 * (time.monotonic() - t0)),
+                            )
+                            raise
+                        provider_name = p_name
+                        content_type = c_type
+                        used_voice = v_used
+                        from_cache = from_cache or fc
+                        audio_parts.append(audio_bytes)
+                        # near-end only on last chunk
+                        is_last = i == len(chunks) - 1
+                        pr = play_wav_bytes(
+                            audio_bytes,
+                            on_near_end=on_near_end if is_last else None,
+                            near_end_ms=near if (on_near_end and is_last) else 0,
+                        )
+                        play_ms += pr.duration_ms
+        else:
+            for piece in chunks:
+                try:
+                    audio_bytes, p_name, c_type, v_used, fc = _synth_one(piece)
+                except Exception as exc:
+                    store.record_tts(
+                        text=piece,
+                        provider=provider or cfg.tts.provider,
+                        voice=voice_id,
+                        ok=False,
+                        error=str(exc)[:200],
+                        latency_ms=int(1000 * (time.monotonic() - t0)),
                     )
-                    play_ms = pr.duration_ms
-        finally:
+                    raise
+                provider_name = p_name
+                content_type = c_type
+                used_voice = v_used
+                from_cache = from_cache or fc
+                audio_parts.append(audio_bytes)
+    finally:
+        if play:
             # B086: never leave depth>0 or Pulse stuck muted after TTS
             try:
                 mute_repair = repair_tts_mute_after_play(
@@ -210,8 +314,15 @@ def run_tts(
             except Exception:
                 mute_repair = None
 
+    latency_ms = int(1000 * (time.monotonic() - t0))
+    out_path = None
+    if out and audio_parts:
+        # Single-chunk: write as before. Multi: write first part only (formats
+        # may not concatenate cleanly); full speech was already played if play.
+        out_path = str(write_wav(out, audio_parts[0]))
+
     store.record_tts(
-        text=text,
+        text=full_text,
         provider=provider_name,
         voice=used_voice,
         audio_ms=play_ms,
@@ -219,19 +330,23 @@ def run_tts(
         ok=True,
         meta={
             # dashboard TTS audit trail (B067): what was actually spoken
-            "text_preview": text[:160],
+            "text_preview": full_text[:160],
             "from_cache": from_cache,
             "conference": hold_meta,
             "media_duck": duck_meta,
+            "chunked": chunked,
+            "chunks": len(chunks),
         },
     )
     result: dict[str, Any] = {
         "ok": True,
         "provider": provider_name,
         "voice": used_voice,
-        "truncated": truncated,
-        "chars": len(text),
-        "words": len(text.split()),
+        "truncated": False,
+        "chunked": chunked,
+        "chunks": len(chunks),
+        "chars": len(full_text),
+        "words": len(full_text.split()),
         "out": out_path,
         "content_type": content_type,
         "audio_ms": play_ms,

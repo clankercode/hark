@@ -696,7 +696,7 @@ provider = "auto"
 voice = "eve"                # xAI: eve ara leo rex sal … — hark providers voices
 language = "en"
 # voice = "ara"
-max_chars = 500
+max_chars = 500              # per synth chunk; long text is multi-chunk played in full (B091)
 
 [confirm]
 mode = "auto"
