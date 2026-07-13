@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-13T18:35:27Z"
+depends_on: []
+estimate_hours: 1
+id: B096
+priority: high
+status: pending
+tags:
+    - herdr
+    - false-done
+    - watch
+title: False agent.completed/done while Herdr subagent task still running (UI shows subagent near top)
+updated_at: "2026-07-13T18:35:27Z"
+---
+## Problem (dogfood 2026-07-14 backup tuf)
+
+When a Grok/Herdr agent has a **subagent task still running**, the pane can report **done/idle** and fire `agent.completed`, so Mode A / handsfree treats the turn as finished. Operator notes: “when a subagent is running, it’ll look like it’s done, but near the top it says that there’s a subagent.”
+
+This is a false-done relative to actual work still in flight (e.g. background Task Probe… still running while status=done).
+
+## Desired
+
+- Do not emit `agent.completed` / treat as finished while Herdr reports active subagent/tasks for that pane.
+- Prefer `working` (or a distinct `agent.busy_subagent`) until subagents settle.
+- Watch/false-done heuristics should inspect task UI / subagent markers, not only main agent idle.
+- Optional: HEP field `subagents_running: N` for the orchestrator.
+
+## Related
+
+B016 false done; B094 pane capture (would show task strip if included); backup-tuf dogfood mid S3 probe.
