@@ -16,3 +16,5 @@ updated_at: "2026-07-13T17:43:05Z"
 ---
 
 TTS has no global playback queue: concurrent/back-to-back hark tts (separate processes or ambient+agent) can overlap play, race mic mute, and garble audio. Single-process multi-chunk is sequential; need process-safe queue or exclusive playback lock (file/IPC) so N TTSs play in order without cutoffs.
+
+Implemented: exclusive_playback flock (tts_play.lock) serializes speakers; synth runs before play lock so concurrent hark tts can hit provider in parallel; multi-chunk pipelines synth(i+1) during play(i).
