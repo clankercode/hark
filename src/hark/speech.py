@@ -562,16 +562,27 @@ def _tag_meta_command(result: "ListenResult") -> "ListenResult":
 
 
 def _echo_overlap(transcript: str, last_tts: str | None) -> bool:
+    """True when *transcript* looks like residual TTS, not a real answer.
+
+    Short answers that *quote a word from the question* (e.g. ``BitLocker.`` after
+    the prompt asked about BitLocker) must **not** match — dogfood B093: that
+    used to wipe the whole radio assembly via ``pieces.clear()``.
+    """
     if not last_tts or not transcript:
         return False
     a = re.sub(r"\W+", " ", transcript.lower()).strip()
     b = re.sub(r"\W+", " ", last_tts.lower()).strip()
-    if len(a) < 8 or len(b) < 8:
+    # Need substantial text on both sides; one-word replies are never "echo"
+    if len(a) < 24 or len(b) < 24:
         return False
-    if a in b or b in a:
+    # Substring only when the transcript is long enough to be residual TTS bleed
+    if len(a) >= 40 and (a in b or b in a):
         return True
     aw, bw = set(a.split()), set(b.split())
     if not aw or not bw:
+        return False
+    # Require enough shared mass that a short answer cannot clear the session
+    if len(aw) < 6:
         return False
     j = len(aw & bw) / max(1, len(aw | bw))
     return j >= 0.7
@@ -1460,8 +1471,19 @@ def run_listen(
                 )
                 last_provider = tr.provider
                 if _echo_overlap(tr.text, last_tts):
-                    pieces.clear()
-                    text_segments.clear()
+                    # Skip this segment only — never wipe prior radio assembly (B093)
+                    try:
+                        syslog(
+                            "speech.echo_skip_segment",
+                            component="stt",
+                            level="info",
+                            stream_id=stream,
+                            stt_seq=stt_seq,
+                            text=(tr.text or "")[:120],
+                            message="skipped echo-like segment; kept prior text",
+                        )
+                    except Exception:
+                        pass
                     continue
                 if (tr.text or "").strip():
                     text_segments.append((tr.text or "").strip())

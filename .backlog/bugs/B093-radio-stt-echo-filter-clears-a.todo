@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T17:59:42Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T18:00:07Z"
 complexity: medium
 created_at: "2026-07-13T17:59:42Z"
 depends_on: []
+duration_minutes: 0.43306641086666664
 estimate_hours: 1
 id: B093
 priority: high
 started_at: "2026-07-13T17:59:42Z"
-status: in_progress
+status: done
 tags: []
 title: Radio STT echo filter clears all prior segments when a short answer quotes a word from the TTS question (e.g. BitLocker.) — dogfood Q2 lost Windows + BitLocker answers
-updated_at: "2026-07-13T17:59:42Z"
+updated_at: "2026-07-13T18:00:07Z"
 ---
 
 Radio STT echo filter clears all prior segments when a short answer quotes a word from the TTS question (e.g. BitLocker.) — dogfood Q2 lost Windows + BitLocker answers
