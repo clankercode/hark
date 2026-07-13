@@ -19,6 +19,7 @@ mkdir -p "$STATE"
 PIDFILE="$STATE/mode-a.pids"
 WATCH_LOG="$STATE/watch.jsonl"
 AMBIENT_LOG="$STATE/ambient.jsonl"
+SYSTEM_LOG="$STATE/system.jsonl"
 
 DO_WATCH=1
 DO_AMBIENT=1
@@ -85,8 +86,10 @@ fi
 sleep 1
 echo "PIDs: $(tr '\n' ' ' < "$PIDFILE")"
 echo "tail logs:"
-echo "  tail -f $WATCH_LOG"
+echo "  uv run hark logs -f          # unified system log (recommended)"
+echo "  tail -f $SYSTEM_LOG"
 echo "  tail -f $AMBIENT_LOG"
+echo "  tail -f $WATCH_LOG"
 echo "stop:  $0 --stop"
 
 # show last lines if any

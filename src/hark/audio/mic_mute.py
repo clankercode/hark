@@ -101,6 +101,18 @@ def mic_muted_during_tts(*, enabled: bool = True) -> Iterator[MuteState]:
                 )
 
     try:
+        if state.applied:
+            try:
+                from hark.syslog import log
+
+                log(
+                    "mic.muted",
+                    component="audio",
+                    source=state.source,
+                    was_muted=state.was_muted,
+                )
+            except Exception:
+                pass
         yield state
     finally:
         with _lock:
@@ -108,4 +120,14 @@ def mic_muted_during_tts(*, enabled: bool = True) -> Iterator[MuteState]:
             if _depth == 0 and _saved is not None:
                 if _saved.applied and _saved.source and _saved.was_muted is not True:
                     set_source_mute(_saved.source, False)
+                    try:
+                        from hark.syslog import log
+
+                        log(
+                            "mic.unmuted",
+                            component="audio",
+                            source=_saved.source,
+                        )
+                    except Exception:
+                        pass
                 _saved = None

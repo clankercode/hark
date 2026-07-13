@@ -12,6 +12,7 @@ from hark.audio.capture import MicLease, record_seconds
 from hark.config import HarkConfig
 from hark.events import new_event_id, utc_now_iso
 from hark.speech import run_listen, run_tts
+from hark.syslog import log as syslog
 from hark.wake import WakeBackend, WakeHit, build_wake_backend
 
 
@@ -55,10 +56,20 @@ def _wait_for_wake(
 
         hit = backend.score_snippet(pcm, 16000)
         if hit is not None:
+            syslog(
+                "ambient.wake",
+                component="ambient",
+                message=hit.phrase,
+                phrase=hit.phrase,
+                raw=hit.raw,
+                remainder=hit.remainder,
+                backend=hit.backend,
+                confidence=hit.confidence,
+            )
             return hit
 
         now = time.monotonic()
-        if out is not None and now - last_debug >= debug_every_s:
+        if now - last_debug >= debug_every_s:
             last_debug = now
             dbg = {
                 "schema": "hark.event.v1",
@@ -70,8 +81,19 @@ def _wait_for_wake(
                 "scored": getattr(backend, "snippets_scored", None),
                 "skipped_quiet": getattr(backend, "snippets_skipped_quiet", None),
             }
-            out.write(json.dumps(dbg, separators=(",", ":")) + "\n")
-            out.flush()
+            if out is not None:
+                out.write(json.dumps(dbg, separators=(",", ":")) + "\n")
+                out.flush()
+            syslog(
+                "ambient.debug",
+                component="ambient",
+                level="debug",
+                message=getattr(backend, "last_text", "") or "quiet",
+                rms=dbg["rms"],
+                last_text=dbg["last_text"],
+                scored=dbg["scored"],
+                skipped_quiet=dbg["skipped_quiet"],
+            )
         # small idle so we don't peg a core if record returns instantly
         time.sleep(0.05)
     return None
@@ -292,6 +314,13 @@ def run_ambient_loop(
     }
     out.write(json.dumps(boot, separators=(",", ":")) + "\n")
     out.flush()
+    syslog(
+        "ambient.armed",
+        component="ambient",
+        engine=cfg.ambient.engine,
+        model_path=cfg.ambient.model_path,
+        phrases=list(cfg.ambient.activation_phrases),
+    )
 
     if announce:
         try:
@@ -324,9 +353,19 @@ def run_ambient_loop(
             )
             line = ambient_event_line(result)
             line = {k: v for k, v in line.items() if v is not None}
-            # Don't spam timeout lines every 300s without info — keep them
             out.write(json.dumps(line, separators=(",", ":")) + "\n")
             out.flush()
+            syslog(
+                str(line.get("kind") or "ambient.event"),
+                component="ambient",
+                level="info" if result.activated else "debug",
+                message=(result.text or result.phrase or "")[:200],
+                phrase=result.phrase,
+                text=result.text,
+                wake_backend=result.wake_backend,
+                listen=result.listen,
+                event_id=result.event_id,
+            )
 
             if result.activated:
                 last_idle = time.monotonic()

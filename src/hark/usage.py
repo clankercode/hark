@@ -38,6 +38,26 @@ class UsageStore:
     def record(self, event: UsageEvent) -> None:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(event), separators=(",", ":")) + "\n")
+        # Mirror into unified system timeline
+        try:
+            from hark.syslog import log
+
+            log(
+                f"{event.kind}.{'ok' if event.ok else 'error'}",
+                component=event.kind,
+                level="info" if event.ok else "error",
+                message=event.error or event.kind,
+                provider=event.provider,
+                voice=event.voice,
+                chars=event.chars,
+                words=event.words,
+                audio_ms=event.audio_ms,
+                latency_ms=event.latency_ms,
+                ok=event.ok,
+                **(event.meta or {}),
+            )
+        except Exception:
+            pass
 
     def record_tts(
         self,

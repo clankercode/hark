@@ -149,6 +149,21 @@ def build_parser() -> argparse.ArgumentParser:
     stt_stats.add_argument("--json", action="store_true")
     stt_stats.add_argument("--reset", action="store_true", help="delete usage log")
 
+    logs = sub.add_parser("logs", help="unified system log (ambient+tts+stt+…)")
+    logs.add_argument("-n", "--lines", type=int, default=40)
+    logs.add_argument("--json", action="store_true")
+    logs.add_argument(
+        "--follow",
+        "-f",
+        action="store_true",
+        help="follow system.jsonl (like tail -f)",
+    )
+    logs.add_argument(
+        "--path",
+        action="store_true",
+        help="print log path only",
+    )
+
     return p
 
 
@@ -252,6 +267,8 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
         return cmd_mic_mute(False)
     if cmd == "stats":
         return cmd_stats(args)
+    if cmd == "logs":
+        return cmd_logs(args)
     return USAGE
 
 
@@ -306,6 +323,79 @@ def cmd_stats(args: argparse.Namespace) -> int:
         if a["by_provider"]:
             print(f"  by provider:   {a['by_provider']}")
     return OK
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    from hark.syslog import system_log_path, tail_lines
+
+    path = system_log_path()
+    if args.path:
+        print(path)
+        return OK
+    if args.follow:
+        import time
+
+        print(f"# {path}", file=sys.stderr)
+        # print last N then follow
+        for rec in tail_lines(args.lines, path):
+            _print_log_rec(rec, as_json=args.json)
+        pos = path.stat().st_size if path.is_file() else 0
+        try:
+            while True:
+                if path.is_file():
+                    size = path.stat().st_size
+                    if size > pos:
+                        with path.open("r", encoding="utf-8") as fh:
+                            fh.seek(pos)
+                            for line in fh:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    rec = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                _print_log_rec(rec, as_json=args.json)
+                            pos = fh.tell()
+                    elif size < pos:
+                        pos = 0  # rotated
+                time.sleep(0.25)
+        except KeyboardInterrupt:
+            return OK
+    rows = tail_lines(args.lines, path)
+    if not rows:
+        eprint(f"hark logs: empty or missing ({path})")
+        return OK
+    for rec in rows:
+        _print_log_rec(rec, as_json=args.json)
+    return OK
+
+
+def _print_log_rec(rec: dict, *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(rec, separators=(",", ":")))
+        return
+    ts = rec.get("ts")
+    try:
+        from datetime import datetime, timezone
+
+        tss = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%H:%M:%S")
+    except Exception:
+        tss = str(ts)
+    comp = rec.get("component", "?")
+    ev = rec.get("event", "?")
+    msg = rec.get("message") or ""
+    data = rec.get("data") or {}
+    extras = ""
+    if data:
+        # compact key highlights
+        bits = []
+        for k in ("provider", "voice", "rms", "last_text", "phrase", "audio_ms", "chars"):
+            if k in data and data[k] not in (None, ""):
+                bits.append(f"{k}={data[k]}")
+        if bits:
+            extras = "  " + " ".join(bits)
+    print(f"{tss}  {comp:8}  {ev:20}  {msg}{extras}")
 
 
 def _client_for(cfg, session_id: str) -> HerdrClient:
