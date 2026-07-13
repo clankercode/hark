@@ -1,0 +1,24 @@
+---
+complexity: medium
+created_at: "2026-07-13T07:48:13Z"
+depends_on: []
+estimate_hours: 1
+id: B017
+priority: high
+status: pending
+tags:
+    - dogfood
+    - audio
+    - conference
+title: Hold announcements when video/voice conference is active (default on)
+updated_at: "2026-07-13T07:48:13Z"
+---
+## Request
+When operator is in Teams/Zoom/Meet etc., Hark asking questions / TTS is annoying.
+Feature (on by default): detect conference and hold / queue blocked prompts until free.
+
+## Wanted
+- Detect common conference apps (pipewire stream names, process list, or portal)
+- Config: hold_during_conference = true (default)
+- TTS optional soft chime instead of full question
+- Queue resumes when call ends

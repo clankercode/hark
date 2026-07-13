@@ -15,3 +15,4 @@ bugs:
     - file: B014-socket-watch-broken-pipe-noisy.todo
     - file: B015-mode-a-pids-duplicate-ambient.todo
     - file: B016-false-done-agent-waiting-for-h.todo
+    - file: B017-hold-announcements-when-video.todo
