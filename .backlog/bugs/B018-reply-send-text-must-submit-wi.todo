@@ -1,0 +1,19 @@
+---
+complexity: medium
+created_at: "2026-07-13T07:48:13Z"
+depends_on: []
+estimate_hours: 1
+id: B018
+priority: high
+status: pending
+tags:
+    - dogfood
+    - delivery
+title: reply/send_text must submit with Enter by default
+updated_at: "2026-07-13T07:48:13Z"
+---
+## Dogfood
+hark reply injected text but did not press Enter; operator had to submit manually.
+
+## Fix
+send_text(..., submit=True) default; send_keys enter after inject. --no-submit to opt out.
