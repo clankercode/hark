@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T14:19:32Z"
 depends_on:
@@ -8,13 +9,9 @@ depends_on:
 estimate_hours: 4
 id: B061
 priority: medium
+started_at: null
 status: pending
-tags:
-    - dashboard
-    - webui
-    - pwa
-    - ux
-    - polish
+tags: []
 title: 'Dashboard: beyond-parity polish (PWA, notifications, palette, scrubber, heatmaps)'
 updated_at: "2026-07-13T14:19:32Z"
 ---
@@ -34,3 +31,6 @@ Owner-approved delight features, all webui-side (no contract change) — see 'Be
 - [ ] One-tap menu answer round-trips via bound submit
 - [ ] Palette, scrubber, heatmap, saved views functional
 - [ ] No hark.dashboard.v1 contract changes required
+
+## Review note
+- PWA install + Web Notifications + phone mic are secure-context APIs: the phone-over-tailnet story requires B060's TLS setup (tailscale serve). Localhost desktop works without it. Acceptance 'PWA installs on phone' is conditional on that setup.
