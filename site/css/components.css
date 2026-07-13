@@ -472,6 +472,150 @@ a.product-link:hover {
   }
 }
 
+/* --- Architecture diagram (hero RHS) --- */
+.arch {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(232, 184, 74, 0.2);
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(232, 184, 74, 0.08), transparent 55%),
+    linear-gradient(180deg, #0c1018 0%, var(--bg-deep) 100%);
+  box-shadow: var(--shadow-panel), 0 0 48px rgba(232, 184, 74, 0.08);
+  overflow: hidden;
+  padding: var(--s-4) var(--s-3) var(--s-3);
+}
+
+.arch__title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: center;
+  margin: 0 0 var(--s-3);
+}
+
+.arch__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.arch__svg .node-fill {
+  fill: var(--bg-elevated);
+}
+
+.arch__svg .node-stroke {
+  stroke: var(--border-strong);
+  stroke-width: 1.25;
+  fill: none;
+}
+
+.arch__svg .node-fill--you {
+  fill: rgba(94, 234, 212, 0.12);
+}
+
+.arch__svg .node-stroke--you {
+  stroke: rgba(94, 234, 212, 0.55);
+}
+
+.arch__svg .node-fill--hark {
+  fill: rgba(232, 184, 74, 0.14);
+}
+
+.arch__svg .node-stroke--hark {
+  stroke: var(--herald);
+  stroke-width: 1.5;
+}
+
+.arch__svg .node-fill--svc {
+  fill: rgba(238, 241, 247, 0.04);
+}
+
+.arch__svg .node-stroke--svc {
+  stroke: rgba(238, 241, 247, 0.16);
+}
+
+.arch__svg .node-fill--herdr {
+  fill: rgba(16, 19, 28, 0.9);
+}
+
+.arch__svg .node-stroke--herdr {
+  stroke: rgba(232, 184, 74, 0.28);
+  stroke-dasharray: 4 3;
+}
+
+.arch__svg .node-fill--agent {
+  fill: rgba(251, 113, 133, 0.1);
+}
+
+.arch__svg .node-stroke--agent {
+  stroke: rgba(251, 113, 133, 0.4);
+}
+
+.arch__svg .lbl {
+  fill: var(--ink);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.arch__svg .lbl-sub {
+  fill: var(--ink-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.arch__svg .lbl-you {
+  fill: var(--signal);
+}
+
+.arch__svg .lbl-hark {
+  fill: var(--herald);
+}
+
+.arch__svg .arrow {
+  stroke: rgba(232, 184, 74, 0.55);
+  stroke-width: 1.5;
+  fill: none;
+  marker-end: url(#arch-arrow);
+}
+
+.arch__svg .arrow--signal {
+  stroke: rgba(94, 234, 212, 0.5);
+  marker-end: url(#arch-arrow-signal);
+}
+
+.arch__svg .arrow--dim {
+  stroke: rgba(238, 241, 247, 0.22);
+  marker-end: url(#arch-arrow-dim);
+}
+
+.arch__svg .edge-lbl {
+  fill: var(--ink-faint);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.arch__caption {
+  margin: var(--s-2) var(--s-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+@media (max-width: 719px) {
+  .arch {
+    margin-top: var(--s-2);
+  }
+}
+
 /* --- Section chrome — consistent vertical rhythm */
 .section {
   padding: clamp(3.5rem, 8vw, 5.5rem) 0;

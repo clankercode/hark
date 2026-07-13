@@ -10,8 +10,8 @@ Marketing / docs landing for [clankercode/hark](https://github.com/clankercode/h
 | `css/base.css` | Reset, body, atmosphere |
 | `css/components.css` | Buttons, cards, terminal, flow, nav, verse |
 | `css/layout.css` | Hero, grids, sections |
-| `js/main.js` | Nav scroll + waveform canvas |
-| `index.html` | Single-page composition |
+| `js/main.js` | Nav scroll (+ optional `#wave` canvas) |
+| `index.html` | Single-page composition; hero RHS = SVG architecture diagram |
 
 Change brand colors or type scale in **tokens only**; components consume `var(--…)`.
 

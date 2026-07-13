@@ -10,7 +10,7 @@
     window.addEventListener("scroll", onScroll, { passive: true });
   }
 
-  // Ambient waveform (decorative)
+  // Optional waveform accent (only if #wave canvas is present)
   const canvas = document.getElementById("wave");
   if (!canvas || !canvas.getContext) return;
 
@@ -34,27 +34,14 @@
     const t = (now - t0) / 1000;
 
     ctx.clearRect(0, 0, w, h);
-
-    // faint baseline
     ctx.strokeStyle = "rgba(238,241,247,0.06)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, h / 2);
     ctx.lineTo(w, h / 2);
     ctx.stroke();
-
-    // dual-layer listening wave
     drawWave(t, w, h, "rgba(232,184,74,0.85)", 1.6, 0.9, 0);
     drawWave(t * 1.15, w, h, "rgba(94,234,212,0.45)", 1.1, 0.55, 1.7);
-
-    // soft center glow pulse
-    const pulse = 0.5 + 0.5 * Math.sin(t * 1.4);
-    const g = ctx.createRadialGradient(w * 0.5, h * 0.5, 4, w * 0.5, h * 0.5, h * 0.55);
-    g.addColorStop(0, `rgba(232,184,74,${0.08 + pulse * 0.06})`);
-    g.addColorStop(1, "rgba(232,184,74,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-
     requestAnimationFrame(frame);
   }
 
