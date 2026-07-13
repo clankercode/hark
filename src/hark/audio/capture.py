@@ -96,6 +96,48 @@ def write_wav_bytes(pcm16: bytes, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
+def pad_pcm16_silence(
+    pcm16: bytes,
+    *,
+    pad_ms: int = 0,
+    sample_rate: int = 16000,
+    lead_ms: int | None = None,
+    trail_ms: int | None = None,
+) -> bytes:
+    """Expand mono PCM16 bounds with zero samples (silence).
+
+    Mid-buffer samples are preserved byte-identical. Used for radio segment
+    STT so edge phonemes are not hard-cut at the energy-gate boundary (B075).
+    Silence-only pad does not invent speech for STT.
+    """
+    lead = int(pad_ms if lead_ms is None else lead_ms)
+    trail = int(pad_ms if trail_ms is None else trail_ms)
+    if lead <= 0 and trail <= 0:
+        return pcm16
+    n_lead = max(0, int(sample_rate * lead / 1000.0))
+    n_trail = max(0, int(sample_rate * trail / 1000.0))
+    # 16-bit mono: 2 bytes per sample
+    return (b"\x00\x00" * n_lead) + pcm16 + (b"\x00\x00" * n_trail)
+
+
+def effective_radio_segment_pad_ms(
+    pad_ms: int | float,
+    radio_partial_silence_s: float,
+    *,
+    absolute_max_ms: int = 300,
+) -> int:
+    """Clamp radio boundary pad so it stays well under inter-segment quiet.
+
+    Budget: ``min(absolute_max_ms, radio_partial_silence_s * 1000 * 0.4)``.
+    Pad ≪ segment silence → STT sees hush, not prior speech / phantom words.
+    """
+    raw = int(pad_ms)
+    if raw <= 0:
+        return 0
+    silence_budget = max(0, int(float(radio_partial_silence_s) * 1000.0 * 0.4))
+    return max(0, min(raw, int(absolute_max_ms), silence_budget))
+
+
 def record_seconds(
     seconds: float,
     *,

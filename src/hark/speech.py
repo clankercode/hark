@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from hark.audio.capture import MicLease, capture_utterance, write_wav_bytes
+from hark.audio.capture import (
+    MicLease,
+    capture_utterance,
+    effective_radio_segment_pad_ms,
+    pad_pcm16_silence,
+    write_wav_bytes,
+)
 from hark.audio.cues import (
     configure_cues_from_config,
     lookup_cached_tts,
@@ -545,6 +551,16 @@ def run_listen(
         if mode is EndMode.SILENCE
         else float(getattr(cfg.listen, "radio_partial_silence_s", 0.6))
     )
+    # Radio-only: silence pad around each segment before STT (B075). Silence
+    # end_mode never pads. Clamped under radio_partial_silence_s so pad is hush.
+    radio_pad_ms = (
+        effective_radio_segment_pad_ms(
+            int(getattr(cfg.listen, "radio_segment_pad_ms", 250)),
+            float(getattr(cfg.listen, "radio_partial_silence_s", 0.6)),
+        )
+        if mode is EndMode.RADIO
+        else 0
+    )
     # Pluggable endpointing (B007): only for silence mode. Falls back to the
     # energy gate (strategy=None) if the smart detector can't load.
     endpoint_strategy: EndpointStrategy | None = None
@@ -957,7 +973,18 @@ def run_listen(
                         error="timeout",
                     )
                     raise
-                pieces.append(cap.pcm16)
+                # Pad segment bounds into silence so gate-cut edge phonemes are
+                # less often clipped by STT (B075). Mid-speech samples unchanged.
+                seg_pcm = (
+                    pad_pcm16_silence(
+                        cap.pcm16,
+                        pad_ms=radio_pad_ms,
+                        sample_rate=cap.sample_rate,
+                    )
+                    if radio_pad_ms > 0
+                    else cap.pcm16
+                )
+                pieces.append(seg_pcm)
                 wav = write_wav_bytes(b"".join(pieces), cap.sample_rate)
                 stt_seq += 1
                 tr, latency_ms = _transcribe_logged(

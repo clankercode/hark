@@ -107,6 +107,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "end_silence_s",
         "radio_end_silence_s",
         "radio_partial_silence_s",
+        "radio_segment_pad_ms",
         "stream_partials",
         "empty_stt_retry",
         "empty_stt_nudge",
@@ -284,6 +285,10 @@ class ListenConfig:
     # (shorter than end_silence_s so Mode A gets frequent HOLD partials). Does NOT
     # finalize the turn — end phrases / agent listen-end still required.
     radio_partial_silence_s: float = 0.6
+    # Radio-only: silence pad (ms) each side of a segment WAV before STT so edge
+    # phonemes aren't hard-cut at the energy gate (B075). Clamped to stay well
+    # under radio_partial_silence_s (see effective_radio_segment_pad_ms).
+    radio_segment_pad_ms: int = 250
     # Radio mode: emit interim STT to agent with HOLD warnings (before end phrase)
     stream_partials: bool = True
     # After empty STT (gate opened but no text): one automatic re-listen
@@ -496,6 +501,7 @@ end_mode = "silence"         # silence | radio
 # end_mode = "radio"         # keep listening until end phrase (long pauses OK)
 end_silence_s = 2.1          # quiet seconds before ending silence-mode capture
 # radio_partial_silence_s = 0.6  # radio only: quiet before interim STT/partial (B037)
+# radio_segment_pad_ms = 250     # radio only: silence pad each side of segment STT (B075)
 # radio_end_silence_s = 2.5      # legacy; segment cadence is radio_partial_silence_s
 # Endpointing strategy (B007): "energy" (default) reduces to the fixed
 # end_silence_s gate. "smart_turn" consults a Smart Turn v3 model to finish
@@ -1113,6 +1119,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
             radio_partial_silence_s=float(
                 listen_raw.get("radio_partial_silence_s", 0.6)
             ),
+            radio_segment_pad_ms=int(listen_raw.get("radio_segment_pad_ms", 250)),
             stream_partials=bool(listen_raw.get("stream_partials", True)),
             empty_stt_retry=bool(listen_raw.get("empty_stt_retry", True)),
             empty_stt_nudge=bool(listen_raw.get("empty_stt_nudge", True)),
@@ -1307,6 +1314,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "end_silence_s": cfg.listen.end_silence_s,
             "radio_end_silence_s": cfg.listen.radio_end_silence_s,
             "radio_partial_silence_s": cfg.listen.radio_partial_silence_s,
+            "radio_segment_pad_ms": cfg.listen.radio_segment_pad_ms,
             "stream_partials": cfg.listen.stream_partials,
             "empty_stt_retry": cfg.listen.empty_stt_retry,
             "empty_stt_nudge": cfg.listen.empty_stt_nudge,
