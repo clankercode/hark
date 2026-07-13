@@ -120,7 +120,7 @@ class ListenConfig:
     max_listen_s: float = 300.0
     nudge_silence_s: float = 0.0
     # Seconds of quiet before ending a silence-mode capture
-    end_silence_s: float = 1.1
+    end_silence_s: float = 2.1
     # Longer hang for radio mode segment boundaries
     radio_end_silence_s: float = 2.5
 
@@ -221,7 +221,7 @@ cue_volume = 0.22            # generated start/stop beep volume (0–1)
 [listen]
 end_mode = "silence"         # silence | radio
 # end_mode = "radio"         # keep listening until end phrase (long pauses OK)
-end_silence_s = 1.1          # quiet seconds before ending silence-mode capture
+end_silence_s = 2.1          # quiet seconds before ending silence-mode capture
 # radio_end_silence_s = 2.5
 end_phrases = [
   "okay hark send",
@@ -443,7 +443,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
             strip_phrase=bool(listen_raw.get("strip_phrase", True)),
             max_listen_s=float(listen_raw.get("max_listen_s", 300)),
             nudge_silence_s=float(listen_raw.get("nudge_silence_s", 0)),
-            end_silence_s=float(listen_raw.get("end_silence_s", 1.1)),
+            end_silence_s=float(listen_raw.get("end_silence_s", 2.1)),
             radio_end_silence_s=float(listen_raw.get("radio_end_silence_s", 2.5)),
         ),
         ambient=AmbientConfig(

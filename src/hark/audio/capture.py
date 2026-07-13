@@ -130,7 +130,7 @@ def capture_utterance(
     *,
     sample_rate: int = 16000,
     max_s: float = 120.0,
-    end_silence_s: float = 1.1,
+    end_silence_s: float = 2.1,
     min_speech_s: float = 0.25,
     open_margin_db: float = 8.0,
     # Absolute floor: speech louder than this opens even if relative margin fails
