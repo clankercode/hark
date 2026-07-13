@@ -6,6 +6,9 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- Site (B054): replace footer SPEC link with `llms.txt`; add `site/llms.txt`
+  (llmstxt.org-style map of Hark docs for AI crawlers).
+
 ## 0.1.6
 
 - Docs (B053): align root and npm READMEs with the marketing site — OG hero image,
