@@ -629,6 +629,8 @@ a.product-link:hover {
 /* --- Architecture diagram (hero RHS) — sized for readable topology --- */
 .arch {
   position: relative;
+  /* Kill UA figure margins (often ~40px inline) — they pushed past the shell RHS */
+  margin: 0;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(232, 184, 74, 0.28);
   background:
@@ -638,7 +640,7 @@ a.product-link:hover {
   box-shadow: var(--shadow-panel), 0 0 48px rgba(232, 184, 74, 0.1);
   overflow: hidden;
   padding: var(--s-5) var(--s-4) var(--s-4);
-  /* Fill the grid track only — never force past the shell (no min-width) */
+  /* Fill the grid track only — never force past the shell */
   width: 100%;
   max-width: 100%;
   min-width: 0;
