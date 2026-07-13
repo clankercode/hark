@@ -27,6 +27,8 @@ wake = [
 wake-sherpa = [
   "sherpa-onnx>=1.10",
   "sentencepiece>=0.1.99",
+  # Provides libonnxruntime.so (sherpa_onnx DT_NEEDED); without it import fails
+  "onnxruntime>=1.17",
 ]
 # Optional Smart Turn endpointing (B007). Default install stays lean; the
 # energy gate needs none of this. See docs/ENDPOINTING.md.

@@ -252,6 +252,23 @@ if [[ -f "$HARKD_PIDFILE" ]]; then
 fi
 
 cd "$ROOT"
+
+# Sherpa-ONNX needs libonnxruntime.so from the onnxruntime wheel (capi/).
+# Inject into LD_LIBRARY_PATH so ambient can import sherpa_onnx.
+_ort_capi="$(
+  cd "$ROOT" && uv run python -c '
+from pathlib import Path
+try:
+    import onnxruntime
+    print(Path(onnxruntime.__file__).resolve().parent / "capi")
+except Exception:
+    pass
+' 2>/dev/null || true
+)"
+if [[ -n "$_ort_capi" && -d "$_ort_capi" ]]; then
+  export LD_LIBRARY_PATH="${_ort_capi}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 HARK=(uv run hark)
 
 # Always replace previous Mode A (pidfile and/or orphan ambient/watch workers)

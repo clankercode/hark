@@ -1138,6 +1138,77 @@ def keyword_id_to_phrase(keyword_id: str) -> str:
     return s.replace("_", " ").strip().lower()
 
 
+
+def ensure_sherpa_onnx_import() -> Any:
+    """Import sherpa_onnx after making onnxruntime shared libs discoverable.
+
+    The sherpa_onnx wheel links against ``libonnxruntime.so`` but does not
+    ship it. The ``onnxruntime`` package has the .so under ``capi/``; without
+    that directory on ``LD_LIBRARY_PATH`` (at process start) import fails with
+    a misleading error. We add the path and re-exec once so the dynamic linker
+    can resolve the DT_NEEDED entry.
+    """
+    import os
+    import sys
+    from pathlib import Path
+
+    try:
+        import sherpa_onnx  # type: ignore
+
+        return sherpa_onnx
+    except ImportError as first:
+        first_exc: BaseException = first
+        msg = str(first).lower()
+        # Truly missing Python package (not a shared-lib resolution failure)
+        if "no module named" in msg and "sherpa" in msg:
+            raise RuntimeError(
+                "sherpa-onnx not installed; uv sync --extra wake-sherpa "
+                "(needs sherpa-onnx, sentencepiece, onnxruntime)"
+            ) from first
+    except Exception as first:  # pragma: no cover — defensive
+        first_exc = first
+
+    try:
+        import onnxruntime  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "sherpa-onnx needs libonnxruntime.so from the onnxruntime package; "
+            "uv sync --extra wake-sherpa (or: uv pip install onnxruntime)"
+        ) from first_exc
+
+    capi = Path(onnxruntime.__file__).resolve().parent / "capi"
+    if not capi.is_dir():
+        raise RuntimeError(f"onnxruntime capi dir missing: {capi}") from first_exc
+
+    # Ensure unversioned soname for the dynamic linker
+    versions = sorted(capi.glob("libonnxruntime.so.*"))
+    unversioned = capi / "libonnxruntime.so"
+    if versions and not unversioned.exists():
+        try:
+            unversioned.symlink_to(versions[-1].name)
+        except OSError:
+            pass
+
+    cur = os.environ.get("LD_LIBRARY_PATH", "")
+    parts = [p for p in cur.split(":") if p]
+    if str(capi) not in parts:
+        os.environ["LD_LIBRARY_PATH"] = f"{capi}:{cur}" if cur else str(capi)
+        if os.environ.get("HARK_ORT_REEXEC") != "1":
+            os.environ["HARK_ORT_REEXEC"] = "1"
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    try:
+        import sherpa_onnx  # type: ignore
+
+        return sherpa_onnx
+    except ImportError as exc:
+        raise RuntimeError(
+            "sherpa-onnx import failed after setting LD_LIBRARY_PATH to "
+            f"{capi}: {exc}. Try: uv sync --extra wake-sherpa && "
+            f"export LD_LIBRARY_PATH={capi}:$LD_LIBRARY_PATH"
+        ) from exc
+
+
 class SherpaKwsWakeBackend:
     """Open-vocab keyword spotting via sherpa-onnx (English GigaSpeech 3.3M).
 
@@ -1221,12 +1292,9 @@ class SherpaKwsWakeBackend:
             return
         try:
             import numpy as np  # type: ignore
-            import sherpa_onnx  # type: ignore
         except ImportError as exc:
-            raise RuntimeError(
-                "sherpa-onnx not installed; uv sync --extra wake-sherpa "
-                "or pip install sherpa-onnx sentencepiece"
-            ) from exc
+            raise RuntimeError("numpy required for sherpa_kws") from exc
+        sherpa_onnx = ensure_sherpa_onnx_import()
         self._np = np
         if not self.keywords_path.is_file():
             self.rebuild_keywords(self.policy)
