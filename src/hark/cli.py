@@ -1598,7 +1598,9 @@ def cmd_listen(args: argparse.Namespace, cfg) -> int:
         cfg,
         provider=args.provider,
         end_mode=args.end_mode,
-        arm_cue=bool(getattr(cfg.audio, "answer_arm_cue", True)),
+        arm_cue=bool(
+            getattr(getattr(cfg, "audio", None), "answer_arm_cue", True)
+        ),
     )
     if result.cancelled:
         eprint(f"cancelled via {result.end_phrase!r}")
