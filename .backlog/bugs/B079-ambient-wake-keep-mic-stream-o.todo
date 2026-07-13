@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T15:54:10Z"
 depends_on: []
 estimate_hours: 5
 id: B079
 priority: high
+started_at: null
 status: pending
 tags: []
 title: 'Ambient wake: keep mic stream open (no per-snippet open/close); continuous ring buffer'
@@ -68,3 +70,31 @@ continuous stream.
 - Mic lease (`mic_coord.py`); B010 auto-pause ambient for listen
 - B070 Sherpa KWS (streaming-friendly once mic is continuous)
 - B032 bare/near-miss; boundary “hey” only failures
+
+
+## Pre-roll into answer / post-wake capture (same continuous stream)
+
+Once the mic is a continuous ring buffer for wake, **also stream into a longer
+sample buffer** used when the operator is:
+
+- replying to a blocked-agent question (`hark ask` / answer window), or
+- giving a freeform ambient prompt after wake,
+
+…so capture is not a cold open at the energy gate.
+
+### Pre-speech lead-in
+
+When the noise gate goes **below → above** (speech open), finalize/start the
+utterance buffer by including **at least ~250 ms of audio from before the open**
+drawn from the ring buffer (target range **250–500 ms**, tune by measured
+gate rise time / false-open rate). That way word onsets are not clipped when
+the gate lags the true start of speech.
+
+### Notes
+
+- Same continuous device stream as ambient wake; answer/ask still takes the
+  lease / pauses wake scoring, but does **not** need a fresh device open with
+  empty history.
+- Prefer configurable `pre_roll_ms` (default 250–350) capped by ring capacity.
+- Complements B075 radio segment pad (post-cut silence) — this is **pre-open**
+  lead-in for the whole reply capture.
