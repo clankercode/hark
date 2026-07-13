@@ -71,3 +71,4 @@ bugs:
     - file: B070-sherpa-onnx-kws-wake-backend-p.todo
     - file: B071-wake-eval-harness-expand-fixtu.todo
     - file: B072-optional-local-full-stt-provid.todo
+    - file: B073-docs-helper-optional-larger-vo.todo
