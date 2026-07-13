@@ -1,0 +1,26 @@
+---
+complexity: medium
+created_at: "2026-07-13T19:01:54Z"
+depends_on: []
+estimate_hours: 1
+id: B099
+priority: high
+status: pending
+tags: []
+title: TTS play queue stall blocks ambient boot forever (abandoned tickets)
+updated_at: "2026-07-13T19:01:54Z"
+---
+## Symptom (dogfood 2026-07-13)
+After restarting ambient, wake never fired on "hey iris". Ambient process was alive and had emitted ambient.armed, but never opened the mic stream / never emitted ambient.debug.
+
+## Root cause
+`tts_play_queue.json` had `serving: 75, next: 77` with no live player. Ambient boot TTS claims a ticket then waits in `exclusive_playback` until `serving == ticket` (30ms poll). Dead/killed TTS processes abandoned tickets 75–76 without advancing `serving`, so ambient hung forever before entering `_wait_for_wake`.
+
+## Fix applied live
+Manually set `serving = next` and restarted ambient. Wake loop recovered (mic.lock held, ambient.debug quiet scoring).
+
+## Desired product fix
+1. Detect abandoned tickets (holder PID dead / stale age) and advance serving.
+2. Boot TTS for ambient: timeout or conference-style skip if queue stuck > N seconds so wake arming is never blocked.
+3. On process exit / SIGTERM of hark tts, abandon claimed tickets (atexit/signal).
+4. Doctor or ambient startup: if queue stuck (serving < next-1 with no lock holder), auto-heal and syslog warn.
