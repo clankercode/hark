@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-13T13:58:29Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T13:57:50Z"
 depends_on: []
 estimate_hours: 1
 id: B053
 priority: high
-status: pending
+started_at: "2026-07-13T13:58:29Z"
+status: in_progress
 tags: []
 title: Update the npm facing readme to be more in-line with our static site (also update the main repo README.md as required + add the og image as a hero image)
-updated_at: "2026-07-13T13:57:50Z"
+updated_at: "2026-07-13T13:58:29Z"
 ---
 
 Update the npm facing readme to be more in-line with our static site (also update the main repo README.md as required + add the og image as a hero image)
