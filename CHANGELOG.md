@@ -9,6 +9,12 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 - **Install freshness (B100):** `hark doctor` reports PATH / `uv tool` install vs
   local source (`install: stale|frozen|editable`), missing cmds (e.g. `start`/`stop`),
   and reinstall hint `uv tool install -e . --force`. Skill SETUP + dogfood notes.
+- fix(tts/streaming, B105): pause-gate live streaming TTS acks — when
+  `[ambient].streaming` is on, `hark tts` waits for operator quiet ≥
+  `streaming_ack_min_quiet_s` (default **2.0 s**) or listen end before play +
+  mic mute, so continuous speech is not barged into. Voice energy is published
+  during capture; HOLD mode still waits for capture idle (B097). Partial HEP /
+  skill note the quiet gate; config sample documents default-on once dogfooded.
 - fix(ambient, B104): dual-write HEP wake events to ambient.jsonl even when ambient stdout is redirected (e.g. restart log), so Mode A `hark monitor` always sees ambient.prompt/partials.
 - fix(monitor, B102): singleflight lock on `hark monitor` (`monitor.pid` + flock)
   so a second consumer refuses instead of duplicating HEP wakes; skill documents
