@@ -1,0 +1,43 @@
+---
+complexity: medium
+created_at: "2026-07-13T18:01:06Z"
+depends_on: []
+estimate_hours: 1
+id: B094
+priority: high
+status: pending
+tags:
+    - herdr
+    - watch
+    - mode-a
+    - context
+title: On Herdr agent state updates, include full pane text screen capture in HEP events for Mode A
+updated_at: "2026-07-13T18:01:06Z"
+---
+## Problem
+
+When a Herdr agent updates state (blocked / needs_input / working→idle / question change / false-done menu, etc.), Mode A often only receives a compact HEP line (status, short question excerpt, pane id). The orchestrating agent then cannot make an informed decision without **separately** calling `hark context` / `herdr pane read` — and many agents do not know to do that, or waste turns ignoring incomplete signal.
+
+## Desired
+
+On relevant Herdr state transitions that wake Mode A, **include a full text/ASCII screen capture** of the active pane (and ideally enough of the tab/workspace chrome if useful) in the event payload (or a tightly linked side-channel the monitor always surfaces).
+
+- Prefer the same unwrapped recent/visible text Herdr already exposes (`herdr pane read … --source recent-unwrapped` / existing context path).
+- Size: full useful viewport / recent scrollback bound by config (e.g. last N lines or max chars), not a 1-line excerpt only.
+- Monitor compact mode should still pass enough for decisions, or instruct “context attached” with the body (not only “call hark context”).
+- Do not invent UI: text capture only (no screenshots required for v1).
+
+## Acceptance
+
+- [ ] `agent.blocked` / `agent.needs_input` / `agent.question_changed` (and similar wake kinds) carry full pane text (or equivalent) by default
+- [ ] Mode A agent can answer a multi-option menu from the event alone without a second context fetch
+- [ ] Config to cap lines/chars + disable if needed
+- [ ] Docs / skill: agents may rely on embedded capture; optional refresh via `hark context` for live re-read
+- [ ] Tests with fixtures (blocked menu pane → event contains choice lines)
+
+## Related
+
+- `hark watch` / HEP builders in `events.py`
+- `hark context` / `herdr pane read`
+- False-done / menu detection (pending-question heuristics)
+- B016 false done; dashboard Herdr map (context surfaces)
