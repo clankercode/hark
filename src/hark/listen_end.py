@@ -1,8 +1,8 @@
 """Listen endpoint modes: silence/Smart Turn vs radio-style end phrases.
 
-Radio mode (like saying "over" on the air): keep the mic open through long
-thinking pauses until the operator speaks an explicit end phrase such as
-"okay send it" or "end prompt". The phrase is stripped before delivery.
+Control phrases MUST be product-scoped by default so ordinary technical speech
+does not abort or finalize a capture. Operators may add casual phrases if they
+accept the false-trigger risk.
 """
 
 from __future__ import annotations
@@ -18,32 +18,27 @@ class EndMode(str, Enum):
     RADIO = "radio"  # keep listening until end phrase
 
 
+# Product-scoped only — no "cancel that" / "send it" / bare "over".
 DEFAULT_END_PHRASES: tuple[str, ...] = (
-    "okay send it",
-    "ok send it",
-    "okay, send it",
-    "send it",
+    "okay hark send",
+    "ok hark send",
+    "hark send it",
+    "hark send",
     "end prompt",
     "end of prompt",
-    "end of message",
-    "over",
+    "hark over",
 )
 
 DEFAULT_CANCEL_PHRASES: tuple[str, ...] = (
-    "cancel that",
-    "never mind",
-    "nevermind",
-    "scratch that",
-    "abort send",
+    "hark cancel",
+    "cancel hark",
+    "abort hark send",
+    "hark abort",
 )
 
 
 _PUNCT_TRAIL = re.compile(r"[\s\.\!\?\,\;\:…]+$", re.UNICODE)
 _WS = re.compile(r"\s+")
-# strip common trailing fillers before phrase match
-_FILLER_TRAIL = re.compile(
-    r"[\s]*(?:uh|um|erm|please)?[\s\.\!\?\,\;\:…]*$", re.I | re.UNICODE
-)
 
 
 def normalize_for_match(text: str) -> str:
@@ -62,23 +57,18 @@ def _strip_trail_punct(text: str) -> str:
 class PhraseHit:
     kind: str  # "end" | "cancel"
     phrase: str
-    # transcript with the terminal phrase (and trailing punct) removed
     body: str
-    # full original input (for logging; never contains secrets by itself)
     raw: str
 
 
 def _ends_with_phrase(normalized: str, phrase: str) -> bool:
-    """True if normalized text ends with phrase at a word boundary."""
     p = normalize_for_match(phrase)
     if not p or not normalized:
         return False
-    # allow optional trailing punctuation already stripped on both
     if normalized == p:
         return True
     if not normalized.endswith(p):
         return False
-    # word boundary: char before phrase must be whitespace or start
     before = len(normalized) - len(p)
     if before == 0:
         return True
@@ -91,14 +81,12 @@ def find_terminal_phrase(
     *,
     kind: str,
 ) -> PhraseHit | None:
-    """If text ends with any phrase (longest first), return a hit with body stripped."""
     raw = text or ""
     norm = normalize_for_match(raw)
     norm = _strip_trail_punct(norm)
     if not norm:
         return None
 
-    # Prefer longest phrase to avoid "send it" beating "okay send it"
     ordered = sorted(
         (normalize_for_match(p) for p in phrases if p and str(p).strip()),
         key=len,
@@ -112,8 +100,6 @@ def find_terminal_phrase(
         if _ends_with_phrase(norm, p):
             body_norm = norm[: len(norm) - len(p)].rstrip()
             body_norm = _strip_trail_punct(body_norm)
-            # Map body back approximately: use normalized body for delivery
-            # (STT is already approximate; operators prefer clean text)
             return PhraseHit(kind=kind, phrase=p, body=body_norm, raw=raw)
     return None
 
@@ -124,7 +110,6 @@ def evaluate_radio_transcript(
     end_phrases: list[str] | tuple[str, ...] = DEFAULT_END_PHRASES,
     cancel_phrases: list[str] | tuple[str, ...] = DEFAULT_CANCEL_PHRASES,
 ) -> PhraseHit | None:
-    """Check cancel first, then end. None = keep listening."""
     cancel = find_terminal_phrase(text, cancel_phrases, kind="cancel")
     if cancel is not None:
         return cancel
@@ -135,11 +120,10 @@ def parse_end_mode(value: str | None, default: EndMode = EndMode.SILENCE) -> End
     if value is None or str(value).strip() == "":
         return default
     v = str(value).strip().lower()
-    if v in ("silence", "smart_turn", "smart-turn", "vad", "auto"):
-        # auto maps to silence for endpoint policy (not provider auto)
-        if v == "auto":
-            return default
+    if v in ("silence", "smart_turn", "smart-turn", "vad"):
         return EndMode.SILENCE
+    if v == "auto":
+        return default
     if v in ("radio", "prosign", "phrase", "end_phrase", "end-phrase"):
         return EndMode.RADIO
     raise ValueError(
@@ -155,20 +139,12 @@ def should_keep_listening(
     cancel_phrases: list[str] | tuple[str, ...] = DEFAULT_CANCEL_PHRASES,
     silence_would_end: bool = False,
 ) -> tuple[bool, PhraseHit | None]:
-    """Return (keep_listening, hit).
-
-    In silence mode, keep_listening is False when silence_would_end (caller
-    supplies Smart Turn / end-silence decision).
-
-    In radio mode, ignore silence_would_end; only end/cancel phrases finish.
-    """
     mode = end_mode if isinstance(end_mode, EndMode) else parse_end_mode(str(end_mode))
     if mode is EndMode.SILENCE:
         if silence_would_end:
             return False, None
         return True, None
 
-    # radio
     hit = evaluate_radio_transcript(
         text, end_phrases=end_phrases, cancel_phrases=cancel_phrases
     )

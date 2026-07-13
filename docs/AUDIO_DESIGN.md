@@ -4,124 +4,97 @@ Adapted from prior `AUDIO_DESIGN.md` for Hark.
 
 ## Practical selectivity (not biometrics)
 
-A noise gate cannot prove “only me.” Selectivity comes from:
-
 - close-talk headset / lapel / directional mic (recommended);  
-- **listen only after** Hark asks;  
+- **answer windows** only after Hark asks (or after ambient activation);  
 - mute/discard during TTS;  
 - adaptive noise floor + speech hysteresis;  
-- optional wake phrase (later);  
+- activation phrases for ambient (`hey hark` / `hey herald`);  
+- **product-scoped** control phrases (no casual “cancel that” defaults);  
 - risk-based confirmation.
 
-Headset also reduces TTS echo into the mic.
-
-## Capture pipeline
+## Capture pipeline (answer window)
 
 ```text
 device
   → resample to 16 kHz mono PCM16
-  → optional high-pass / light AGC
   → adaptive noise-floor (gate closed only)
-  → energy (+ optional classic WebRTC VAD)
-  → open confirmation frames + hangover
-  → pre-roll ring buffer (~250 ms)
-  → bounded utterance → cloud STT
+  → energy gate + hangover
+  → pre-roll
+  → utterance → cloud STT
 ```
 
-No local neural ASR/TTS.
+## Ambient pipeline (not answering a blocked agent)
 
-## Suggested defaults (calibrate)
+```text
+device
+  → 2–3 s rolling snippets (local only)
+  → tiny local model / vosk (NO cloud)
+  → match activation phrase?
+        no  → discard snippet
+        yes → optional readiness cue
+            → cloud STT for prompt body
+            → same end_mode as [listen]
+```
 
-| Parameter | Start |
-|-----------|--------|
-| Frame | 20 ms |
-| Noise-floor time constant | 3–8 s |
-| Open margin | 10–16 dB above floor |
-| Open confirm | ~160 ms |
-| Pre-roll | 250 ms |
-| End silence (normal) | ~1.1 s |
-| End silence (long_answer) | 2.0–2.5 s |
-| Hangover | ~200 ms |
-| Max utterance | 120 s |
-| Min speech | ~300 ms |
-| Post-TTS guard | 250–500 ms |
-| Initial response timeout | ~20–45 s |
+## Control phrase policy
 
-## Endpointing
+**Defaults must not fire on ordinary technical speech.**
 
-Users pause mid-dictation (paths, numbers). Do not end on the first short silence. Prefer provider **Smart Turn** (xAI) when streaming. Support spoken “keep listening” as a meta-command in Mode A/B.
+| Role | Default examples | Avoid as defaults |
+|------|------------------|-------------------|
+| End (radio) | `okay hark send`, `end prompt`, `hark over` | `send it`, bare `over`, `stop` |
+| Cancel | `hark cancel`, `abort hark send` | `cancel that`, `never mind` |
+| Activation | `hey hark`, `hey herald` | bare `hark` mid-sentence |
 
-### End modes (`[listen]` in `~/.config/hark/config.toml`)
+Operators may add casual phrases if they accept false triggers.
+
+## End modes (`[listen]`)
 
 | `end_mode` | Behavior |
 |------------|----------|
-| **`silence`** (default) | End utterance on Smart Turn / end-silence hang. Good for short answers. |
-| **`radio`** | **Keep listening through long thinking pauses.** Only finalize when the operator speaks an **end phrase** (radio-style “over” / “stop”). Cancel phrases abort without deliver. |
-
-Radio mode is for long, thoughtful replies: you may pause for many seconds (or longer) while formulating; Hark must **not** cut you off on silence alone.
+| **`silence`** (default) | Smart Turn / end-silence |
+| **`radio`** | Keep listening through long pauses until end phrase |
 
 ```toml
 [listen]
-end_mode = "radio"   # or "silence"
-end_phrases = [
-  "okay send it",
-  "ok send it",
-  "send it",
-  "end prompt",
-  "end of prompt",
-  "end of message",
-  "over",
-]
-cancel_phrases = [
-  "cancel that",
-  "never mind",
-  "scratch that",
-  "abort send",
-]
-strip_phrase = true      # remove the end phrase from delivered text
-max_listen_s = 300       # hard safety cap (always)
-# nudge_silence_s = 45   # optional TTS "still listening" after quiet (0 = off)
+end_mode = "radio"
+end_phrases = ["okay hark send", "end prompt", "hark over"]
+cancel_phrases = ["hark cancel", "cancel hark", "abort hark send"]
+strip_phrase = true
+max_listen_s = 300
 ```
 
-Env override: `HARK_LISTEN_END_MODE=radio`.  
-CLI override (when implemented): `hark listen --end-mode radio`, `hark ask --end-mode radio`.
+Env: `HARK_LISTEN_END_MODE=radio`.
 
-**Matching rules (normative for library):**
+## Ambient (`[ambient]`)
 
-1. Case-insensitive; trailing punctuation ignored.  
-2. Phrase must appear as a **terminal** segment (end of current transcript), at a word boundary — not mid-sentence.  
-3. Longest matching phrase wins (`okay send it` over `send it`).  
-4. On **end**: strip phrase (if `strip_phrase`) → that body is the answer transcript.  
-5. On **cancel**: exit abort (code 7); do not deliver.  
-6. In radio mode, Smart Turn / end-silence **MUST NOT** finalize; they MAY only segment interim STT.  
-7. `max_listen_s` always applies (timeout → exit 6).  
-8. Prefer multi-word defaults; bare `"stop"` is **not** a default (too many false ends: “please stop the server…”). Operators may add it.
+```toml
+[ambient]
+enabled = false
+activation_phrases = ["hey hark", "hey herald", "okay hark"]
+engine = "vosk"          # or text_probe for tests
+# model_path = "/path/to/vosk-model-small-en-us"
+snippet_s = 2.5
+timeout_s = 300
+```
 
-Optional readiness cue when radio mode arms: short TTS or beep “listening — say okay send it when done.”
+CLI: `hark ambient` (forces a wake+listen cycle).
 
-## Half-duplex sequence (MVP)
+## Half-duplex sequence (answer)
 
 1. Speak question (TTS).  
-2. Wait for device drain + post-TTS guard.  
-3. Optional short readiness cue (beep / “ready”; radio mode may mention end phrase).  
-4. Arm capture.  
-5. On endpoint (silence/Smart Turn **or** radio end phrase) → STT finalize → (confirm if needed) → deliver.  
-
-Barge-in: later, with AEC.
+2. Post-TTS guard.  
+3. Arm capture.  
+4. Endpoint (silence or radio phrase) → STT → confirm if needed → deliver.  
 
 ## False-trigger defenses
 
-- No STT outside answer window (event-driven mode).  
-- Min voiced duration + min non-filler tokens.  
-- Discard empty / filler-only.  
-- Discard high textual overlap with last TTS (echo).  
-- Bound concurrent listen (one mic lease).  
-
-## Devices
-
-Store **stable device ids**, not only names. On device loss: cancel capture, keep pending event, never silently switch mics without policy.
+- No cloud STT outside answer window or post-activation.  
+- Product-scoped control lexicon by default.  
+- Min speech duration; filler discard; TTS echo overlap reject.  
+- One mic lease at a time.  
 
 ## Privacy
 
-- Ring buffer in memory only.  
-- Delete raw audio after STT unless debug capture explicitly enabled (with warning + TTL).  
+- Wake snippets processed locally; not uploaded.  
+- Delete raw audio after STT unless debug capture enabled.  

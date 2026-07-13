@@ -50,6 +50,13 @@ def run_doctor(
             "end_phrase_count": len(cfg.listen.end_phrases),
             "strip_phrase": cfg.listen.strip_phrase,
         },
+        "ambient": {
+            "enabled": cfg.ambient.enabled,
+            "engine": cfg.ambient.engine,
+            "activation_count": len(cfg.ambient.activation_phrases),
+            "model_path": cfg.ambient.model_path,
+            "snippet_s": cfg.ambient.snippet_s,
+        },
         "herdr_bin": shutil.which("herdr"),
         "sessions": [],
         "providers": [],
@@ -133,6 +140,14 @@ def _print_human(report: dict[str, Any], *, out: TextIO) -> None:
         f"  listen: end_mode={listen.get('end_mode', '?')} "
         f"max={listen.get('max_listen_s', '?')}s "
         f"(radio = keep open until end phrase)",
+        file=out,
+    )
+    ambient = report.get("ambient") or {}
+    print(
+        f"  ambient: enabled={ambient.get('enabled')} "
+        f"engine={ambient.get('engine')} "
+        f"phrases={ambient.get('activation_count', 0)} "
+        f"(local wake; cloud STT only after activation)",
         file=out,
     )
     if report.get("speech_ok"):

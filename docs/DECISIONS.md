@@ -14,9 +14,11 @@ Supervisory agent outside Herdr is the default operator. **v1 ships Mode A only.
 
 Local + remote Herdr sessions merge into one HEP feed with `session_id`.
 
-## ADR-004: No local neural speech models
+## ADR-004: No local neural **dictation**; local wake snippets OK
 
-Cloud STT/TTS only. Local DSP (gate/VAD/resample) allowed.
+Full STT/TTS remains **cloud**. Exception: a **tiny local model** may scan short
+(2–3 s) ambient snippets **only** to detect activation phrases (`hey hark` /
+`hey herald`). No continuous cloud ambient transcription.
 
 ## ADR-005: Confirm policy split by risk
 
@@ -30,9 +32,10 @@ Subscribe when capable; poll otherwise. Capability probe over hard-coded protoco
 
 `hark answer <event_id>` over freeform `reply` for production loops.
 
-## ADR-008: Event-driven listening only (MVP)
+## ADR-008: Event-driven answer windows + optional ambient wake
 
-No continuous ambient cloud transcription. Optional wake-prefix later.
+Bound answers: listen only after Hark asks (event-driven).  
+Idle ambient: optional local wake scanner; cloud STT only **after** activation.
 
 ## ADR-009: Half-duplex + post-TTS guard
 
@@ -64,4 +67,15 @@ Operators who think aloud with long pauses need the mic to stay open until an ex
 - Default remains `silence` for short answers.  
 - End phrases are stripped; cancel phrases abort (exit 7).  
 - Hard `max_listen_s` always caps capture.  
-See [AUDIO_DESIGN.md](AUDIO_DESIGN.md).  
+- **Default control phrases are product-scoped** (`hark cancel`, `okay hark send`)
+  so ordinary speech does not trigger.  
+See [AUDIO_DESIGN.md](AUDIO_DESIGN.md).
+
+## ADR-015: Ambient activation phrases + local snippet wake
+
+When not answering a blocked question, Mode A may run ambient listen:
+
+- Activation: `hey hark`, `hey herald` (configurable)  
+- Local engine scans ~2.5 s snippets (vosk small model or test probe)  
+- After wake → cloud STT for the prompt body (same `[listen]` end_mode)  
+- Config: `[ambient]` in `~/.config/hark/config.toml`  

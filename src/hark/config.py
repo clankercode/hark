@@ -16,6 +16,7 @@ from hark.listen_end import (
     parse_end_mode,
 )
 from hark.paths import default_config_path, default_herdr_socket
+from hark.wake import DEFAULT_ACTIVATION_PHRASES
 
 
 KNOWN_TOP_KEYS = frozenset(
@@ -25,6 +26,7 @@ KNOWN_TOP_KEYS = frozenset(
         "watch",
         "audio",
         "listen",
+        "ambient",
         "stt",
         "tts",
         "confirm",
@@ -40,6 +42,7 @@ class SessionConfig:
     ssh: str | None = None
     herdr_bin: str | None = None
     label: str | None = None
+    remote_socket: str | None = None
 
 
 @dataclass
@@ -59,26 +62,29 @@ class AudioConfig:
 
 @dataclass
 class ListenConfig:
-    """How a spoken reply ends (global: ~/.config/hark/config.toml).
-
-    end_mode:
-      silence — end on Smart Turn / end-silence (default)
-      radio   — keep listening through long pauses until an end phrase
-                (like radio "over"), e.g. "okay send it" / "end prompt"
-    """
-
     end_mode: str = EndMode.SILENCE.value
-    end_phrases: list[str] = field(
-        default_factory=lambda: list(DEFAULT_END_PHRASES)
-    )
+    end_phrases: list[str] = field(default_factory=lambda: list(DEFAULT_END_PHRASES))
     cancel_phrases: list[str] = field(
         default_factory=lambda: list(DEFAULT_CANCEL_PHRASES)
     )
     strip_phrase: bool = True
-    # hard cap even in radio mode (operator safety)
     max_listen_s: float = 300.0
-    # optional spoken nudge after this much trailing silence (0 = off)
     nudge_silence_s: float = 0.0
+
+
+@dataclass
+class AmbientConfig:
+    """When not answering a bound question: listen for activation → new prompt."""
+
+    enabled: bool = False
+    activation_phrases: list[str] = field(
+        default_factory=lambda: list(DEFAULT_ACTIVATION_PHRASES)
+    )
+    # local | vosk | text_probe — never cloud during wake scan
+    engine: str = "vosk"
+    model_path: str | None = None
+    snippet_s: float = 2.5
+    timeout_s: float = 300.0
 
 
 @dataclass
@@ -95,7 +101,7 @@ class TtsConfig:
 
 @dataclass
 class ConfirmConfig:
-    mode: str = "auto"  # auto | always | never — R2/R3 always force confirm
+    mode: str = "auto"
 
 
 @dataclass
@@ -110,6 +116,7 @@ class HarkConfig:
     watch: WatchConfig = field(default_factory=WatchConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     listen: ListenConfig = field(default_factory=ListenConfig)
+    ambient: AmbientConfig = field(default_factory=AmbientConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     confirm: ConfirmConfig = field(default_factory=ConfirmConfig)
@@ -125,48 +132,58 @@ class HarkConfig:
 
 
 DEFAULT_CONFIG_TOML = """\
-# Hark config — see docs/SPEC.md
+# Hark config — ~/.config/hark/config.toml  (see docs/SPEC.md)
 version = 1
 
 [[herdr.sessions]]
 id = "local"
-# socket = "~/.config/herdr/herdr.sock"  # default if unset
+# socket = "~/.config/herdr/herdr.sock"
 # label = "local herdr"
+# ssh = "workbox"            # optional remote tunnel
+# remote_socket = "~/.config/herdr/herdr.sock"
 
 [watch]
 statuses = ["blocked", "done"]
 debounce_ms = 250
-transport = "auto"
+transport = "auto"           # auto | socket | poll
 poll_ms = 1000
 
 [audio]
 half_duplex = true
 post_tts_guard_ms = 350
 
-# How spoken replies end (see docs/AUDIO_DESIGN.md § Radio end)
-# silence = Smart Turn / end-silence (default)
-# radio   = keep listening through long pauses until an end phrase
+# Bound answer windows — how spoken replies end
+# Defaults are product-scoped so normal speech does not trigger control.
 [listen]
-end_mode = "silence"
-# end_mode = "radio"
+end_mode = "silence"         # silence | radio
+# end_mode = "radio"         # keep listening until end phrase (long pauses OK)
 end_phrases = [
-  "okay send it",
-  "ok send it",
-  "send it",
+  "okay hark send",
+  "ok hark send",
+  "hark send it",
+  "hark send",
   "end prompt",
   "end of prompt",
-  "end of message",
-  "over",
+  "hark over",
 ]
 cancel_phrases = [
-  "cancel that",
-  "never mind",
-  "scratch that",
-  "abort send",
+  "hark cancel",
+  "cancel hark",
+  "abort hark send",
+  "hark abort",
 ]
 strip_phrase = true
 max_listen_s = 300
-# nudge_silence_s = 45   # optional "still listening" after long quiet (0 = off)
+
+# Ambient: when NOT replying to a blocked agent question
+# Local 2–3s snippets scan for activation; cloud STT only after wake.
+[ambient]
+enabled = false
+activation_phrases = ["hey hark", "hey herald", "okay hark", "ok hark"]
+engine = "vosk"              # vosk | text_probe (tests)
+# model_path = "/path/to/vosk-model-small-en-us"
+snippet_s = 2.5
+timeout_s = 300
 
 [stt]
 provider = "auto"
@@ -194,7 +211,6 @@ def _as_list_str(value: Any, default: list[str]) -> list[str]:
 
 
 def load_config(path: Path | None = None) -> HarkConfig:
-    """Load config from path or default; missing file → defaults with local session."""
     cfg_path = path or default_config_path()
     raw: dict[str, Any] = {}
     warnings: list[str] = []
@@ -205,7 +221,6 @@ def load_config(path: Path | None = None) -> HarkConfig:
         for key in raw:
             if key not in KNOWN_TOP_KEYS:
                 warnings.append(f"unknown config key: {key!r}")
-    # else: defaults only
 
     herdr = raw.get("herdr") or {}
     sessions_raw = herdr.get("sessions") if isinstance(herdr, dict) else None
@@ -222,12 +237,12 @@ def load_config(path: Path | None = None) -> HarkConfig:
                     ssh=item.get("ssh"),
                     herdr_bin=item.get("herdr_bin"),
                     label=item.get("label"),
+                    remote_socket=item.get("remote_socket"),
                 )
             )
     if not sessions:
         sessions = [SessionConfig(id="local")]
 
-    # Env HERDR_SOCKET_PATH overrides first/local session socket when set
     env_sock = os.environ.get("HERDR_SOCKET_PATH")
     if env_sock:
         for s in sessions:
@@ -235,25 +250,21 @@ def load_config(path: Path | None = None) -> HarkConfig:
                 s.socket = env_sock
                 break
 
-    watch_raw = raw.get("watch") or {}
-    audio_raw = raw.get("audio") or {}
-    listen_raw = raw.get("listen") or {}
-    stt_raw = raw.get("stt") or {}
-    tts_raw = raw.get("tts") or {}
-    confirm_raw = raw.get("confirm") or {}
-    safety_raw = raw.get("safety") or {}
+    watch_raw = raw.get("watch") if isinstance(raw.get("watch"), dict) else {}
+    audio_raw = raw.get("audio") if isinstance(raw.get("audio"), dict) else {}
+    listen_raw = raw.get("listen") if isinstance(raw.get("listen"), dict) else {}
+    ambient_raw = raw.get("ambient") if isinstance(raw.get("ambient"), dict) else {}
+    stt_raw = raw.get("stt") if isinstance(raw.get("stt"), dict) else {}
+    tts_raw = raw.get("tts") if isinstance(raw.get("tts"), dict) else {}
+    confirm_raw = raw.get("confirm") if isinstance(raw.get("confirm"), dict) else {}
+    safety_raw = raw.get("safety") if isinstance(raw.get("safety"), dict) else {}
 
-    stt_provider = os.environ.get("HARK_STT_PROVIDER") or (
-        str(stt_raw.get("provider", "auto")) if isinstance(stt_raw, dict) else "auto"
+    stt_provider = os.environ.get("HARK_STT_PROVIDER") or str(
+        stt_raw.get("provider", "auto")
     )
-    tts_provider = (
-        str(tts_raw.get("provider", "auto")) if isinstance(tts_raw, dict) else "auto"
-    )
+    tts_provider = str(tts_raw.get("provider", "auto"))
 
-    # listen.end_mode: config, then env HARK_LISTEN_END_MODE
-    end_mode_raw = "silence"
-    if isinstance(listen_raw, dict) and listen_raw.get("end_mode") is not None:
-        end_mode_raw = str(listen_raw.get("end_mode"))
+    end_mode_raw = str(listen_raw.get("end_mode", "silence"))
     if os.environ.get("HARK_LISTEN_END_MODE"):
         end_mode_raw = os.environ["HARK_LISTEN_END_MODE"]
     try:
@@ -262,80 +273,65 @@ def load_config(path: Path | None = None) -> HarkConfig:
         warnings.append(str(exc))
         end_mode = EndMode.SILENCE.value
 
-    if isinstance(listen_raw, dict):
-        end_phrases = _as_list_str(
-            listen_raw.get("end_phrases"), list(DEFAULT_END_PHRASES)
+    ambient_enabled = bool(ambient_raw.get("enabled", False))
+    if os.environ.get("HARK_AMBIENT"):
+        ambient_enabled = os.environ["HARK_AMBIENT"].lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
         )
-        cancel_phrases = _as_list_str(
-            listen_raw.get("cancel_phrases"), list(DEFAULT_CANCEL_PHRASES)
-        )
-        strip_phrase = bool(listen_raw.get("strip_phrase", True))
-        max_listen_s = float(listen_raw.get("max_listen_s", 300))
-        nudge_silence_s = float(listen_raw.get("nudge_silence_s", 0))
-    else:
-        end_phrases = list(DEFAULT_END_PHRASES)
-        cancel_phrases = list(DEFAULT_CANCEL_PHRASES)
-        strip_phrase = True
-        max_listen_s = 300.0
-        nudge_silence_s = 0.0
 
     return HarkConfig(
         version=int(raw.get("version", 1)) if isinstance(raw.get("version", 1), int) else 1,
         sessions=sessions,
         watch=WatchConfig(
-            statuses=_as_list_str(
-                watch_raw.get("statuses") if isinstance(watch_raw, dict) else None,
-                ["blocked", "done"],
-            ),
-            debounce_ms=int(watch_raw.get("debounce_ms", 250))
-            if isinstance(watch_raw, dict)
-            else 250,
-            transport=str(watch_raw.get("transport", "auto"))
-            if isinstance(watch_raw, dict)
-            else "auto",
-            poll_ms=int(watch_raw.get("poll_ms", 1000))
-            if isinstance(watch_raw, dict)
-            else 1000,
-            heartbeat_s=float(watch_raw.get("heartbeat_s", 30.0))
-            if isinstance(watch_raw, dict)
-            else 30.0,
+            statuses=_as_list_str(watch_raw.get("statuses"), ["blocked", "done"]),
+            debounce_ms=int(watch_raw.get("debounce_ms", 250)),
+            transport=str(watch_raw.get("transport", "auto")),
+            poll_ms=int(watch_raw.get("poll_ms", 1000)),
+            heartbeat_s=float(watch_raw.get("heartbeat_s", 30.0)),
         ),
         audio=AudioConfig(
-            half_duplex=bool(audio_raw.get("half_duplex", True))
-            if isinstance(audio_raw, dict)
-            else True,
-            post_tts_guard_ms=int(audio_raw.get("post_tts_guard_ms", 350))
-            if isinstance(audio_raw, dict)
-            else 350,
+            half_duplex=bool(audio_raw.get("half_duplex", True)),
+            post_tts_guard_ms=int(audio_raw.get("post_tts_guard_ms", 350)),
         ),
         listen=ListenConfig(
             end_mode=end_mode,
-            end_phrases=end_phrases,
-            cancel_phrases=cancel_phrases,
-            strip_phrase=strip_phrase,
-            max_listen_s=max_listen_s,
-            nudge_silence_s=nudge_silence_s,
+            end_phrases=_as_list_str(
+                listen_raw.get("end_phrases"), list(DEFAULT_END_PHRASES)
+            ),
+            cancel_phrases=_as_list_str(
+                listen_raw.get("cancel_phrases"), list(DEFAULT_CANCEL_PHRASES)
+            ),
+            strip_phrase=bool(listen_raw.get("strip_phrase", True)),
+            max_listen_s=float(listen_raw.get("max_listen_s", 300)),
+            nudge_silence_s=float(listen_raw.get("nudge_silence_s", 0)),
+        ),
+        ambient=AmbientConfig(
+            enabled=ambient_enabled,
+            activation_phrases=_as_list_str(
+                ambient_raw.get("activation_phrases"),
+                list(DEFAULT_ACTIVATION_PHRASES),
+            ),
+            engine=str(ambient_raw.get("engine", "vosk")),
+            model_path=(
+                str(ambient_raw["model_path"])
+                if ambient_raw.get("model_path")
+                else os.environ.get("HARK_VOSK_MODEL")
+            ),
+            snippet_s=float(ambient_raw.get("snippet_s", 2.5)),
+            timeout_s=float(ambient_raw.get("timeout_s", 300)),
         ),
         stt=SttConfig(provider=stt_provider),
         tts=TtsConfig(
             provider=tts_provider,
-            max_chars=int(tts_raw.get("max_chars", 500))
-            if isinstance(tts_raw, dict)
-            else 500,
-            allow_espeak_fallback=bool(tts_raw.get("allow_espeak_fallback", False))
-            if isinstance(tts_raw, dict)
-            else False,
+            max_chars=int(tts_raw.get("max_chars", 500)),
+            allow_espeak_fallback=bool(tts_raw.get("allow_espeak_fallback", False)),
         ),
-        confirm=ConfirmConfig(
-            mode=str(confirm_raw.get("mode", "auto"))
-            if isinstance(confirm_raw, dict)
-            else "auto"
-        ),
+        confirm=ConfirmConfig(mode=str(confirm_raw.get("mode", "auto"))),
         safety=SafetyConfig(
-            deny_patterns=_as_list_str(
-                safety_raw.get("deny_patterns") if isinstance(safety_raw, dict) else None,
-                [],
-            )
+            deny_patterns=_as_list_str(safety_raw.get("deny_patterns"), [])
         ),
         path=cfg_path if cfg_path.is_file() else None,
         warnings=warnings,
@@ -345,9 +341,13 @@ def load_config(path: Path | None = None) -> HarkConfig:
 def resolve_session_socket(session: SessionConfig) -> Path:
     if session.socket:
         return Path(os.path.expanduser(session.socket))
+    if session.ssh:
+        # tunnel local path (created by ensure_tunnel)
+        from hark.paths import cache_dir
+
+        return cache_dir() / "tunnels" / f"{session.id}.sock"
     if session.id == "local":
         return default_herdr_socket()
-    # Named Herdr sessions
     named = Path.home() / ".config" / "herdr" / "sessions" / session.id / "herdr.sock"
     if named.exists():
         return named
@@ -376,6 +376,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
                     "ssh": s.ssh,
                     "herdr_bin": s.herdr_bin,
                     "label": s.label,
+                    "remote_socket": s.remote_socket,
                 }
                 for s in cfg.sessions
             ]
@@ -393,6 +394,14 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "strip_phrase": cfg.listen.strip_phrase,
             "max_listen_s": cfg.listen.max_listen_s,
             "nudge_silence_s": cfg.listen.nudge_silence_s,
+        },
+        "ambient": {
+            "enabled": cfg.ambient.enabled,
+            "activation_phrases": list(cfg.ambient.activation_phrases),
+            "engine": cfg.ambient.engine,
+            "model_path": cfg.ambient.model_path,
+            "snippet_s": cfg.ambient.snippet_s,
+            "timeout_s": cfg.ambient.timeout_s,
         },
         "stt": {"provider": cfg.stt.provider},
         "tts": {

@@ -23,16 +23,17 @@ python prototype/herdr_event_monitor.py --socket "$HERDR_SOCKET_PATH"
 
 1. [x] Package layout `src/hark/`, entrypoint `hark`  
 2. [x] Config + multi-session + doctor (Grok OAuth detect)  
-3. [x] Herdr client: CLI wrap (`agent list` / send / read best-effort)  
+3. [x] Herdr client: CLI wrap (`agent list` / send / read)  
 4. [x] `watch` poll merge → HEP + `--for-monitor`  
 5. [x] `context` / `status` / fingerprint helper  
-6. [ ] `tts` / `listen` (xAI OAuth) + adaptive gate basics  
-7. [ ] `ask` + confirm policy (R2 always)  
-8. [ ] `answer` bound delivery store + stale reject; `keys` (CLI keys present; bound store pending)  
-9. [ ] OpenAI + Google STT; MiniMax TTS  
-10. [ ] SSH tunnel helper  
-11. [ ] Socket subscribe path  
-12. *(explicitly not v1)* `harkd`  
+6. [x] `tts` / `listen` (xAI OAuth + gate) + radio end phrases  
+7. [x] `ask` + confirm policy (R2 always)  
+8. [x] `answer` bound delivery store + stale reject; `keys`  
+9. [x] OpenAI + Google STT; MiniMax TTS; anthropic unsupported stubs  
+10. [x] SSH tunnel helper  
+11. [x] Socket subscribe path (auto; poll fallback)  
+12. [x] Ambient wake (`hey hark` / `hey herald`) via local short snippets  
+13. *(explicitly not v1)* `harkd`  
 
 ### Dev rule
 

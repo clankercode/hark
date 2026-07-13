@@ -131,9 +131,11 @@ See [AUDIO_DESIGN.md](AUDIO_DESIGN.md). Event-driven answer windows only in MVP.
 | Mode | Finalize when |
 |------|----------------|
 | `silence` (default) | Smart Turn / end-silence |
-| `radio` | Spoken end phrase only (e.g. “okay send it”, “end prompt”, “over”); long pauses must not cut off |
+| `radio` | Spoken **product-scoped** end phrase only (e.g. `okay hark send`, `end prompt`, `hark over`); long pauses must not cut off |
 
-Cancel phrases abort without delivery. Hard `max_listen_s` always applies.
+Cancel phrases abort without delivery (`hark cancel`, not casual “cancel that”). Hard `max_listen_s` always applies.
+
+**Ambient** (`[ambient]`): when not in an answer window, optional local 2–3 s snippet wake (`hey hark` / `hey herald`); **no cloud STT until activation**.
 
 ## 10. Providers
 

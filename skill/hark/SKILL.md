@@ -39,7 +39,8 @@ Always address **`session_id/pane_id`**. Prefer bound **`event_id`** from watch 
 - One listen at a time; half-duplex (no listen over TTS).  
 - No local Whisper.  
 - **R2/R3** (permissions, destructive): always confirm. **R0/R1**: confirm only when unsure.  
-- **Listen end:** default silence/Smart Turn. If config has `[listen] end_mode = "radio"`, keep listening through long pauses until the human says an end phrase (“okay send it”, “end prompt”, “over”); do not treat mid-thought silence as done. Cancel phrases abort.  
+- **Listen end:** default silence/Smart Turn. If `[listen] end_mode = "radio"`, keep listening through long pauses until a **product-scoped** end phrase (`okay hark send`, `end prompt`, `hark over`). Cancel: `hark cancel` (not casual “cancel that”).  
+- **Ambient:** when not answering a blocked agent, optional `[ambient]` wake (`hey hark` / `hey herald`) via **local** short snippets only; cloud STT after activation.  
 
 ## Arm the feed
 

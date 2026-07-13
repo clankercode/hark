@@ -5,20 +5,26 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Sequence
 
 from hark import __version__
-from hark.config import config_to_dict, eprint, load_config, write_default_config
+from hark.config import (
+    SessionConfig,
+    config_to_dict,
+    eprint,
+    load_config,
+    write_default_config,
+)
+from hark.delivery import DeliveryStore
 from hark.doctor import run_doctor
-from hark.exitcodes import ERROR, HERDR, OK, USAGE
+from hark.exitcodes import ABORT, AUDIO, ERROR, HERDR, OK, PROVIDER, TIMEOUT, USAGE
+from hark.fingerprint import question_fingerprint
 from hark.herdr.client import HerdrClient, HerdrError
 from hark.paths import default_config_path, state_dir
+from hark.providers.base import ProviderError
 from hark.targets import parse_target
 from hark.watch import run_watch
-
-
-def _add_json_flag(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--json", action="store_true", help="machine-readable output")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,116 +33,93 @@ def build_parser() -> argparse.ArgumentParser:
         description="Hark — voice bridge for Herdr coding agents",
     )
     p.add_argument("--version", action="version", version=f"hark {__version__}")
-    p.add_argument(
-        "--config",
-        dest="config_path",
-        default=None,
-        help="path to config.toml (or set HARK_CONFIG)",
-    )
+    p.add_argument("--config", dest="config_path", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    # doctor
     d = sub.add_parser("doctor", help="check Herdr, auth, paths")
-    _add_json_flag(d)
+    d.add_argument("--json", action="store_true")
 
-    # config
     c = sub.add_parser("config", help="config path | init | show")
-    c_sub = c.add_subparsers(dest="config_cmd", required=True)
-    c_sub.add_parser("path", help="print config path")
-    ci = c_sub.add_parser("init", help="write default config.toml")
+    cs = c.add_subparsers(dest="config_cmd", required=True)
+    cs.add_parser("path")
+    ci = cs.add_parser("init")
     ci.add_argument("--force", action="store_true")
-    cs = c_sub.add_parser("show", help="show effective config")
-    _add_json_flag(cs)
+    cshow = cs.add_parser("show")
+    cshow.add_argument("--json", action="store_true")
 
-    # status
     st = sub.add_parser("status", help="list agent statuses")
-    st.add_argument("--session", action="append", dest="sessions", default=None)
-    st.add_argument("--status", dest="filter_status", default=None)
-    st.add_argument("--read-excerpt", action="store_true")
-    _add_json_flag(st)
+    st.add_argument("--session", action="append", dest="sessions")
+    st.add_argument("--status", dest="filter_status")
+    st.add_argument("--json", action="store_true")
 
-    # watch
-    w = sub.add_parser("watch", help="emit HEP events (poll merge)")
-    w.add_argument("--session", action="append", dest="sessions", default=None)
-    w.add_argument(
-        "--statuses",
-        default=None,
-        help="comma list, default blocked,done",
-    )
+    w = sub.add_parser("watch", help="emit HEP events")
+    w.add_argument("--session", action="append", dest="sessions")
+    w.add_argument("--statuses", default=None)
     w.add_argument("--for-monitor", action="store_true")
-    w.add_argument(
-        "--transport",
-        choices=("auto", "socket", "poll"),
-        default=None,
-    )
-    w.add_argument("--once", action="store_true", help="one poll cycle then exit")
-    w.add_argument(
-        "--read-questions",
-        action="store_true",
-        help="on blocked, try to read pane excerpt (slower)",
-    )
+    w.add_argument("--transport", choices=("auto", "socket", "poll"))
+    w.add_argument("--once", action="store_true")
+    w.add_argument("--read-questions", action="store_true")
 
-    # context
-    ctx = sub.add_parser("context", help="read pane context for a target")
-    ctx.add_argument("target", help="session/pane or pane with --session")
-    ctx.add_argument("--session", default=None)
+    ctx = sub.add_parser("context", help="read pane context")
+    ctx.add_argument("target")
+    ctx.add_argument("--session")
     ctx.add_argument("--lines", type=int, default=60)
-    _add_json_flag(ctx)
+    ctx.add_argument("--json", action="store_true")
 
-    # reply / keys / answer (delivery)
-    rp = sub.add_parser("reply", help="freeform send text (debug; prefer answer)")
+    rp = sub.add_parser("reply", help="freeform send text")
     rp.add_argument("target")
     rp.add_argument("text")
-    rp.add_argument("--session", default=None)
+    rp.add_argument("--session")
 
-    ky = sub.add_parser("keys", help="send keys to a pane")
+    ky = sub.add_parser("keys", help="send keys")
     ky.add_argument("target")
     ky.add_argument("keys", nargs="+")
-    ky.add_argument("--session", default=None)
+    ky.add_argument("--session")
 
-    an = sub.add_parser("answer", help="bound delivery by event_id (partial v1)")
+    an = sub.add_parser("answer", help="bound delivery by event_id")
     an.add_argument("event_id")
-    an.add_argument("--text", default=None)
-    an.add_argument("--keys", nargs="+", default=None)
-    an.add_argument(
-        "--expect-fingerprint",
-        default=None,
-        help="optional fingerprint check (full bound store later)",
-    )
+    an.add_argument("--text")
+    an.add_argument("--keys", nargs="+")
 
-    # stubs for Mode C / later
-    for name, help_ in (
-        ("queue", "pending interactions (stub)"),
-        ("tts", "text-to-speech (not yet)"),
-        ("listen", "speech-to-text (not yet)"),
-        ("ask", "speak + listen (not yet)"),
-        ("skip", "skip event (stub)"),
-        ("mute", "mute (stub)"),
-        ("unmute", "unmute (stub)"),
-        ("devices", "list audio devices (stub)"),
-        ("providers", "list speech providers"),
-    ):
-        sp = sub.add_parser(name, help=help_)
-        if name == "providers":
-            sp.add_argument("test_name", nargs="?", default=None)
-            _add_json_flag(sp)
-        if name in ("tts", "listen", "ask"):
-            sp.add_argument("text", nargs="*", default=[])
-            _add_json_flag(sp)
-        if name in ("listen", "ask"):
-            sp.add_argument(
-                "--end-mode",
-                choices=("silence", "radio"),
-                default=None,
-                help=(
-                    "silence=Smart Turn/end-silence; radio=keep listening until "
-                    "end phrase (e.g. 'okay send it'). Default: config [listen].end_mode"
-                ),
-            )
-        if name == "skip":
-            sp.add_argument("event_id")
-        if name == "queue":
-            _add_json_flag(sp)
+    sk = sub.add_parser("skip", help="skip bound event")
+    sk.add_argument("event_id")
+
+    tts = sub.add_parser("tts", help="text-to-speech")
+    tts.add_argument("text", nargs="+")
+    tts.add_argument("--provider")
+    tts.add_argument("--voice")
+    tts.add_argument("--no-play", action="store_true")
+    tts.add_argument("--out", type=Path)
+    tts.add_argument("--json", action="store_true")
+
+    li = sub.add_parser("listen", help="speech-to-text")
+    li.add_argument("--provider")
+    li.add_argument("--end-mode", choices=("silence", "radio"))
+    li.add_argument("--json", action="store_true")
+
+    ask = sub.add_parser("ask", help="speak prompt + listen")
+    ask.add_argument("text", nargs="+")
+    ask.add_argument("--confirm", choices=("auto", "always", "never"))
+    ask.add_argument("--end-mode", choices=("silence", "radio"))
+    ask.add_argument("--provider")
+    ask.add_argument("--json", action="store_true")
+
+    amb = sub.add_parser("ambient", help="wake-phrase then capture prompt")
+    amb.add_argument("--timeout", type=float, default=None)
+    amb.add_argument("--json", action="store_true")
+
+    q = sub.add_parser("queue", help="pending bound events")
+    q.add_argument("--json", action="store_true")
+
+    prov = sub.add_parser("providers", help="list speech providers")
+    prov.add_argument("test_name", nargs="?")
+    prov.add_argument("--json", action="store_true")
+
+    dev = sub.add_parser("devices", help="list audio devices")
+    dev.add_argument("--json", action="store_true")
+
+    sub.add_parser("mute", help="mute (no-op stub)")
+    sub.add_parser("unmute", help="unmute (no-op stub)")
 
     return p
 
@@ -150,22 +133,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         code = exc.code
         return int(code) if isinstance(code, int) else USAGE
 
-    cfg_path = getattr(args, "config_path", None)
-    cfg = load_config(cfg_path)
-
+    cfg = load_config(getattr(args, "config_path", None))
     try:
         return dispatch(args, cfg)
     except HerdrError as exc:
         eprint(f"hark: herdr error: {exc}")
         return HERDR
+    except ProviderError as exc:
+        eprint(f"hark: provider: {exc}")
+        return getattr(exc, "code", PROVIDER) or PROVIDER
+    except TimeoutError as exc:
+        eprint(f"hark: timeout: {exc}")
+        return TIMEOUT
     except ValueError as exc:
         eprint(f"hark: {exc}")
         return USAGE
     except FileExistsError as exc:
         eprint(f"hark: {exc}")
         return ERROR
-    except NotImplementedError as exc:
-        eprint(f"hark: not implemented yet: {exc}")
+    except RuntimeError as exc:
+        msg = str(exc)
+        eprint(f"hark: {msg}")
+        if "mic" in msg.lower() or "sounddevice" in msg.lower() or "audio" in msg.lower():
+            return AUDIO
         return ERROR
 
 
@@ -176,11 +166,21 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
         return run_doctor(cfg, as_json=bool(args.json))
 
     if cmd == "config":
-        return cmd_config(args, cfg)
+        if args.config_cmd == "path":
+            print(default_config_path())
+            return OK
+        if args.config_cmd == "init":
+            path = write_default_config(force=bool(args.force))
+            print(f"wrote {path}")
+            state_dir().mkdir(parents=True, exist_ok=True)
+            return OK
+        if args.config_cmd == "show":
+            print(json.dumps(config_to_dict(cfg), indent=2))
+            return OK
+        return USAGE
 
     if cmd == "status":
         return cmd_status(args, cfg)
-
     if cmd == "watch":
         statuses = None
         if args.statuses:
@@ -194,84 +194,51 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
             once=bool(args.once),
             read_questions=bool(args.read_questions),
         )
-
     if cmd == "context":
         return cmd_context(args, cfg)
-
     if cmd == "reply":
         return cmd_reply(args, cfg)
-
     if cmd == "keys":
         return cmd_keys(args, cfg)
-
     if cmd == "answer":
         return cmd_answer(args, cfg)
-
+    if cmd == "skip":
+        return cmd_skip(args)
+    if cmd == "tts":
+        return cmd_tts(args, cfg)
+    if cmd == "listen":
+        return cmd_listen(args, cfg)
+    if cmd == "ask":
+        return cmd_ask(args, cfg)
+    if cmd == "ambient":
+        return cmd_ambient(args, cfg)
+    if cmd == "queue":
+        return cmd_queue(args)
     if cmd == "providers":
         return cmd_providers(args)
-
-    if cmd == "queue":
-        empty: list = []
-        if args.json:
-            print(json.dumps({"queue": empty}))
-        else:
-            print("(empty — queue tracking not active in Mode A poll-only)")
-        return OK
-
-    if cmd in ("mute", "unmute", "skip"):
-        eprint(f"hark {cmd}: recorded no-op (library mute/skip store later)")
-        return OK
-
     if cmd == "devices":
-        eprint("hark devices: audio device enumeration not implemented yet")
-        return ERROR
-
-    if cmd in ("tts", "listen", "ask"):
-        end_mode = getattr(args, "end_mode", None) or cfg.listen.end_mode
-        eprint(
-            f"hark {cmd}: speech I/O not implemented yet "
-            f"(Phase 1.6+). Effective listen end_mode={end_mode!r} "
-            f"(config [listen] / HARK_LISTEN_END_MODE / --end-mode). "
-            "Auth: see hark doctor / hark providers."
-        )
-        return ERROR
-
-    eprint(f"hark: unknown command {cmd}")
-    return USAGE
-
-
-def cmd_config(args: argparse.Namespace, cfg) -> int:
-    if args.config_cmd == "path":
-        print(default_config_path())
-        return OK
-    if args.config_cmd == "init":
-        path = write_default_config(force=bool(args.force))
-        print(f"wrote {path}")
-        state_dir().mkdir(parents=True, exist_ok=True)
-        return OK
-    if args.config_cmd == "show":
-        data = config_to_dict(cfg)
-        if args.json:
-            print(json.dumps(data, indent=2))
-        else:
-            print(json.dumps(data, indent=2))
+        return cmd_devices(args)
+    if cmd in ("mute", "unmute"):
+        eprint(f"hark {cmd}: noted (library mute store later)")
         return OK
     return USAGE
+
+
+def _client_for(cfg, session_id: str) -> HerdrClient:
+    session = cfg.session_by_id(session_id) or SessionConfig(id=session_id)
+    return HerdrClient(session)
 
 
 def cmd_status(args: argparse.Namespace, cfg) -> int:
     sessions = cfg.sessions
     if args.sessions:
         want = set(args.sessions)
-        sessions = [s for s in cfg.sessions if s.id in want]
-        if not sessions:
-            from hark.config import SessionConfig
-
-            sessions = [SessionConfig(id=sid) for sid in args.sessions]
-
+        sessions = [s for s in cfg.sessions if s.id in want] or [
+            SessionConfig(id=sid) for sid in args.sessions
+        ]
     rows = []
-    any_ok = False
     errors = []
+    any_ok = False
     for session in sessions:
         client = HerdrClient(session)
         try:
@@ -295,14 +262,9 @@ def cmd_status(args: argparse.Namespace, cfg) -> int:
                     "focused": a.focused,
                 }
             )
-
     if args.json:
         print(json.dumps({"agents": rows, "errors": errors}, indent=2))
     else:
-        if not rows and errors:
-            for e in errors:
-                eprint(f"{e['session_id']}: {e['error']}")
-            return HERDR
         for r in rows:
             print(
                 f"{r['target']:16}  {r['status']:8}  "
@@ -310,32 +272,16 @@ def cmd_status(args: argparse.Namespace, cfg) -> int:
             )
         for e in errors:
             eprint(f"warn: {e['session_id']}: {e['error']}")
-
-    if not any_ok:
-        return HERDR
-    return OK
+    return OK if any_ok else HERDR
 
 
 def cmd_context(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
-    session = cfg.session_by_id(target.session_id)
-    if session is None:
-        from hark.config import SessionConfig
-
-        session = SessionConfig(id=target.session_id)
-    client = HerdrClient(session)
-    text = client.read_pane(target.pane_id, lines=args.lines)
+    text = _client_for(cfg, target.session_id).read_pane(
+        target.pane_id, lines=args.lines
+    )
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "target": str(target),
-                    "lines": args.lines,
-                    "text": text,
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps({"target": str(target), "text": text}, indent=2))
     else:
         print(text)
     return OK
@@ -343,54 +289,187 @@ def cmd_context(args: argparse.Namespace, cfg) -> int:
 
 def cmd_reply(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
-    session = cfg.session_by_id(target.session_id)
-    if session is None:
-        from hark.config import SessionConfig
-
-        session = SessionConfig(id=target.session_id)
-    HerdrClient(session).send_text(target.pane_id, args.text)
+    _client_for(cfg, target.session_id).send_text(target.pane_id, args.text)
     print(json.dumps({"ok": True, "target": str(target), "mode": "reply"}))
     return OK
 
 
 def cmd_keys(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
-    session = cfg.session_by_id(target.session_id)
-    if session is None:
-        from hark.config import SessionConfig
+    _client_for(cfg, target.session_id).send_keys(target.pane_id, list(args.keys))
+    print(json.dumps({"ok": True, "target": str(target), "keys": list(args.keys)}))
+    return OK
 
-        session = SessionConfig(id=target.session_id)
-    HerdrClient(session).send_keys(target.pane_id, list(args.keys))
+
+def cmd_answer(args: argparse.Namespace, cfg) -> int:
+    if not args.text and not args.keys:
+        eprint("hark answer: require --text or --keys")
+        return USAGE
+    if args.text and args.keys:
+        eprint("hark answer: use either --text or --keys")
+        return USAGE
+
+    store = DeliveryStore()
+    bound = store.get(args.event_id)
+    if bound is None:
+        eprint(f"hark answer: unknown event_id {args.event_id} (not in store)")
+        eprint("hint: events are registered by `hark watch`; or use reply/keys")
+        return ABORT
+    if store.already_delivered(args.event_id):
+        eprint("hark answer: already delivered (idempotent refuse)")
+        return ABORT
+
+    client = _client_for(cfg, bound.session_id)
+    live = client.get_agent(bound.pane_id)
+    if live is None:
+        store.mark(args.event_id, "rejected", reason="pane_gone")
+        eprint("hark answer: pane no longer present")
+        return ABORT
+    if bound.pane_revision and live.revision != bound.pane_revision:
+        # revision 0 often means unknown — only reject if both non-zero mismatch
+        if bound.pane_revision > 0 and live.revision > 0:
+            store.mark(args.event_id, "rejected", reason="stale_revision")
+            eprint(
+                f"hark answer: stale revision "
+                f"(expected {bound.pane_revision}, live {live.revision})"
+            )
+            return ABORT
+
+    if bound.question_fingerprint:
+        try:
+            text = client.read_pane(bound.pane_id, lines=40)
+            from hark.events import extract_question_excerpt
+
+            excerpt = extract_question_excerpt(text)
+            live_fp = question_fingerprint(excerpt)
+            if live_fp != bound.question_fingerprint:
+                store.mark(args.event_id, "rejected", reason="fingerprint_mismatch")
+                eprint("hark answer: question fingerprint mismatch (stale)")
+                return ABORT
+        except HerdrError:
+            pass  # best-effort fingerprint
+
+    if args.keys:
+        client.send_keys(bound.pane_id, list(args.keys))
+        store.mark(args.event_id, "delivered", keys=list(args.keys))
+    else:
+        client.send_text(bound.pane_id, args.text)
+        store.mark(args.event_id, "delivered", text=args.text)
+
     print(
         json.dumps(
-            {"ok": True, "target": str(target), "keys": list(args.keys)}
+            {
+                "ok": True,
+                "event_id": args.event_id,
+                "target": f"{bound.session_id}/{bound.pane_id}",
+            }
         )
     )
     return OK
 
 
-def cmd_answer(args: argparse.Namespace, cfg) -> int:
-    """Bound answer: full event store comes later; reject obvious misuse now."""
-    from hark.exitcodes import ABORT
+def cmd_skip(args: argparse.Namespace) -> int:
+    store = DeliveryStore()
+    store.mark(args.event_id, "skipped")
+    print(json.dumps({"ok": True, "event_id": args.event_id, "status": "skipped"}))
+    return OK
 
-    if not args.text and not args.keys:
-        eprint("hark answer: require --text or --keys")
-        return USAGE
-    if args.text and args.keys:
-        eprint("hark answer: use either --text or --keys, not both")
-        return USAGE
 
-    # Without a delivery store we cannot revalidate fingerprints from event_id.
-    # Accept only with explicit fingerprint for now, or warn and refuse.
-    eprint(
-        "hark answer: bound delivery store not implemented yet; "
-        "use `hark reply` / `hark keys` for freeform, or wait for event store."
+def cmd_tts(args: argparse.Namespace, cfg) -> int:
+    from hark.speech import run_tts
+
+    text = " ".join(args.text)
+    result = run_tts(
+        cfg,
+        text,
+        provider=args.provider,
+        voice=args.voice,
+        play=not args.no_play,
+        out=args.out,
     )
-    if args.expect_fingerprint:
-        eprint(
-            f"(would check fingerprint {args.expect_fingerprint!r} for event {args.event_id})"
-        )
-    return ABORT
+    if args.json or args.no_play or args.out:
+        print(json.dumps(result))
+    else:
+        print(json.dumps({"ok": True, "provider": result["provider"]}))
+    return OK
+
+
+def cmd_listen(args: argparse.Namespace, cfg) -> int:
+    from hark.speech import run_listen
+
+    result = run_listen(cfg, provider=args.provider, end_mode=args.end_mode)
+    if result.cancelled:
+        eprint(f"cancelled via {result.end_phrase!r}")
+        print(json.dumps({"ok": False, "cancelled": True, "text": result.text}))
+        return ABORT
+    payload = {
+        "ok": True,
+        "text": result.text,
+        "provider": result.provider,
+        "duration_ms": result.duration_ms,
+        "end_mode": result.end_mode,
+        "end_phrase": result.end_phrase,
+    }
+    print(json.dumps(payload, indent=2 if args.json else None))
+    return OK
+
+
+def cmd_ask(args: argparse.Namespace, cfg) -> int:
+    from hark.speech import run_ask
+
+    prompt = " ".join(args.text)
+    result = run_ask(
+        cfg,
+        prompt,
+        confirm=args.confirm,
+        end_mode=args.end_mode,
+        provider=args.provider,
+    )
+    print(json.dumps(result, indent=2 if args.json else None))
+    return int(result.get("exit", OK if result.get("ok") else ERROR))
+
+
+def cmd_ambient(args: argparse.Namespace, cfg) -> int:
+    from hark.ambient import run_ambient
+
+    # force enabled for explicit command
+    cfg.ambient.enabled = True
+    result = run_ambient(cfg, once=True, timeout_s=args.timeout)
+    payload = {
+        "activated": result.activated,
+        "phrase": result.phrase,
+        "text": result.text,
+        "wake_backend": result.wake_backend,
+        "listen": result.listen,
+    }
+    print(json.dumps(payload, indent=2 if args.json else None))
+    return OK if result.activated else TIMEOUT
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    store = DeliveryStore()
+    pending = []
+    if store.path.is_file():
+        seen = {}
+        for line in store.path.read_text(encoding="utf-8").splitlines():
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            eid = data.get("event_id")
+            if eid:
+                seen[eid] = data
+        for eid, data in seen.items():
+            if not store.already_delivered(eid) and data.get("status") == "pending":
+                pending.append(data)
+    if args.json:
+        print(json.dumps({"queue": pending}, indent=2))
+    else:
+        if not pending:
+            print("(empty)")
+        for p in pending:
+            print(f"{p.get('event_id')}  {p.get('session_id')}/{p.get('pane_id')}")
+    return OK
 
 
 def cmd_providers(args: argparse.Namespace) -> int:
@@ -411,14 +490,28 @@ def cmd_providers(args: argparse.Namespace) -> int:
         if not rows:
             eprint(f"unknown provider: {args.test_name}")
             return USAGE
-        # Live provider test later
-        eprint(f"provider live test for {name}: not implemented yet")
     if args.json:
         print(json.dumps({"providers": rows}, indent=2))
     else:
         for r in rows:
             mark = "ok" if r["available"] else "no"
             print(f"{r['name']:10}  {mark:3}  {r['detail']}")
+    return OK
+
+
+def cmd_devices(args: argparse.Namespace) -> int:
+    try:
+        from hark.audio.capture import list_input_devices
+
+        devices = list_input_devices()
+    except Exception as exc:
+        eprint(f"hark devices: {exc}")
+        return AUDIO
+    if args.json:
+        print(json.dumps({"devices": devices}, indent=2))
+    else:
+        for d in devices:
+            print(f"{d['id']:3}  {d['name']}")
     return OK
 
 

@@ -1,13 +1,15 @@
-"""Multi-session poll watch → HEP events on stdout."""
+"""Multi-session watch → HEP events (poll and/or socket)."""
 
 from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from typing import Any, Callable, TextIO
 
 from hark.config import HarkConfig, SessionConfig
+from hark.delivery import DeliveryStore
 from hark.events import (
     make_agent_status_event,
     make_watch_armed,
@@ -17,23 +19,13 @@ from hark.events import (
 )
 from hark.fingerprint import question_fingerprint
 from hark.herdr.client import AgentInfo, HerdrClient, HerdrError
-
-
-EmitFn = Callable[[dict[str, Any]], None]
-
-
-def _default_emit(event: dict[str, Any], *, for_monitor: bool, out: TextIO) -> None:
-    payload = monitor_profile(event) if for_monitor else event
-    out.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    out.flush()
+from hark.herdr.tunnel import Tunnel, ensure_tunnel
 
 
 class EdgeTracker:
-    """Track last status per (session, pane) and emit edges; dedupe by fingerprint."""
-
     def __init__(self) -> None:
         self._status: dict[tuple[str, str], str] = {}
-        self._dedupe: set[tuple[str, str, str, str]] = set()  # session,pane,status,fp
+        self._dedupe: set[tuple[str, str, str, str]] = set()
 
     def process(
         self,
@@ -43,18 +35,14 @@ class EdgeTracker:
         question_for: Callable[[AgentInfo], str | None] | None = None,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        seen_panes: set[tuple[str, str]] = set()
-
         for agent in agents:
             key = (agent.session_id, agent.pane_id)
-            seen_panes.add(key)
             prev = self._status.get(key)
             cur = agent.status
             if prev == cur:
                 continue
             self._status[key] = cur
 
-            # Cold start: reconcile already-blocked only (SPEC §6), not every done.
             if prev is None:
                 if cur != "blocked" or "blocked" not in interest:
                     continue
@@ -93,37 +81,61 @@ def run_watch(
     once: bool = False,
     out: TextIO | None = None,
     read_questions: bool = False,
+    register_events: bool = True,
 ) -> int:
-    """Poll Herdr sessions and emit HEP JSONL. Returns exit code."""
     out = out or sys.stdout
-    transport = transport or cfg.watch.transport
-    # v1: poll path always available; socket subscribe later
-    if transport == "socket":
-        # Fall through to poll with a note — full subscribe in later slice
-        transport = "poll"
-
+    transport = (transport or cfg.watch.transport or "auto").lower()
     interest = set(statuses or cfg.watch.statuses)
     sessions = cfg.sessions
     if session_ids:
         want = set(session_ids)
         sessions = [s for s in cfg.sessions if s.id in want]
         if not sessions:
-            for sid in session_ids:
-                sessions.append(SessionConfig(id=sid))
+            sessions = [SessionConfig(id=sid) for sid in session_ids]
 
-    clients = [HerdrClient(s) for s in sessions]
+    tunnels: list[Tunnel] = []
+    clients: list[HerdrClient] = []
+    for s in sessions:
+        if s.ssh:
+            try:
+                t = ensure_tunnel(s.id, s.ssh, remote_socket=s.remote_socket)
+                tunnels.append(t)
+                s = SessionConfig(
+                    id=s.id,
+                    socket=str(t.local_socket),
+                    ssh=s.ssh,
+                    label=s.label,
+                )
+            except Exception as exc:
+                _emit(
+                    make_watch_error(s.id, f"tunnel: {exc}"),
+                    for_monitor=for_monitor,
+                    out=out,
+                )
+                continue
+        clients.append(HerdrClient(s))
+
     tracker = EdgeTracker()
+    store = DeliveryStore() if register_events else None
     poll_s = max(0.2, cfg.watch.poll_ms / 1000.0)
     heartbeat_s = max(5.0, cfg.watch.heartbeat_s)
     last_heartbeat = time.monotonic()
 
     def emit(event: dict[str, Any]) -> None:
-        _default_emit(event, for_monitor=for_monitor, out=out)
+        if store and event.get("kind") in (
+            "agent.blocked",
+            "agent.question_changed",
+        ):
+            try:
+                store.register_from_hep(event)
+            except Exception:
+                pass
+        _emit(event, for_monitor=for_monitor, out=out)
 
     emit(
         make_watch_armed(
-            [s.id for s in sessions],
-            transport="poll",
+            [c.session.id for c in clients],
+            transport=transport if transport != "auto" else "poll",
             statuses=sorted(interest),
         )
     )
@@ -140,6 +152,24 @@ def run_watch(
         except (HerdrError, StopIteration):
             return None
 
+    # Socket path for single local session when requested
+    use_socket = transport == "socket" or (
+        transport == "auto" and len(clients) == 1 and clients[0].socket_exists()
+    )
+    if use_socket and transport != "poll" and not once:
+        try:
+            return _watch_socket(
+                clients[0],
+                tracker=tracker,
+                interest=interest,
+                emit=emit,
+                heartbeat_s=heartbeat_s,
+                sessions=[c.session.id for c in clients],
+                question_for=question_for if read_questions else None,
+            )
+        except Exception as exc:
+            emit(make_watch_error(clients[0].session.id, f"socket watch failed, poll: {exc}"))
+
     try:
         while True:
             for client in clients:
@@ -152,14 +182,72 @@ def run_watch(
                     agents, interest=interest, question_for=question_for
                 ):
                     emit(event)
-
             if once:
                 return 0
-
             now = time.monotonic()
             if now - last_heartbeat >= heartbeat_s:
-                emit(make_watch_heartbeat([s.id for s in sessions]))
+                emit(make_watch_heartbeat([c.session.id for c in clients]))
                 last_heartbeat = now
             time.sleep(poll_s)
     except KeyboardInterrupt:
         return 0
+    finally:
+        for t in tunnels:
+            t.stop()
+
+
+def _emit(event: dict[str, Any], *, for_monitor: bool, out: TextIO) -> None:
+    payload = monitor_profile(event) if for_monitor else event
+    out.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    out.flush()
+
+
+def _watch_socket(
+    client: HerdrClient,
+    *,
+    tracker: EdgeTracker,
+    interest: set[str],
+    emit: Callable[[dict[str, Any]], None],
+    heartbeat_s: float,
+    sessions: list[str],
+    question_for: Callable[[AgentInfo], str | None] | None,
+) -> int:
+    """Hybrid: socket events trigger refresh + poll edges; heartbeat thread."""
+    from hark.herdr.socket_client import run_subscribe_loop
+
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(heartbeat_s):
+            emit(make_watch_heartbeat(sessions))
+
+    def on_wire(_raw: dict[str, Any]) -> None:
+        try:
+            agents = client.list_agents()
+        except HerdrError as exc:
+            emit(make_watch_error(client.session.id, str(exc)))
+            return
+        for event in tracker.process(
+            agents, interest=interest, question_for=question_for
+        ):
+            emit(event)
+
+    # initial reconcile
+    try:
+        agents = client.list_agents()
+        for event in tracker.process(
+            agents, interest=interest, question_for=question_for
+        ):
+            emit(event)
+    except HerdrError as exc:
+        emit(make_watch_error(client.session.id, str(exc)))
+
+    t = threading.Thread(target=heartbeat, daemon=True)
+    t.start()
+    try:
+        run_subscribe_loop(client.socket_path, on_wire)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        stop.set()
+    return 0

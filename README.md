@@ -33,7 +33,7 @@ Work continues
 | **Mode** | **A only for v1**: local agent outside Herdr + Monitor + tools |
 | **Herdr** | ≥ 0.7.1 · multi-session (local + SSH) |
 | **Speech** | Cloud only (xAI OAuth, OpenAI, Google, MiniMax TTS, …) |
-| **Status** | Specification + probe prototype · app not fully built |
+| **Status** | Python prototype (`uv run hark`) · Mode A tools + speech |
 
 The verse is playful; **routing and confirmation are not.**
 
@@ -67,16 +67,29 @@ The verse is playful; **routing and confirmation are not.**
 - Confirm ordinary answers only when unsure; **always** confirm permissions/destructive  
 - Recoverable across disconnects (no silent double-send)  
 
-## Dev (when implementing)
+## Dev / try it
 
 ```bash
-cd /path/to/hark   # or this checkout
+cd /home/xertrov/src/grok/hark
+uv sync
 uv run hark doctor
-# probe Herdr events:
-HERDR_SOCKET_PATH=~/.config/herdr/herdr.sock python prototype/herdr_event_monitor.py
+uv run hark config init          # optional ~/.config/hark/config.toml
+uv run hark status
+uv run hark watch --for-monitor  # Mode A feed
+uv run hark tts "hello"
+uv run hark listen               # speak, then silence ends (or end_mode=radio)
+uv run hark ask "What color?"
+# ambient wake (needs vosk model if engine=vosk):
+# uv run hark ambient
 ```
 
-Always run from **latest checkout** while developing the Python prototype.
+Always run from **latest checkout** (`uv run hark`).
+
+### Config highlights (`~/.config/hark/config.toml`)
+
+- `[listen] end_mode = "radio"` — long pauses OK until `okay hark send` / `end prompt`
+- Cancel defaults are product-scoped: `hark cancel` (not “cancel that”)
+- `[ambient]` — local 2–3s wake for `hey hark` / `hey herald` (no cloud until activated)
 
 ## Repo
 

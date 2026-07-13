@@ -1,4 +1,4 @@
-"""Herdr client: CLI subprocess + optional Unix socket JSON-RPC."""
+"""Herdr client: CLI subprocess + health checks."""
 
 from __future__ import annotations
 
@@ -48,8 +48,6 @@ class HerdrSessionHealth:
 
 
 class HerdrClient:
-    """Talk to one Herdr session via `herdr` CLI (env socket/session)."""
-
     MIN_VERSION = (0, 7, 1)
 
     def __init__(
@@ -68,15 +66,15 @@ class HerdrClient:
             env.setdefault("HERDR_SESSION", self.session.id)
         return env
 
-    def run_json(
+    def run_raw(
         self,
         args: list[str],
         *,
         timeout: float = 15.0,
-    ) -> dict[str, Any]:
+    ) -> subprocess.CompletedProcess[str]:
         cmd = [self.herdr_bin, *args]
         try:
-            proc = subprocess.run(
+            return subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -89,37 +87,27 @@ class HerdrClient:
         except subprocess.TimeoutExpired as exc:
             raise HerdrError(f"herdr timed out: {' '.join(cmd)}") from exc
 
+    def run_json(self, args: list[str], *, timeout: float = 15.0) -> dict[str, Any]:
+        proc = self.run_raw(args, timeout=timeout)
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
             raise HerdrError(f"herdr {' '.join(args)} failed: {err[:400]}")
-
         text = (proc.stdout or "").strip()
         if not text:
             raise HerdrError(f"herdr {' '.join(args)} returned empty stdout")
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise HerdrError(
-                f"herdr {' '.join(args)} not JSON: {text[:200]!r}"
-            ) from exc
+            raise HerdrError(f"herdr {' '.join(args)} not JSON: {text[:200]!r}") from exc
         if not isinstance(data, dict):
             raise HerdrError(f"expected JSON object from herdr, got {type(data).__name__}")
+        if "error" in data and data["error"]:
+            raise HerdrError(f"herdr error: {data['error']}")
         return data
 
     def version_string(self) -> str:
-        try:
-            proc = subprocess.run(
-                [self.herdr_bin, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=self._env(),
-                check=False,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            raise HerdrError(str(exc)) from exc
+        proc = self.run_raw(["--version"], timeout=5)
         out = (proc.stdout or proc.stderr or "").strip()
-        # "herdr 0.7.1" or similar
         for part in out.replace(",", " ").split():
             if part[0].isdigit() and "." in part:
                 return part
@@ -191,6 +179,12 @@ class HerdrClient:
             )
         return out
 
+    def get_agent(self, pane_id: str) -> AgentInfo | None:
+        for a in self.list_agents():
+            if a.pane_id == pane_id:
+                return a
+        return None
+
     def health(self) -> HerdrSessionHealth:
         sock = str(self.socket_path)
         if not self.socket_exists() and not shutil.which(self.herdr_bin):
@@ -220,8 +214,6 @@ class HerdrClient:
             )
 
     def send_text(self, pane_id: str, text: str) -> None:
-        """Deliver freeform text to a pane (prefer agent.send when available)."""
-        # Try agent send; fall back to pane send_text shape.
         try:
             self.run_json(["agent", "send", pane_id, text])
             return
@@ -231,47 +223,59 @@ class HerdrClient:
             self.run_json(["pane", "send-text", pane_id, text])
             return
         except HerdrError as exc:
-            raise HerdrError(
-                f"could not send text to {pane_id}: {exc}"
-            ) from exc
+            raise HerdrError(f"could not send text to {pane_id}: {exc}") from exc
 
     def send_keys(self, pane_id: str, keys: list[str]) -> None:
         if not keys:
             raise HerdrError("no keys to send")
-        try:
-            self.run_json(["agent", "keys", pane_id, *keys])
-            return
-        except HerdrError:
-            pass
-        try:
-            self.run_json(["pane", "send-keys", pane_id, *keys])
-            return
-        except HerdrError as exc:
-            raise HerdrError(f"could not send keys to {pane_id}: {exc}") from exc
+        proc = self.run_raw(["pane", "send-keys", pane_id, *keys])
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise HerdrError(f"pane send-keys failed: {err[:400]}")
 
     def read_pane(self, pane_id: str, lines: int = 60) -> str:
-        """Read recent pane text (best-effort CLI shapes)."""
-        for args in (
-            ["agent", "read", pane_id, "--lines", str(lines)],
-            ["pane", "read", pane_id, "--lines", str(lines)],
-            ["agent", "read", pane_id],
-            ["pane", "read", pane_id],
-        ):
+        data = self.run_json(
+            [
+                "agent",
+                "read",
+                pane_id,
+                "--source",
+                "recent-unwrapped",
+                "--lines",
+                str(lines),
+                "--format",
+                "text",
+            ]
+        )
+        result = data.get("result") or data
+        if isinstance(result, dict):
+            read = result.get("read")
+            if isinstance(read, dict) and isinstance(read.get("text"), str):
+                return read["text"]
+            for key in ("text", "content", "output", "visible", "recent"):
+                if isinstance(result.get(key), str):
+                    return result[key]
+        # fallback sources
+        for source in ("recent", "visible"):
             try:
-                data = self.run_json(args)
+                data = self.run_json(
+                    [
+                        "agent",
+                        "read",
+                        pane_id,
+                        "--source",
+                        source,
+                        "--lines",
+                        str(lines),
+                        "--format",
+                        "text",
+                    ]
+                )
+                result = data.get("result") or data
+                if isinstance(result, dict):
+                    read = result.get("read")
+                    if isinstance(read, dict) and isinstance(read.get("text"), str):
+                        return read["text"]
             except HerdrError:
                 continue
-            result = data.get("result") or data
-            if isinstance(result, dict):
-                for key in ("text", "content", "output", "visible", "recent"):
-                    if isinstance(result.get(key), str):
-                        return result[key]
-                # nested
-                if isinstance(result.get("pane"), dict):
-                    pane = result["pane"]
-                    for key in ("text", "content"):
-                        if isinstance(pane.get(key), str):
-                            return pane[key]
-            if isinstance(result, str):
-                return result
         raise HerdrError(f"could not read pane {pane_id}")
