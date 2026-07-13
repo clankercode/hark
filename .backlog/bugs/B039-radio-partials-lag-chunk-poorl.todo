@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T12:46:56Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T12:51:12Z"
 complexity: medium
 created_at: "2026-07-13T12:40:10Z"
 depends_on: []
+duration_minutes: 4.271191369383334
 estimate_hours: 1
 id: B039
 priority: high
 started_at: "2026-07-13T12:46:56Z"
-status: in_progress
+status: done
 tags: []
 title: 'Radio: partials lag/chunk poorly; bare ''send it'' does not finalize'
-updated_at: "2026-07-13T12:46:56Z"
+updated_at: "2026-07-13T12:51:12Z"
 ---
 ## Dogfood (2026-07-13, stream s19f5b78a9b120e97e)
 Radio ambient after wake (hello clanker). Operator spoke a long prompt.
