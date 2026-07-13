@@ -9,7 +9,11 @@ id: B081
 priority: medium
 started_at: null
 status: pending
-tags: []
+tags:
+    - audio
+    - stt
+    - streaming
+    - local-models
 title: Optional local streaming STT for radio/partial-transcript mode (offline)
 updated_at: "2026-07-13T16:12:16Z"
 ---
