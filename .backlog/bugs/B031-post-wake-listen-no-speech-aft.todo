@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:10:30Z"
+depends_on: []
+estimate_hours: 1
+id: B031
+priority: high
+status: pending
+tags:
+    - ambient
+    - wake
+    - stt
+    - dogfood
+title: 'Post-wake listen: no speech after successful wake (gate too high / no lead-in)'
+updated_at: "2026-07-13T11:10:30Z"
+---
+## Dogfood (2026-07-13 ~21:09)
+`ambient.wake` succeeded: phrase=hey herald raw=hey harold (vosk).
+~45s later `ambient.error` with listen.error:
+  no speech detected (peak_db=-45.4 peak_rms=0.00537 open_thresh≈-38.0dB)
+
+## Problem
+After a successful activation, the post-wake cloud listen often fails the energy gate even when the operator intends to speak. Possible causes: open threshold too aggressive, no post-wake settle/cue timing, mute/unmute race, or max wait then hard fail without retry/nudge (empty-STT path may not run if capture never opens).
+
+## Wanted
+- Soften or configure open threshold for post-wake listen
+- Optional post-wake lead-in / listening cue alignment
+- Retry/nudge path when wake fired but gate never opens (not only empty STT after open)
+- Emit clear ambient.error metrics + optional TTS "I heard the wake but not your prompt"
+
+## Evidence
+system.jsonl seq ~953 wake, ~959 error; wake snip 210907-077-hit.json
