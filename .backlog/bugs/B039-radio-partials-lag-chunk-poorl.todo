@@ -1,17 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T12:40:10Z"
 depends_on: []
 estimate_hours: 1
 id: B039
 priority: high
+started_at: null
 status: pending
-tags:
-    - ambient
-    - radio
-    - stt
-    - dogfood
-    - end-phrase
+tags: []
 title: 'Radio: partials lag/chunk poorly; bare ''send it'' does not finalize'
 updated_at: "2026-07-13T12:40:10Z"
 ---
@@ -44,3 +41,20 @@ Radio ambient after wake (hello clanker). Operator spoke a long prompt.
 
 ## Priority
 High — blocks confident radio dogfood and confuses Mode A agents.
+
+
+## Addendum: utterance-final bare "over" / natural closers
+
+Radio should also finalize when the operator ends with a natural closer such as:
+
+> "... and that is what you should please implement. over."
+
+i.e. **utterance-final** `over` (after a sentence/period), not bare mid-clause "over".
+
+### Wanted (extend finalize path)
+- Match **utterance-final** soft closers in radio mode, e.g.:
+  - trailing `over` / `over and out` after punctuation or end of utterance
+  - possibly `send it` / `that's all` (same soft-end discipline as silence-mode soft_end if applicable)
+- Must **not** fire on mid-thought "over the weekend" / "over here"
+- Prefer product-scoped exact phrases still; soft closers optional via config (default on for radio dogfood or documented default)
+- Tests: "please implement. over." → end; "think it over and continue" → not end
