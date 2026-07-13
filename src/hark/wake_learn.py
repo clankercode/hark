@@ -24,6 +24,242 @@ from hark.paths import state_dir
 _LOCK = threading.Lock()
 _LEARNED_NAME = "wake_learned.json"
 
+# Learned name-token constraints (seed aliases in wake.py are separate).
+NAME_ALIAS_MIN_LEN = 3
+NAME_ALIAS_MAX_LEN = 12
+
+# Common English stop/function words that must never become wake name aliases.
+# TTS bleed (“This is Eve…”) otherwise maps is→iris via char similarity.
+# Closed-class words only — keep open-class content words learnable as mishears.
+_NAME_ALIAS_STOPWORDS = frozenset(
+    {
+        # articles / determiners
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "some",
+        "any",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "many",
+        "much",
+        "more",
+        "most",
+        "other",
+        "another",
+        "such",
+        "no",
+        "nor",
+        # pronouns
+        "i",
+        "me",
+        "my",
+        "mine",
+        "myself",
+        "we",
+        "us",
+        "our",
+        "ours",
+        "ourselves",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
+        "he",
+        "him",
+        "his",
+        "himself",
+        "she",
+        "her",
+        "hers",
+        "herself",
+        "it",
+        "its",
+        "itself",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "themselves",
+        "who",
+        "whom",
+        "whose",
+        "which",
+        "what",
+        # auxiliaries / copula / common verbs
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "having",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "done",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "can",
+        "could",
+        "may",
+        "might",
+        "must",
+        "ought",
+        "need",
+        "dare",
+        # prepositions / particles
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "from",
+        "as",
+        "into",
+        "onto",
+        "upon",
+        "about",
+        "above",
+        "below",
+        "under",
+        "over",
+        "between",
+        "among",
+        "through",
+        "during",
+        "before",
+        "after",
+        "against",
+        "without",
+        "within",
+        "along",
+        "across",
+        "behind",
+        "beyond",
+        "near",
+        "off",
+        "out",
+        "up",
+        "down",
+        "around",
+        # conjunctions
+        "and",
+        "or",
+        "but",
+        "if",
+        "than",
+        "because",
+        "while",
+        "although",
+        "though",
+        "unless",
+        "until",
+        "since",
+        "whether",
+        "either",
+        "neither",
+        # common adverbs / discourse
+        "not",
+        "yes",
+        "yeah",
+        "yep",
+        "nope",
+        "so",
+        "very",
+        "too",
+        "just",
+        "only",
+        "also",
+        "even",
+        "still",
+        "already",
+        "always",
+        "never",
+        "often",
+        "really",
+        "quite",
+        "rather",
+        "here",
+        "there",
+        "where",
+        "when",
+        "why",
+        "how",
+        "then",
+        "now",
+        "again",
+        "once",
+        "twice",
+        "well",
+        "like",
+        "else",
+        "away",
+        "back",
+        "yet",
+        "ever",
+        # greating-ish tokens (not wake names themselves)
+        "hey",
+        "hello",
+        "hi",
+        "yo",
+        "sup",
+        "okay",
+        "ok",
+        "please",
+        "thanks",
+        "thank",
+        "sorry",
+        # TTS sample bleed fragments
+        "english",
+        "sample",
+        "voice",
+        "calm",
+        "eve",
+        "leo",
+    }
+)
+
+
+def is_learnable_name_alias(alias: str) -> bool:
+    """True if *alias* may be auto-learned or loaded as a name→canonical map key.
+
+    Rejects empty/short/long tokens and common English stop/function words so
+    TTS bleed like “this is Eve” cannot teach ``is`` → iris. Seed aliases
+    (``_SEED_NAME_ALIASES`` in wake.py) are applied separately and are not
+    gated by this helper.
+    """
+    ak = (alias or "").strip().lower()
+    if not ak:
+        return False
+    if len(ak) < NAME_ALIAS_MIN_LEN or len(ak) > NAME_ALIAS_MAX_LEN:
+        return False
+    # Single token only (no spaces / punctuation)
+    if not ak.isalpha():
+        return False
+    if ak in _NAME_ALIAS_STOPWORDS:
+        return False
+    return True
+
 
 def learned_path() -> Path:
     override = os.environ.get("HARK_WAKE_LEARNED")
@@ -71,7 +307,8 @@ def load_learned(path: Path | None = None) -> LearnedWake:
     for k, v in (raw.get("name_aliases") or {}).items():
         ak = str(k).strip().lower()
         av = str(v).strip().lower()
-        if ak and av:
+        # Ignore bad/stale aliases (e.g. is→iris from TTS bleed) at load.
+        if ak and av and is_learnable_name_alias(ak):
             names[ak] = av
     phrases: list[str] = []
     seen: set[str] = set()
@@ -137,10 +374,13 @@ def learn_name_alias(
     learned: LearnedWake | None = None,
     path: Path | None = None,
 ) -> tuple[LearnedWake, bool]:
-    """Persist a name alias. Returns (state, changed)."""
+    """Persist a name alias. Returns (state, changed).
+
+    Refuses short/common stop-word aliases (see :func:`is_learnable_name_alias`).
+    """
     ak = (alias or "").strip().lower()
     ck = (canonical or "").strip().lower()
-    if not ak or not ck or ak == ck:
+    if not ak or not ck or ak == ck or not is_learnable_name_alias(ak):
         return learned or load_learned(path), False
     state = (learned.copy() if learned else None) or load_learned(path)
     if state.name_aliases.get(ak) == ck:

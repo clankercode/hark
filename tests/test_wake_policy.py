@@ -11,6 +11,7 @@ from hark.wake import (
     suggest_learn_from_near_miss,
 )
 from hark.wake_learn import (
+    is_learnable_name_alias,
     learn_name_alias,
     learn_phrase_alias,
     load_learned,
@@ -92,6 +93,117 @@ def test_suggest_learn_from_near_miss_names():
     assert kind == "name"
     assert value == "hoc"
     assert canon == "hark"
+
+
+def test_suggest_learn_rejects_tts_bleed_is_to_iris():
+    """TTS sample “Hello. This is Eve…” must not teach is→iris (B077)."""
+    pol = WakePolicy(
+        mode="names", names=["iris", "mercury", "hark", "herald"], learn=True
+    )
+    for text in (
+        "hello this is eve",
+        "this is eve",
+        "hey is",
+        "is",
+        "hello this is english calm",
+    ):
+        miss = NearMiss(
+            text=text,
+            best_phrase="hey iris",
+            score=0.6,
+            reason="prefix_product_near",
+        )
+        assert suggest_learn_from_near_miss(miss, pol) is None, text
+
+
+def test_suggest_learn_rejects_short_and_stopword_aliases():
+    pol = WakePolicy(
+        mode="names", names=["iris", "mercury", "hark", "herald"], learn=True
+    )
+    # len < 3 or function words even when edit-similar
+    for text, reason in (
+        ("hey ha", "prefix_product_near"),  # len 2
+        ("hey he", "prefix_product_near"),  # stop + len 2
+        ("her", "short_product_near"),  # pronoun ~ herald
+        ("his", "short_product_near"),
+        ("the", "short_product_near"),
+        ("hey her", "prefix_product_near"),
+    ):
+        miss = NearMiss(
+            text=text, best_phrase="hey herald", score=0.6, reason=reason
+        )
+        assert suggest_learn_from_near_miss(miss, pol) is None, text
+
+
+def test_suggest_learn_allows_real_mishears():
+    pol = WakePolicy(
+        mode="names", names=["iris", "mercury", "hark", "herald"], learn=True
+    )
+    cases = [
+        ("eyris", "iris"),
+        ("irys", "iris"),
+        ("mercery", "mercury"),
+        ("hey eyris", "iris"),
+        ("hey hoc", "hark"),
+    ]
+    for text, want_canon in cases:
+        miss = NearMiss(
+            text=text,
+            best_phrase=f"hey {want_canon}",
+            score=0.6,
+            reason="prefix_product_near",
+        )
+        sug = suggest_learn_from_near_miss(miss, pol)
+        assert sug is not None, text
+        kind, value, canon = sug
+        assert kind == "name"
+        assert canon == want_canon
+        assert value not in ("is", "he", "her", "the")
+        assert len(value) >= 3
+
+
+def test_is_learnable_name_alias_denylist():
+    assert is_learnable_name_alias("hoc")
+    assert is_learnable_name_alias("eyris")
+    assert is_learnable_name_alias("irys")
+    assert is_learnable_name_alias("mercery")
+    assert not is_learnable_name_alias("is")
+    assert not is_learnable_name_alias("he")
+    assert not is_learnable_name_alias("her")
+    assert not is_learnable_name_alias("ha")  # min len 3
+    assert not is_learnable_name_alias("a")
+    assert not is_learnable_name_alias("the")
+    assert not is_learnable_name_alias("this")
+    assert not is_learnable_name_alias("eve")  # TTS voice bleed
+    assert not is_learnable_name_alias("")
+    assert not is_learnable_name_alias("  ")
+    assert not is_learnable_name_alias("ab")  # too short
+    assert not is_learnable_name_alias("x" * 13)  # too long
+
+
+def test_learn_name_alias_refuses_stopwords(tmp_path, monkeypatch):
+    path = tmp_path / "wake_learned.json"
+    monkeypatch.setenv("HARK_WAKE_LEARNED", str(path))
+    state, changed = learn_name_alias("is", "iris", path=path)
+    assert not changed
+    assert "is" not in state.name_aliases
+    state, changed = learn_name_alias("eyris", "iris", path=path)
+    assert changed
+    assert state.name_aliases.get("eyris") == "iris"
+
+
+def test_load_learned_strips_bad_aliases(tmp_path, monkeypatch):
+    path = tmp_path / "wake_learned.json"
+    monkeypatch.setenv("HARK_WAKE_LEARNED", str(path))
+    path.write_text(
+        '{"version":1,"name_aliases":{"is":"iris","hoc":"hark","her":"herald"},'
+        '"phrase_aliases":[]}\n',
+        encoding="utf-8",
+    )
+    reloaded = load_learned(path)
+    assert "is" not in reloaded.name_aliases
+    assert "her" not in reloaded.name_aliases
+    assert reloaded.name_aliases.get("hoc") == "hark"
 
 
 def test_suggest_learn_from_near_miss_phrases():
