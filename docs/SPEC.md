@@ -137,6 +137,8 @@ See [AUDIO_DESIGN.md](AUDIO_DESIGN.md). Event-driven answer windows only in MVP.
 | `silence` (default) | Energy gate + end-silence; optionally Smart Turn |
 | `radio` | Spoken **product-scoped** end phrase only (e.g. `okay hark send`, `end prompt`, `hark over`); long pauses must not cut off |
 
+**Radio partial cadence** (`[listen].radio_partial_silence_s`, default **0.6 s**): in radio mode only, trailing quiet of this length ends a capture **segment** and runs interim STT (emitted as `ambient.partial` when `stream_partials` is true). It does **not** end the turn — end phrases (or agent `listen-end` / cancel / `max_listen_s`) still finalize. Silence mode continues to use `end_silence_s` (default 2.1 s) for answer-window end; do not change that for radio partial frequency. See [AUDIO_DESIGN.md](AUDIO_DESIGN.md).
+
 Cancel phrases abort without delivery (`hark cancel`, not casual “cancel that”). Hard `max_listen_s` always applies.
 
 **Endpointing strategy** (`[listen].endpoint_strategy`, default **`energy`**, env `HARK_LISTEN_ENDPOINT_STRATEGY`): silence-mode turn detection is pluggable. `energy` reduces exactly to the fixed `end_silence_s` gate (default; also the fallback). `smart_turn` consults a Smart Turn v3 model (optional `[smart-turn]` extra + `smart_turn_model_path`) to finish early or hold through mid-thought pauses, bounded by `endpoint_max_silence_s`; if it cannot load, capture falls back to the energy gate. Full evaluation + seam: [ENDPOINTING.md](ENDPOINTING.md).
@@ -182,6 +184,9 @@ post_tts_guard_ms = 350
 [listen]
 # silence | radio — radio = keep listening until end phrase (long pauses OK)
 end_mode = "silence"
+# end_silence_s = 2.1               # silence mode: quiet that ends the answer window
+# radio_partial_silence_s = 0.6     # radio only: quiet before interim STT/partial
+# stream_partials = true
 endpoint_strategy = "energy"        # energy (default/fallback) | smart_turn
 # smart_turn_model_path = "~/.local/share/hark/models/smart-turn-v3.onnx"
 # endpoint_max_silence_s = 3.0      # smart turn: max wait on "incomplete" (0 = end_silence_s)

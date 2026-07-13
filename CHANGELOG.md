@@ -6,6 +6,12 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- Radio partial cadence (B037): radio mode uses a shorter, radio-only
+  `listen.radio_partial_silence_s` (default **0.6 s**) to cut segments for
+  interim STT / `ambient.partial` updates. Does **not** finalize the turn
+  (end phrases / agent `listen-end` still required) and does **not** change
+  silence-mode `end_silence_s`. Legacy `radio_end_silence_s` kept for config BC.
+  See `docs/AUDIO_DESIGN.md`.
 - Ambient timeout heartbeat (B033): continuous Mode A still cycles on
   `ambient.timeout_s` (default 300s), but emission of `ambient.timeout` to
   monitor NDJSON/syslog is gated by `ambient.surface_timeouts` (default **on**).
