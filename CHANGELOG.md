@@ -10,6 +10,13 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   outsider-friendly framing, Supports list (Claude Code / Grok Build / Antigravity /
   Pi / OpenCode / Codex), and bare `hark monitor` as the primary Mode A feed.
 
+- Media ducking polish (B047 / I002): config comments + env defaults
+  (`HARK_DUCK_MEDIA_DURING_{TTS,STT}`, `HARK_PAUSE_MEDIA_DURING_{TTS,STT}`,
+  `HARK_DUCK_LEVEL`, `HARK_MEDIA_CHECK_MPRIS` when TOML keys absent),
+  `docs/AUDIO_DESIGN.md` completeness (TTS vs STT, fail-open, conference hold
+  precedence, half-duplex / no idle-wake ducking, shipped defaults with
+  `duck_level = 0.15`), `hark doctor` soft readiness for `pactl` / `playerctl`
+  (degraded warning, not hard fail). Behavior itself shipped in B044–B046.
 ## 0.1.5
 
 - Site Supports notes: document bare `hark monitor` (compact/`--for-monitor` is default on).

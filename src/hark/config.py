@@ -426,12 +426,14 @@ conference_fail_open = true  # missing /proc or tools → allow TTS
 conference_check_audio = true
 conference_poll_ms = 2000
 # conference_max_hold_s = 0  # 0 = wait until free; >0 speak after timeout
-# Duck other media while TTS/STT runs (I002 / B045–B046) — never changes master/sink volume
+# Duck other media while TTS/STT runs (I002 / B045–B047) — never changes master/sink volume
+# Env defaults (TOML absent only): HARK_DUCK_MEDIA_DURING_TTS/STT, HARK_PAUSE_MEDIA_DURING_TTS/STT,
+# HARK_DUCK_LEVEL, HARK_MEDIA_CHECK_MPRIS. Needs pactl (volume duck); playerctl optional (MPRIS).
 duck_media_during_tts = true
 pause_media_during_tts = false  # true: playerctl Pause Playing players + duck rest
 duck_media_during_stt = true    # duck during answer / post-wake listen (not idle wake)
 pause_media_during_stt = true   # true: MPRIS Pause during STT (dogfood default on)
-duck_level = 0.15               # fraction of prior per-stream volume (0.0–1.0)
+duck_level = 0.15               # fraction of prior per-stream volume (0.0–1.0); not 0.2
 # duck_exclude_apps = ["easyeffects"]  # optional app name / binary substrings
 media_check_mpris = true        # secondary media signal via playerctl
 
@@ -580,6 +582,17 @@ def _as_bool(value: Any, *, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a HARK_* bool env var; unset/empty → default.
+
+    True: 1/true/yes/on (case-insensitive). Everything else → False when set.
+    """
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _dedupe_phrases(phrases: list[str]) -> list[str]:
@@ -976,30 +989,38 @@ def load_config(path: Path | None = None) -> HarkConfig:
             conference_check_audio=bool(audio_raw.get("conference_check_audio", True)),
             conference_poll_ms=int(audio_raw.get("conference_poll_ms", 2000)),
             conference_max_hold_s=float(audio_raw.get("conference_max_hold_s", 0)),
+            # Media ducking (I002 / B045–B047). Env HARK_* supplies defaults
+            # when the TOML key is absent (same pattern as HARK_CUE_VOLUME /
+            # HARK_HOLD_DURING_CONFERENCE) — explicit TOML wins.
             duck_media_during_tts=_as_bool(
                 audio_raw.get("duck_media_during_tts"),
-                default=True,
+                default=_env_bool("HARK_DUCK_MEDIA_DURING_TTS", True),
             ),
             pause_media_during_tts=_as_bool(
                 audio_raw.get("pause_media_during_tts"),
-                default=False,
+                default=_env_bool("HARK_PAUSE_MEDIA_DURING_TTS", False),
             ),
             duck_media_during_stt=_as_bool(
                 audio_raw.get("duck_media_during_stt"),
-                default=True,
+                default=_env_bool("HARK_DUCK_MEDIA_DURING_STT", True),
             ),
             pause_media_during_stt=_as_bool(
                 audio_raw.get("pause_media_during_stt"),
-                default=True,
+                default=_env_bool("HARK_PAUSE_MEDIA_DURING_STT", True),
             ),
-            duck_level=float(audio_raw.get("duck_level", 0.15)),
+            duck_level=float(
+                audio_raw.get(
+                    "duck_level",
+                    os.environ.get("HARK_DUCK_LEVEL", 0.15),
+                )
+            ),
             duck_exclude_apps=_as_list_str(
                 audio_raw.get("duck_exclude_apps"),
                 [],
             ),
             media_check_mpris=_as_bool(
                 audio_raw.get("media_check_mpris"),
-                default=True,
+                default=_env_bool("HARK_MEDIA_CHECK_MPRIS", True),
             ),
         ),
         listen=ListenConfig(

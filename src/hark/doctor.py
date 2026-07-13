@@ -115,6 +115,9 @@ def run_doctor(
     else:
         report["speech_ok"] = True
 
+    # Media ducking readiness (B047 / I002) — soft warnings only; never hard-fail
+    report["media_duck"] = _media_duck_report(cfg)
+
     if as_json:
         out.write(json.dumps(report, indent=2) + "\n")
     else:
@@ -123,6 +126,51 @@ def run_doctor(
     if not report["herdr_ok"]:
         return HERDR
     return OK
+
+
+def _media_duck_report(cfg: HarkConfig) -> dict[str, Any]:
+    """Probe pactl/playerctl for ducking; degraded status is advisory only."""
+    audio = cfg.audio
+    pactl_bin = shutil.which("pactl")
+    playerctl_bin = shutil.which("playerctl")
+    duck_on = bool(
+        audio.duck_media_during_tts
+        or audio.duck_media_during_stt
+        or audio.pause_media_during_tts
+        or audio.pause_media_during_stt
+    )
+    pause_on = bool(audio.pause_media_during_tts or audio.pause_media_during_stt)
+    mpris_wanted = bool(pause_on or audio.media_check_mpris)
+    warnings: list[str] = []
+    if duck_on and not pactl_bin:
+        warnings.append(
+            "pactl missing — media volume ducking unavailable (fail-open; TTS/STT still run)"
+        )
+    if mpris_wanted and not playerctl_bin:
+        warnings.append(
+            "playerctl missing — MPRIS detect/pause path degraded "
+            "(volume duck still works if pactl is present)"
+        )
+    if duck_on and pactl_bin:
+        status = "ready"
+    elif duck_on and not pactl_bin:
+        status = "degraded"
+    else:
+        status = "disabled"
+    return {
+        "status": status,
+        "pactl": pactl_bin,
+        "pactl_ok": bool(pactl_bin),
+        "playerctl": playerctl_bin,
+        "playerctl_ok": bool(playerctl_bin),
+        "duck_media_during_tts": bool(audio.duck_media_during_tts),
+        "pause_media_during_tts": bool(audio.pause_media_during_tts),
+        "duck_media_during_stt": bool(audio.duck_media_during_stt),
+        "pause_media_during_stt": bool(audio.pause_media_during_stt),
+        "duck_level": float(audio.duck_level),
+        "media_check_mpris": bool(audio.media_check_mpris),
+        "warnings": warnings,
+    }
 
 
 def _print_human(report: dict[str, Any], *, out: TextIO) -> None:
@@ -172,8 +220,27 @@ def _print_human(report: dict[str, Any], *, out: TextIO) -> None:
         print("  speech: ready (xAI or fallback keys)", file=out)
     else:
         print(f"  speech: not ready — {report.get('speech_hint')}", file=out)
+    md = report.get("media_duck") or {}
+    if md:
+        pactl_s = "ok" if md.get("pactl_ok") else "MISSING"
+        playerctl_s = "ok" if md.get("playerctl_ok") else "missing"
+        print(
+            f"  media duck: {md.get('status', '?')} "
+            f"(pactl={pactl_s} playerctl={playerctl_s} "
+            f"level={md.get('duck_level', '?')} "
+            f"tts={_on_off(md.get('duck_media_during_tts'))} "
+            f"stt={_on_off(md.get('duck_media_during_stt'))} "
+            f"pause_stt={_on_off(md.get('pause_media_during_stt'))})",
+            file=out,
+        )
+        for w in md.get("warnings") or []:
+            print(f"  warn: {w}", file=out)
     print(
         "  overall: "
         + ("OK" if report["ok"] and report.get("speech_ok", True) else "DEGRADED"),
         file=out,
     )
+
+
+def _on_off(value: Any) -> str:
+    return "on" if value else "off"

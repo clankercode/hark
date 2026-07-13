@@ -39,6 +39,11 @@ fixtures/
 | `usage` | Ledger fields | Metrics parity |
 | `herdr` | Agent list / watch wire (redacted live) | Socket/CLI client parity (`parse_agent_list`) |
 
+**Media ducking (I002 / B044–B047):** realistic `pactl list sink-inputs` blobs
+live as inline fixtures in `tests/test_media.py` (Spotify playing, corked
+browser, muted VLC, Hark paplay/ffplay, conference Zoom, etc.) — not under
+`fixtures/` — so unit tests mock subprocess without live Pulse/PipeWire.
+
 ## Conventions
 
 - **JSONL**: one JSON object per line, UTF-8, no trailing comments.
