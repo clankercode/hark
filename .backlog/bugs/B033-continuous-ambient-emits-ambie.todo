@@ -1,0 +1,28 @@
+---
+complexity: low
+created_at: "2026-07-13T11:10:30Z"
+depends_on: []
+estimate_hours: 1
+id: B033
+priority: medium
+status: pending
+tags:
+    - ambient
+    - ux
+    - dogfood
+title: Continuous ambient emits ambient.timeout every timeout_s (~5m) as noisy restart cycle
+updated_at: "2026-07-13T11:10:30Z"
+---
+## Dogfood
+Long-running vosk ambient (pid 2869803) logs ambient.timeout at debug every ~300s (timeout_s default), then immediately continues. ~51 timeouts in one session.
+
+## Problem
+Timeout-as-loop-tick is confusing in logs and may re-enter run_ambient once paths in a way that looks like failure. Continuous mode should wait indefinitely (or use a quiet internal deadline) without emitting timeout events to monitors/syslog.
+
+## Wanted
+- run_ambient_loop: timeout_s=None / 0 means no timeout event
+- Do not syslog ambient.timeout on normal continuous idle cycles
+- Document timeout_s as one-shot only (or max idle before optional re-announce)
+
+## Evidence
+system.jsonl ambient.timeout every ~300s while quiet

@@ -31,3 +31,4 @@ bugs:
     - file: B030-add-og-social-tags-and-images.todo
     - file: B031-post-wake-listen-no-speech-aft.todo
     - file: B032-bare-herald-hark-tokens-miss-w.todo
+    - file: B033-continuous-ambient-emits-ambie.todo
