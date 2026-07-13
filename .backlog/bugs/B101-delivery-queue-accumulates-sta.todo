@@ -1,0 +1,28 @@
+---
+complexity: medium
+created_at: "2026-07-13T19:58:09Z"
+depends_on: []
+estimate_hours: 1
+id: B101
+priority: high
+status: pending
+tags: []
+title: Delivery queue accumulates stale bound events; queue --announce becomes untrustworthy
+updated_at: "2026-07-13T19:58:09Z"
+---
+## Dogfood (2026-07-14)
+`hark queue` listed dozens of old event_ids (many default/w1:p6, plus assorted
+panes) and reported “N agents are waiting for input” even when most panes were
+idle with no live question. Mode A bootstrap TTS/announce becomes noise.
+
+## Expected
+Queue reflects currently answerable blocked/needs_input targets, or provides
+prune/expire so operators/agents can trust the count.
+
+## Actual
+Bound events pile up forever until manually skipped; announce overstates urgency.
+
+## Ideas
+- TTL / max age on undelivered bound events
+- `hark queue prune` / auto-skip when pane fingerprint no longer matches
+- Distinct count of *fresh* vs *stale* in --announce
