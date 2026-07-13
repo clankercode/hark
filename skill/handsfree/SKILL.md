@@ -13,10 +13,11 @@ description: >
 
 Follow **all** instructions in `skill/hark/SKILL.md`, including:
 
-- **TTS mode** after skill start (prefer `hark tts` / `hark ask` for operator communication)
+- **TTS mode** after skill start (prefer `hark tts --listen` / `hark ask` for operator communication)
 - Voice-first setup (sessions, preferences)
 - Question → listen → act loop
 - Radio **partials** + `hark listen-end` when the operator wants to finish without exact end phrases
 - Safe targeting / confirm rules
+- **Dogfooding:** every friction → session todo + `bl bug`; fix now or later, never silent forget
 
 Do not invent answers. Speak, listen, deliver.

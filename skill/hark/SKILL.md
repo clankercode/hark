@@ -60,6 +60,17 @@ Always address **`session_id/pane_id`**. Prefer bound **`event_id`** from watch 
 - **Partials (radio only):** you may receive `ambient.partial` / `partial=true` with interim text, HOLD warnings, and **`agent_control`**. You **MUST NOT** deliver to a pane until `final=true` / `ambient.prompt` for that `stream_id` — but you **MAY** end capture early (below).  
 - **Ambient:** optional `[ambient]` wake via local short snippets; cloud STT after activation. Defaults include `hey hark` / `hey herald`. Custom wakes: set `trigger_phrases` / `activation_phrases` (replace list) or `extra_trigger_phrases` (append), e.g. `extra_trigger_phrases = ["start prompt"]`.  
 
+## Dogfooding (always on)
+
+We are building Hark by using it. **Any friction, bug, missing UX, or agent-procedure gap is product signal.**
+
+When you hit a problem (mic busy, missed alert, empty STT, skill gap, confusing CLI, …):
+
+1. **Log it immediately** — session todo list **and** `bl bug "…"` in this repo when durable.  
+2. **Do not silently work around and forget.** Workarounds are fine mid-task; the issue must still be filed.  
+3. **Fix now** if small and unblocks the operator; otherwise file and continue, then pick up when free.  
+4. Prefer fixes that help the *next* Mode A agent, not only this turn.  
+
 ## Agent-controlled end of recording (radio partials)
 
 Operators often forget exact end phrases (“how do I stop this?”, “okay stop recording”, “that's all, send it”). On each partial:

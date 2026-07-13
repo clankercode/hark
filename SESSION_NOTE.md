@@ -3,6 +3,16 @@
 **Date:** 2026-07-13  
 **Canonical path:** `/home/xertrov/src/grok/hark`
 
+## Dogfooding rule
+
+Any problem while operating Hark is a chance to improve it. Always:
+
+1. Add a **todo** for the issue in the agent session list.  
+2. File a durable **`bl bug`** when it should outlive the session.  
+3. Fix immediately if small; otherwise continue current work and return later.
+
+Skill text: `skill/hark/SKILL.md` § Dogfooding.
+
 ## Status
 
 Phase 1 Python prototype is implemented enough for operator testing:
