@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-07-13T18:08:45Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T18:01:06Z"
 depends_on: []
 estimate_hours: 1
 id: B094
 priority: high
-status: pending
-tags:
-    - herdr
-    - watch
-    - mode-a
-    - context
+started_at: "2026-07-13T18:08:45Z"
+status: in_progress
+tags: []
 title: On Herdr agent state updates, include full pane text screen capture in HEP events for Mode A
-updated_at: "2026-07-13T18:01:06Z"
+updated_at: "2026-07-13T18:08:45Z"
 ---
 ## Problem
 
