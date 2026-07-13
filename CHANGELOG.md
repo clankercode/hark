@@ -46,6 +46,12 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   (`vosk-model-en-us-0.22-lgraph` ~128M / `0.22` ~1.8G) — RAM/alias trade-offs in
   `docs/AUDIO_DESIGN.md` + `docs/CUSTOM_WAKE.md`;
   `scripts/download-vosk-model.sh --model lgraph|0.22` (default small unchanged).
+- Wake eval harness (B071): expand `fixtures/voice/wake/` (live + derived
+  noise/gain/pad/silence + text-only dimensions), `hark.wake_eval` hit/miss/FA
+  scoring, `scripts/eval-wake-fixtures.py` summary table for text_path / Vosk /
+  Sherpa KWS (optional skip when B070 model absent), `scripts/gen-wake-eval-fixtures.py`,
+  `tests/test_wake_eval_harness.py` + `@pytest.mark.sherpa_kws`. Capture notes in
+  `fixtures/voice/README.md`.
 - Ambient live-reload: when the primary wake name/phrase changes (config.toml
   file-watch or SIGHUP), speak a one-shot TTS announce
   (“Wake phrase updated from … to …”) without using the phrase cache
