@@ -20,3 +20,5 @@ Parity tests use vosk_text from sidecars. Full offline re-decode of fixtures/voi
 ## Acceptance
 - [ ] Optional pytest mark requiring vosk model
 - [ ] Assert match_activation on re-decoded text
+
+Merged to master via bl-fix-many subagents. Tests: 155 passed.
