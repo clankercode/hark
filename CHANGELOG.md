@@ -9,6 +9,10 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 - fix(monitor, B102): singleflight lock on `hark monitor` (`monitor.pid` + flock)
   so a second consumer refuses instead of duplicating HEP wakes; skill documents
   arm-once; `hark start --status` reports monitor holder; `--allow-multiple` debug only.
+- fix(radio, B103): soft end bare `over` / `okay over` always finalizes as
+  **end** (never cancel). Utterance-final `… over` without a period (common
+  radio pause join / STT) is a prosign; only phrasal-verb finals (`turn it
+  over`, `take over`, …) stay blocked.
 - **Handsfree workers (B089):** `hark start` / `stop` / `restart` for ambient +
   `watch --for-monitor` (idempotent start, SIGTERM then SIGKILL, `mode-a.pids`);
   preferred over `./scripts/run-mode-a.sh`. `hark start --status` for running state.
