@@ -50,6 +50,7 @@ class ListenResult:
     cancelled: bool = False
     stream_id: str | None = None
     partials_emitted: int = 0
+    meta_command: str | None = None
 
 
 def run_tts(
@@ -207,6 +208,19 @@ def run_tts(
 
 
 EMPTY_STT_NUDGE_TEXT = "Sorry, I didn't catch that."
+
+
+def _tag_meta_command(result: "ListenResult") -> "ListenResult":
+    """Classify a captured (non-cancelled) transcript as a meta-command (B009).
+
+    Meta-commands (repeat/skip/next/status/cancel) spoken during an answer window
+    must be honoured, not delivered to the worker agent as a prompt.
+    """
+    from hark.meta_commands import classify_meta_command
+
+    if not result.cancelled:
+        result.meta_command = classify_meta_command(result.text)
+    return result
 
 
 def _echo_overlap(transcript: str, last_tts: str | None) -> bool:
@@ -861,6 +875,7 @@ def speak_and_listen(
             raise _attach_tts(err)
         listened = listen_box["result"]
         assert isinstance(listened, ListenResult)
+        _tag_meta_command(listened)
         return tts_info, listened
 
     # Half-duplex path (default): start listen after TTS + optional guard
@@ -877,6 +892,7 @@ def speak_and_listen(
         )
     except BaseException as exc:
         raise _attach_tts(exc) from exc
+    _tag_meta_command(listened)
     return tts_info, listened
 
 
@@ -921,6 +937,20 @@ def run_ask(
             "exit": ABORT,
             "end_phrase": listened.end_phrase,
             "tts": tts_info,
+        }
+
+    # Meta-command spoken in the answer window: honour it as control, never
+    # treat it as an answer or run the confirm flow (B009).
+    if listened.meta_command:
+        return {
+            "ok": True,
+            "meta_command": listened.meta_command,
+            "text": listened.text,
+            "provider": listened.provider,
+            "duration_ms": listened.duration_ms,
+            "end_mode": listened.end_mode,
+            "tts": tts_info,
+            "exit": OK,
         }
 
     risk = risk_hint or classify_question(prompt).risk

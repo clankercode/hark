@@ -19,6 +19,12 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   `endpoint_probe_silence_s`, `endpoint_max_silence_s`, `smart_turn_model_path`,
   `smart_turn_threshold` config; env `HARK_LISTEN_ENDPOINT_STRATEGY`,
   `HARK_SMART_TURN_MODEL`. See `docs/ENDPOINTING.md`.
+- Multi-session voice queue UX (B009): `hark queue --announce` speaks the waiting-agent count
+  by TTS when more than one is waiting (JSON adds `count` / `announcement` / distinct `targets`);
+  queue now counts by distinct session/pane and excludes delivered/skipped/rejected/invalidated
+  events. New spoken meta-command lexicon (`repeat` / `skip` / `next` / `status` / `cancel`) —
+  `hark tts --listen`, `hark listen`, and `hark ask` return a `meta_command` field for
+  whole-utterance control phrases, and `hark ask` short-circuits (no confirm/send) on one.
 - Optional TTS/listen overlap pre-arm (`audio.overlap_prearm`, `overlap_discard_ms`): start
   capture near TTS end while discarding audio until TTS ends + residual (B004). Half-duplex
   remains the default.

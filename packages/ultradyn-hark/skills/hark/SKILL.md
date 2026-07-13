@@ -122,7 +122,7 @@ tail -n0 -F ~/.local/state/hark/system.jsonl ~/.local/state/hark/ambient.jsonl
 ## On skill start (voice bootstrap)
 
 1. `hark doctor` (text OK for tools).  
-2. `hark status` + `hark queue` — **announce any already-blocked / pending by TTS** (Hark watch also emits on load; still speak a short rollup so the operator hears it).  
+2. `hark status` + `hark queue --announce` — **announce any already-blocked / pending by TTS**. `hark queue --announce` speaks the waiting count itself when more than one agent is waiting (JSON always carries `count` / `announcement` / distinct `targets`). Hark watch also emits on load; still speak a short rollup so the operator hears it.  
 3. TTS: “Hark is ready. I'll speak from here.”  
 4. Voice-ask session targets / mode if not already configured.  
 5. **Required:** arm the Herdr watch Monitor — `hark watch --for-monitor --statuses blocked,done` with `persistent: true`. Do **not** skip this. Ambient/system tail is optional add-on only; **never** arm ambient alone.  
@@ -160,11 +160,17 @@ Herdr may report `done`/`idle` while the pane still shows a multi-option menu. W
 
 ## Meta (during answer windows / if human interrupts)
 
-If transcript is a command: **repeat**, **skip**, **cancel**, **next**, **status** — honor it; do not send to the worker agent as a prompt.
+If transcript is a command: **repeat**, **skip**, **cancel**, **next**, **status** — honor it; do not send to the worker agent as a prompt. `hark tts --listen`, `hark listen`, and `hark ask` classify the reply and return a `meta_command` field (`repeat` | `skip` | `next` | `status` | `cancel`) when the whole utterance is a control phrase; `hark ask` short-circuits (no confirm/send) in that case. On `meta_command`:
+
+- **repeat** → re-speak the question (`hark tts --listen "…"`).
+- **skip** → `hark skip <event_id>` (drops it from `hark queue`), then move on.
+- **next** → leave current event pending, go to the next waiting target.
+- **status** → speak `hark queue --announce`.
+- **cancel** → abandon this answer window; do not send.
 
 ## Multi-session queue
 
-Handle one target fully before the next. Announce count when >1 (by TTS). Never merge replies across panes.
+Handle one target fully before the next. Announce count when >1 by TTS (`hark queue --announce` does this). Never merge replies across panes — always deliver with `hark answer <event_id>` (bound to one session/pane); the count from `hark queue` is by distinct target.
 
 ## Cheatsheet
 

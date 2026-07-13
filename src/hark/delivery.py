@@ -148,3 +148,67 @@ class DeliveryStore:
                 if data.get("event_id") == event_id and data.get("status") == "delivered":
                     return True
         return False
+
+    def pending_events(self) -> list[dict[str, Any]]:
+        """Return the current pending bound events (the multi-session queue).
+
+        Uses the authoritative latest status from ``deliveries.jsonl`` so events
+        that have been delivered/skipped/rejected/invalidated are excluded — not
+        just delivered ones. Deduplicated by ``event_id`` keeping the latest
+        registration.
+        """
+        if not self.path.is_file():
+            return []
+        seen: dict[str, dict[str, Any]] = {}
+        with self.path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                eid = data.get("event_id")
+                if isinstance(eid, str) and eid:
+                    seen[eid] = data
+        statuses = self._latest_statuses()
+        out: list[dict[str, Any]] = []
+        for eid, data in seen.items():
+            status = statuses.get(eid, data.get("status", "pending"))
+            if status == "pending":
+                out.append(data)
+        return out
+
+
+def summarize_pending(pending: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize pending queue events for TTS announcement.
+
+    Counts **distinct targets** (``session_id``/``pane_id``) so multiple records
+    for one pane never inflate the count and answers/counts never merge across
+    panes. Returns ``count``, the distinct ``targets``, and a spoken
+    ``announcement`` phrase.
+    """
+    targets: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for p in pending:
+        key = (str(p.get("session_id") or ""), str(p.get("pane_id") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(f"{key[0]}/{key[1]}")
+    count = len(targets)
+    return {
+        "count": count,
+        "targets": targets,
+        "announcement": queue_announcement(count),
+    }
+
+
+def queue_announcement(count: int) -> str:
+    """Build a natural spoken phrase for ``count`` waiting agents."""
+    if count <= 0:
+        return "No agents are waiting for input."
+    if count == 1:
+        return "One agent is waiting for input."
+    return f"{count} agents are waiting for input."

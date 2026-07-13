@@ -165,6 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     q = sub.add_parser("queue", help="pending bound events")
     q.add_argument("--json", action="store_true")
+    q.add_argument(
+        "--announce",
+        action="store_true",
+        help="speak the waiting-agent count by TTS when more than one is waiting",
+    )
 
     prov = sub.add_parser("providers", help="list speech providers or voices")
     prov.add_argument(
@@ -315,7 +320,7 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
     if cmd == "ambient":
         return cmd_ambient(args, cfg)
     if cmd == "queue":
-        return cmd_queue(args)
+        return cmd_queue(args, cfg)
     if cmd == "providers":
         return cmd_providers(args)
     if cmd == "devices":
@@ -772,6 +777,7 @@ def cmd_tts(args: argparse.Namespace, cfg) -> int:
         "ok": True,
         "tts": result,
         "text": listened.text,
+        "meta_command": listened.meta_command,
         "listen": {
             "provider": listened.provider,
             "duration_ms": listened.duration_ms,
@@ -785,6 +791,7 @@ def cmd_tts(args: argparse.Namespace, cfg) -> int:
 
 
 def cmd_listen(args: argparse.Namespace, cfg) -> int:
+    from hark.meta_commands import classify_meta_command
     from hark.speech import run_listen
 
     result = run_listen(cfg, provider=args.provider, end_mode=args.end_mode)
@@ -792,9 +799,12 @@ def cmd_listen(args: argparse.Namespace, cfg) -> int:
         eprint(f"cancelled via {result.end_phrase!r}")
         print(json.dumps({"ok": False, "cancelled": True, "text": result.text}))
         return ABORT
+    if result.meta_command is None:
+        result.meta_command = classify_meta_command(result.text)
     payload = {
         "ok": True,
         "text": result.text,
+        "meta_command": result.meta_command,
         "provider": result.provider,
         "duration_ms": result.duration_ms,
         "end_mode": result.end_mode,
@@ -862,29 +872,40 @@ def cmd_ambient(args: argparse.Namespace, cfg) -> int:
     return run_ambient_loop(cfg, announce=announce)
 
 
-def cmd_queue(args: argparse.Namespace) -> int:
+def cmd_queue(args: argparse.Namespace, cfg=None) -> int:
+    from hark.delivery import summarize_pending
+
     store = DeliveryStore()
-    pending = []
-    if store.path.is_file():
-        seen = {}
-        for line in store.path.read_text(encoding="utf-8").splitlines():
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            eid = data.get("event_id")
-            if eid:
-                seen[eid] = data
-        for eid, data in seen.items():
-            if not store.already_delivered(eid) and data.get("status") == "pending":
-                pending.append(data)
+    pending = store.pending_events()
+    summary = summarize_pending(pending)
+    count = summary["count"]
+
+    announced = False
+    if getattr(args, "announce", False) and count > 1 and cfg is not None:
+        from hark.speech import run_tts
+
+        run_tts(cfg, summary["announcement"], play=True)
+        announced = True
+
     if args.json:
-        print(json.dumps({"queue": pending}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "queue": pending,
+                    "count": count,
+                    "targets": summary["targets"],
+                    "announcement": summary["announcement"],
+                    "announced": announced,
+                },
+                indent=2,
+            )
+        )
     else:
         if not pending:
             print("(empty)")
         for p in pending:
             print(f"{p.get('event_id')}  {p.get('session_id')}/{p.get('pane_id')}")
+        print(summary["announcement"])
     return OK
 
 
