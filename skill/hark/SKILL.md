@@ -83,7 +83,7 @@ When you hit a problem (mic busy, missed alert, empty STT, skill gap, confusing 
 
 Operators often forget exact end phrases (“how do I stop this?”, “okay stop recording”, “that's all, send it”). On each partial:
 
-1. Read `text` privately (start thinking if useful).  
+1. Read `text` privately (start thinking if useful). Do **not** TTS a full answer on partials.  
 2. If they **clearly finished or want to stop** without matching an end phrase, run the command from `agent_control`:
    ```bash
    hark listen-end --stream-id <stream_id>           # finalize as complete prompt
@@ -91,7 +91,8 @@ Operators often forget exact end phrases (“how do I stop this?”, “okay sto
    ```
 3. Prefer **finish** when they completed a thought; **cancel** only if they abort.  
 4. Do **not** end on ordinary mid-thought speech.  
-5. After finish, treat the resulting final transcript like any other operator prompt.
+5. After you decide (HOLD, or listen-end), **stop this turn** — wait for the Monitor to fire the next partial or the final `ambient.prompt`. No polling for more partials.  
+6. After a **final** arrives (or listen-end produces one), treat that transcript like any other operator prompt (TTS reply).
 
 Exact end phrases still work without you. You are the backup interpreter.
 
@@ -99,8 +100,9 @@ Exact end phrases still work without you. You are the backup interpreter.
 
 1. Treat the `text` as a direct operator instruction to **you** (the Mode A orchestrator), not as pane delivery unless they clearly ask to reply to an agent.
 2. **Immediately** `hark tts "…"` with your answer, status, or next step — same bar as TTS mode rule 5 above.
-3. If still mid-radio (`partial=true`), do not TTS a full answer yet unless they asked to stop early via `listen-end`; wait for `final=true` / matching `stream_id` final event.
+3. If still mid-radio (`partial=true`), do not TTS a full answer yet unless they asked to stop early via `listen-end`; **stop and wait** for the next Monitor event (`final=true` / matching `stream_id` final). Do not poll ambient.jsonl for the final.
 4. File dogfood bugs by voice-ack + `bl bug` when they report friction.
+5. When done: **idle** — leave monitors armed; do not keep the session busy waiting.
 
 ## Arm the feed (**required**)
 
@@ -143,7 +145,7 @@ tail -n0 -F ~/.local/state/hark/system.jsonl ~/.local/state/hark/ambient.jsonl
 4. Voice-ask session targets / mode if not already configured.  
 5. **Required:** arm the Herdr watch Monitor — `hark watch --for-monitor --statuses blocked,done` with `persistent: true`. Do **not** skip this. Ambient/system tail is optional add-on only; **never** arm ambient alone.  
 6. Prefer `hark tts --listen "…"` or `hark ask` so recording starts after you speak (start cue on speech). **Ambient auto-pauses** for listen/ask (mic lease yield); no manual kill needed.  
-7. Wait for blocked events (from the required watch Monitor) or ambient prompts.  
+7. **Idle and wait for Monitors** to deliver blocked events or ambient lines. Do not poll.
 
 ## On `agent.blocked` / blocked monitor line
 
@@ -162,7 +164,7 @@ tail -n0 -F ~/.local/state/hark/system.jsonl ~/.local/state/hark/ambient.jsonl
    - free text: `hark answer <event_id> --text "…"`  
    - menu: `hark answer <event_id> --keys 2 enter`  
 6. If stale: re-context, re-ask human by voice, do not force-send.  
-7. Short ack TTS. Leave Monitor armed.  
+7. Short ack TTS. Leave Monitor armed. **Stop** — next work arrives via Monitor, not polling.  
 
 ## On `agent.needs_input` (false done)
 
@@ -174,6 +176,7 @@ Herdr may report `done`/`idle` while the pane still shows a multi-option menu. W
 2. Else `hark context … --lines 40`.  
 3. Judge false done vs real completion (menu still on screen?).  
 4. TTS only when useful.  
+5. Then **stop** and wait for the next Monitor event.  
 
 ## Meta (during answer windows / if human interrupts)
 
