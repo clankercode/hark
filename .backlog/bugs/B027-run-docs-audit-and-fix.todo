@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-13T10:05:26Z"
+depends_on: []
+estimate_hours: 1
+id: B027
+priority: high
+status: pending
+tags: []
+title: Run /docs-audit-and-fix
+updated_at: "2026-07-13T10:05:26Z"
+---
+
+Run /docs-audit-and-fix
