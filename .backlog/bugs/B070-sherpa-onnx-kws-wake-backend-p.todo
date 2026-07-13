@@ -3,14 +3,14 @@ completed_at: null
 complexity: medium
 created_at: "2026-07-13T15:00:03Z"
 depends_on: []
-estimate_hours: 5
+estimate_hours: 8
 id: B070
 priority: high
 started_at: null
 status: pending
 tags: []
 title: Sherpa-ONNX KWS wake backend (pluggable engine beside Vosk)
-updated_at: "2026-07-13T15:00:03Z"
+updated_at: "2026-07-14T00:00:00Z"
 ---
 ## Problem
 B069 survey: Vosk small en-us mangles product wake names (`hark`→hook/hawk, `herald`→harold). Alias/learning papers over weak open-vocab ASR. **Sherpa-ONNX open-vocab KWS** (English GigaSpeech 3.3M int8) matched all 7 current live wake fixtures correctly at RTF≈0.02 and ~half Vosk RSS.
@@ -18,71 +18,48 @@ B069 survey: Vosk small en-us mangles product wake names (`hark`→hook/hawk, `h
 See `docs/plans/B069-local-stt-survey.md`.
 
 ## Goal
-Ship optional ambient wake engine `sherpa_kws` implementing `WakeBackend`, without flipping the default off Vosk until dogfood.
+Ship optional ambient wake engine `sherpa_kws` implementing `WakeBackend`, without flipping the default off Vosk until dogfood — plus first-run setup so operators can choose the engine without hand-editing config.
 
-## Scope
+## Already on master (do not re-do)
+
+| Item | Evidence |
+|------|----------|
+| `DEFAULT_WAKE_NAMES = (iris, mercury, hark, herald)` | `wake.py`, `config.py` (`cbeb65a`) |
+| Product phrases include hey/hello/okay iris & mercury | `wake.py` |
+| Default TTS example voice **eve**; persona pairing Iris→eve, Mercury→leo (docs/comments) | `config.py` template + CHANGELOG |
+| TTS sample layout `assets/tts/samples/{provider}/{gender}/{voice}.mp3` | `cbeb65a` |
+| B069 survey + KWS measurements | `docs/plans/B069-local-stt-survey.md` |
+
+**Not done:** Sherpa backend, download script, `engine=sherpa_kws`, doctor, fixture mark, `hark setup`, SETUP.md / WAKE_STT.md, setup-complete version flag.
+
+## Scope (remaining)
+
+### A. Sherpa KWS wake backend (core)
 - Optional dependency / download script for `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01` (int8)
 - Build keywords file from `WakePolicy` (names×prefixes + exact phrases); rebuild on config watch / SIGHUP
 - `engine = "sherpa_kws"` in `[ambient]`; doctor readiness when selected
 - Fixture tests (optional mark if model missing), keep text-path tests engine-agnostic
 - Preserve fail-open: missing model → clear error / fall back path documented
+- Vosk remains **default** until dogfood says otherwise
 
-## Non-goals
-- Multi-engine UI
-- Replacing cloud STT
-- Training custom models
-
-## Acceptance
-- [ ] Can enable Sherpa KWS via config and wake on hey hark / hey herald live
-- [ ] Keyword set follows configured names/phrases without process restart (or with existing reload)
-- [ ] Vosk remains default; docs updated (AUDIO_DESIGN / CUSTOM_WAKE brief note)
-- [ ] Tests + survey cross-link
-
-Depends on: B069 survey (docs landed).
-
-
-## Setup + persona defaults (dogfood, 2026-07-14)
-
-Fold first-run / Mode A setup into this work so Sherpa is choosable at install time,
-not only via hand-edited config.
-
-### Product defaults (ship with B070 or same PR)
-
-| Role | Wake name | Default TTS voice (xAI) |
-|------|-----------|-------------------------|
-| Feminine (default) | **Iris** | **eve** |
-| Masculine | **Mercury** | **leo** |
-| Product aliases | hark, herald | — |
-
-- Dogfood: **Mercury** was the only masculine name that Vosk recognized first-try among
-  Hermes/Apollo/etc.; **leo** chosen as default male voice after xAI sample review.
-- Operator may pick **any** TTS voice from the active provider catalog
-  (`hark providers voices` / OpenAI / MiniMax when auth available).
-- Code: `DEFAULT_WAKE_NAMES = (iris, mercury, hark, herald)`; `[tts] voice = eve`.
-
-### First-time guided setup — `hark setup` (full CLI)
-
-Not agent-chat-only. Implement a **guided setup command** that:
+### B. Guided setup — `hark setup` + skill docs
+Fold first-run / Mode A setup so Sherpa is choosable at install time.
 
 1. Writes/updates `~/.config/hark/config.toml`
-2. Writes **`~/.local/state/hark/setup-complete.json`** (or adjacent) with at least:
-   - `hark_version` (the version that produced the flag)
+2. Writes **`~/.local/state/hark/setup-complete.json`** with at least:
+   - `hark_version` (version that produced the flag)
    - `completed_at`
    - answers snapshot (wake engine, names, voice, sessions summary — no secrets)
 3. On later runs / Mode A start: if flag missing **or** `hark_version` is older than
    current in a way that adds new setup questions → re-prompt only the **new** questions.
 
-### Setup question order (logical)
-
-Record the canonical agent+CLI script in **`skill/hark/SETUP.md`** (mirror
-`packages/ultradyn-hark/skills/hark/SETUP.md`). Order:
+**Setup question order** (canonical agent+CLI script in `skill/hark/SETUP.md`, package mirror):
 
 1. Health (`hark doctor`) — text OK
 2. **Herdr sessions** — local / SSH / mix
 3. **Persona** — feminine (Iris+eve) vs masculine (Mercury+leo) vs custom name
 4. **TTS voice** — list available voices for chosen/auto provider; play short sample optional
-5. **Wake backend** — **Vosk** vs **Sherpa KWS** (vs any future engines); recommend Sherpa
-   when model download is OK; Vosk if constrained; allow defer
+5. **Wake backend** — **Vosk** vs **Sherpa KWS** (extensible); recommend Sherpa when download OK; Vosk if constrained; allow defer
 6. Download/install model if Sherpa selected; set `[ambient] engine`
 7. Confirm wake test (“say hey iris / hey mercury”)
 8. Write setup-complete flag with version
@@ -90,33 +67,64 @@ Record the canonical agent+CLI script in **`skill/hark/SETUP.md`** (mirror
 
 Voice-first after doctor when Mode A skill drives setup (TTS questions one at a time).
 
-### Skill-adjacent docs (required)
-
 | Path | Purpose |
 |------|---------|
-| `skill/hark/SETUP.md` (+ package mirror) | Question script, order, config keys written, setup-complete schema |
-| `skill/hark/WAKE_STT.md` (or `LOCAL_STT.md`) | Informational: Vosk / Sherpa KWS / faster-whisper / Moonshine / etc. requirements, size, when to pick; points at `docs/plans/B069-local-stt-survey.md` |
+| `skill/hark/SETUP.md` (+ package mirror) | Question script, order, config keys, setup-complete schema |
+| `skill/hark/WAKE_STT.md` (or `LOCAL_STT.md`) | Vosk / Sherpa KWS / faster-whisper / Moonshine requirements, size, when to pick; link B069 survey |
 
 SKILL.md links both; SETUP is the agent checklist.
 
-### Auth for multi-provider voice pick
+### Product defaults (verify only — mostly landed)
 
-Discover OpenAI/MiniMax keys from CLI stores — tracked as **B076** (Codex, OpenCode,
-Pi agent, MiniMax CLI). Setup must not require re-pasting keys if B076 sources work.
+| Role | Wake name | Default TTS voice (xAI) |
+|------|-----------|-------------------------|
+| Feminine (default) | **Iris** | **eve** |
+| Masculine | **Mercury** | **leo** |
+| Product aliases | hark, herald | — |
 
-### Non-goals (revised)
+- Operator may pick **any** TTS voice from the active provider catalog.
+- Setup feminine path → Iris + eve; masculine → Mercury + leo (unless customized).
 
-- ~~Multi-engine UI~~ → **guided CLI + skill SETUP is in scope**; full TUI optional later
+## Coordination (not blockers)
+
+| Task | Relation |
+|------|----------|
+| **B076** | Multi-CLI auth (Codex, OpenCode, Pi, `mmx` ~/.mmx). Setup uses B076 when listing/playing OpenAI/MiniMax samples — **prefer land B076 first or stub “no key found” path**. |
+| **B071** | Wake eval harness; can follow once `sherpa_kws` exists (optional mark). |
+| **B079** | Continuous mic ring helps streaming KWS later; **not required** for first Sherpa `score_snippet` on discrete windows. |
+| **B072** | Local full-STT — separate; only document in WAKE_STT.md. |
+| **B073** | Larger Vosk model docs — independent. |
+
+## Non-goals
+
+- Flipping ambient default off Vosk in this task (dogfood first)
+- Full TUI for multi-engine (guided CLI + skill SETUP is enough)
 - Replacing cloud STT for utterance body
-- Training custom wake models in-process (see idea I00x sampling)
+- Training custom wake models in-process (see I006 enrollment samples)
+- Re-implementing already-landed name/voice defaults
 
-### Acceptance (added)
+## Acceptance
 
-- [ ] Defaults: names iris+mercury+hark+herald; voice eve
+### Defaults (landed — check off when verifying in PR)
+- [x] Defaults: names iris+mercury+hark+herald; example voice eve
+- [x] Feminine/masculine persona pairing documented (Iris→eve, Mercury→leo)
+
+### Sherpa
+- [ ] Can enable Sherpa KWS via config and wake on hey hark / hey herald (and hey iris / mercury)
+- [ ] Keyword set follows configured names/phrases without process restart (or with existing reload)
+- [ ] Vosk remains default; docs updated (AUDIO_DESIGN / CUSTOM_WAKE brief note)
+- [ ] Tests + survey cross-link; optional `@pytest.mark.sherpa_kws` when model present
+- [ ] Doctor reports ready / missing model clearly for `engine=sherpa_kws`
+
+### Setup
 - [ ] `hark setup` (or documented equivalent) can set engine, names, voice, sessions
 - [ ] setup-complete flag includes **hark_version**; re-asks only new questions after upgrade
-- [ ] `skill/hark/SETUP.md` + STT info doc + package mirrors
+- [ ] `skill/hark/SETUP.md` + STT info doc + package mirrors; SKILL.md links
 - [ ] Wake backend question offers Vosk vs Sherpa (+ extensible for future)
 - [ ] Masculine path sets Mercury + leo unless customized
 - [ ] Feminine path sets Iris + eve unless customized
-- [ ] B076 used when listing/playing OpenAI/MiniMax samples during setup
+- [ ] B076 used when listing/playing OpenAI/MiniMax samples during setup (or graceful degrade if B076 not yet merged)
+
+## Estimate note
+
+Original ~5 h was Sherpa-only. With guided setup + docs, treat remaining as **~8 h** (Sherpa ~5 + setup/docs ~3). Split into two PRs if needed: **B070a Sherpa** then **B070b setup**.
