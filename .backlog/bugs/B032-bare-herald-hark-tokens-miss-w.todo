@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:10:30Z"
+depends_on: []
+estimate_hours: 1
+id: B032
+priority: high
+status: pending
+tags:
+    - ambient
+    - wake
+    - near-miss
+    - dogfood
+title: Bare herald/hark tokens miss wake; near-miss not reaching Mode A monitor
+updated_at: "2026-07-13T11:10:30Z"
+---
+## Dogfood
+Wake snips show bare tokens that should be near-misses (or soft-wake):
+- miss text=harold (twice) then hit hey harold
+- miss text=a hawk then hit hello hawk
+
+plausible_near_miss("harold") returns family_token NearMiss in unit code, but system.jsonl has **zero** ambient.wake_near_miss events over the session.
+
+## Wanted
+- Confirm continuous ambient emits ambient.wake_near_miss to syslog + out stream (B019)
+- Ensure long-running ambient process reloads code or HUP after upgrades
+- Consider optional soft-wake on bare product tokens with higher confirmation bar
+- Mode A monitor should surface near-miss groups (already designed in B019)
+
+## Evidence
+debug/wake/2026-07-13/*-miss.json texts harold / a hawk; no wake_near_miss in system.jsonl
