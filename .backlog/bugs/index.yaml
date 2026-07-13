@@ -12,3 +12,4 @@ bugs:
     - file: B011-mode-a-agent-must-arm-herdr-wa.todo
     - file: B012-empty-stt-after-tts-false-spee.todo
     - file: B013-wave-hardware-mute-vs-pactl-mu.todo
+    - file: B014-socket-watch-broken-pipe-noisy.todo
