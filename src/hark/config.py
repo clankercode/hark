@@ -266,7 +266,7 @@ class AudioConfig:
     # Poll interval while waiting for the call to end
     conference_poll_ms: int = 2000
     # Max seconds to hold (0 = wait until free / no cap). On timeout, speak anyway.
-    conference_max_hold_s: float = 0.0
+    conference_max_hold_s: float = 30.0  # 0 = wait forever; default 30s then speak (avoid stuck TTS)
     # Lower other apps' sink-input volumes while TTS plays (I002 / B045)
     duck_media_during_tts: bool = True
     # Prefer MPRIS/playerctl Pause for Playing players, then duck remaining
@@ -519,7 +519,7 @@ conference_chime_only = true # soft cue while held; full question after call end
 conference_fail_open = true  # missing /proc or tools → allow TTS
 conference_check_audio = true
 conference_poll_ms = 2000
-# conference_max_hold_s = 0  # 0 = wait until free; >0 speak after timeout
+conference_max_hold_s = 30  # seconds; 0 = wait until free (can hang if Discord idle-matched)
 # Duck other media while TTS/STT runs (I002 / B045–B047) — never changes master/sink volume
 # Env defaults (TOML absent only): HARK_DUCK_MEDIA_DURING_TTS/STT, HARK_PAUSE_MEDIA_DURING_TTS/STT,
 # HARK_DUCK_LEVEL, HARK_MEDIA_CHECK_MPRIS. Needs pactl (volume duck); playerctl optional (MPRIS).

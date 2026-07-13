@@ -406,3 +406,40 @@ def test_run_tts_holds_then_speaks(monkeypatch):
     assert calls["synth"] == 1
     assert out["conference"]["held"] is True
     assert out["conference"]["queue_id"] == "q1"
+
+
+def test_idle_discord_process_not_active_when_audio_scanned():
+    """Resident Discord without conference streams must not hold TTS."""
+    entries = [
+        ("1", "systemd", "/sbin/init"),
+        ("50", "Discord", "/opt/discord/Discord"),
+    ]
+    blob = """
+Sink Input #3
+    application.name = "Firefox"
+    media.name = "Audio"
+"""
+    match = detect_conference(
+        proc_entries=entries,
+        stream_blobs=[blob],
+        check_audio=True,
+    )
+    assert match.active is False
+    assert any("discord" in m for m in match.matched)
+    assert "audio" in match.sources
+
+
+def test_discord_active_when_stream_present():
+    entries = [("50", "Discord", "/opt/discord/Discord")]
+    blob = """
+Sink Input #9
+    application.name = "Discord"
+    media.name = "Voice Call"
+"""
+    match = detect_conference(
+        proc_entries=entries,
+        stream_blobs=[blob],
+        check_audio=True,
+    )
+    assert match.active is True
+    assert any(m.startswith("stream:") for m in match.matched)

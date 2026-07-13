@@ -290,3 +290,10 @@ def test_radio_partials_still_work_with_pad(monkeypatch):
     assert result.end_phrase == "okay hark send"
     assert result.cancelled is False
     assert "pull request" in (result.text or "").lower()
+
+
+def test_join_radio_stt_segments_overlap_trim():
+    from hark.speech import join_radio_stt_segments
+
+    assert join_radio_stt_segments(["hello world", "world there"]) == "hello world there"
+    assert join_radio_stt_segments(["alpha", "beta gamma"]) == "alpha beta gamma"

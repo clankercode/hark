@@ -452,6 +452,38 @@ def _transcribe_logged(
         raise
 
 
+
+def join_radio_stt_segments(segments: list[str]) -> str:
+    """Join per-segment STT without cumulative re-STT (avoids long-audio word loss).
+
+    Each radio segment is transcribed alone; we assemble text with light overlap
+    trim so repeated phrase tails do not double.
+    """
+    out: list[str] = []
+    for raw in segments:
+        part = " ".join((raw or "").split()).strip()
+        if not part:
+            continue
+        if not out:
+            out.append(part)
+            continue
+        prev = out[-1]
+        # If new starts with end of previous (common STT re-prefix), drop overlap
+        prev_toks = prev.split()
+        part_toks = part.split()
+        max_olap = min(len(prev_toks), len(part_toks), 8)
+        olap = 0
+        for n in range(max_olap, 0, -1):
+            if prev_toks[-n:] == part_toks[:n]:
+                olap = n
+                break
+        if olap:
+            part_toks = part_toks[olap:]
+        if part_toks:
+            out.append(" ".join(part_toks))
+    return " ".join(out).strip()
+
+
 def run_listen(
     cfg: HarkConfig,
     *,
@@ -931,6 +963,7 @@ def run_listen(
             # idle (B074); stream partials. Short pauses stay open; long quiet
             # after speech has opened auto-finishes (same path as soft-end).
             pieces: list[bytes] = []
+            text_segments: list[str] = []
             started = time.monotonic()
             partial_seq = 0
             last_partial_text = ""
@@ -1114,11 +1147,13 @@ def run_listen(
                     else cap.pcm16
                 )
                 pieces.append(seg_pcm)
-                wav = write_wav_bytes(b"".join(pieces), cap.sample_rate)
+                # STT this segment alone, then assemble text (B082-class fix:
+                # cumulative re-STT of growing WAV often drops earlier words).
+                seg_wav = write_wav_bytes(seg_pcm, cap.sample_rate)
                 stt_seq += 1
                 tr, latency_ms = _transcribe_logged(
                     stt,
-                    wav,
+                    seg_wav,
                     stream_id=stream,
                     seq=stt_seq,
                     mode=mode.value,
@@ -1128,7 +1163,18 @@ def run_listen(
                 last_provider = tr.provider
                 if _echo_overlap(tr.text, last_tts):
                     pieces.clear()
+                    text_segments.clear()
                     continue
+                if (tr.text or "").strip():
+                    text_segments.append((tr.text or "").strip())
+                # End-phrase / partial paths use assembled cumulative text
+                from types import SimpleNamespace
+
+                joined = join_radio_stt_segments(text_segments)
+                tr = SimpleNamespace(
+                    text=joined or (tr.text or ""),
+                    provider=getattr(tr, "provider", last_provider),
+                )
                 # Agent may have requested end while we were capturing/STT
                 agent_act = consume_listen_action(stream)
                 if agent_act == "cancel":
@@ -1268,20 +1314,29 @@ def run_listen(
             if recording_cued:
                 play_record_stop()
             if pieces and agent_act in ("finish", None):
-                # Final STT on accumulated audio if agent finished or we fell through
+                # Prefer assembled per-segment STT (stable); optional full re-STT only
+                # if assembly empty.
                 if agent_act == "finish" or agent_act is None:
-                    wav = write_wav_bytes(b"".join(pieces), 16000)
-                    stt_seq += 1
-                    tr, latency_ms = _transcribe_logged(
-                        stt,
-                        wav,
-                        stream_id=stream,
-                        seq=stt_seq,
-                        mode=mode.value,
-                        purpose="radio_final",
-                        sample_rate=16000,
-                    )
-                    body = (tr.text or "").strip()
+                    body = join_radio_stt_segments(text_segments)
+                    latency_ms = 0
+                    tr_provider = last_provider
+                    if not body:
+                        wav = write_wav_bytes(b"".join(pieces), 16000)
+                        stt_seq += 1
+                        tr, latency_ms = _transcribe_logged(
+                            stt,
+                            wav,
+                            stream_id=stream,
+                            seq=stt_seq,
+                            mode=mode.value,
+                            purpose="radio_final",
+                            sample_rate=16000,
+                        )
+                        body = (tr.text or "").strip()
+                        tr_provider = tr.provider
+                    else:
+                        from types import SimpleNamespace
+                        tr = SimpleNamespace(text=body, provider=tr_provider)
                     if agent_act == "finish":
                         store.record_stt(
                             text=body,
@@ -1296,6 +1351,24 @@ def run_listen(
                             duration_ms=int(1000 * (time.monotonic() - started)),
                             end_mode=mode.value,
                             end_phrase="agent:finish",
+                            stream_id=stream,
+                            partials_emitted=partial_seq,
+                        )
+                    # max_listen / fall-through: return assembled body if any
+                    if body:
+                        store.record_stt(
+                            text=body,
+                            provider=tr.provider,
+                            audio_ms=int(1000 * (time.monotonic() - started)),
+                            latency_ms=latency_ms,
+                            ok=True,
+                        )
+                        return ListenResult(
+                            text=body,
+                            provider=tr.provider,
+                            duration_ms=int(1000 * (time.monotonic() - started)),
+                            end_mode=mode.value,
+                            end_phrase="max_listen",
                             stream_id=stream,
                             partials_emitted=partial_seq,
                         )

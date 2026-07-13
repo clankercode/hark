@@ -375,6 +375,29 @@ def detect_conference(
             seen.add(m)
             uniq.append(m)
 
+    stream_hits = [m for m in uniq if m.startswith("stream:")]
+    proc_hits = [m for m in uniq if m.startswith("proc:") or m.startswith("cmdline:")]
+    if stream_hits:
+        return ConferenceMatch(
+            active=True,
+            sources=tuple(sources),
+            matched=tuple(uniq),
+            detail="conference signals present",
+        )
+    if proc_hits and "audio" not in sources:
+        return ConferenceMatch(
+            active=True,
+            sources=tuple(sources),
+            matched=tuple(uniq),
+            detail="conference process signals (no audio scan)",
+        )
+    if proc_hits and "audio" in sources and not stream_hits:
+        return ConferenceMatch(
+            active=False,
+            sources=tuple(sources),
+            matched=tuple(uniq),
+            detail="process match only; no conference audio stream — treat free",
+        )
     if uniq:
         return ConferenceMatch(
             active=True,

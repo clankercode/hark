@@ -231,6 +231,10 @@ _NAME_ALIAS_STOPWORDS = frozenset(
         "sorry",
         # TTS sample bleed fragments
         "english",
+        # place / confusable geo tokens (iris false friends)
+        "iraq",
+        "iran",
+
         "sample",
         "voice",
         "calm",
