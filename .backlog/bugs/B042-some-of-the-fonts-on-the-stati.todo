@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-13T12:52:27Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T12:53:26Z"
 complexity: medium
 created_at: "2026-07-13T12:50:02Z"
 depends_on: []
+duration_minutes: 0.9926955225833334
 estimate_hours: 1
 id: B042
 priority: high
 started_at: "2026-07-13T12:52:27Z"
-status: in_progress
+status: done
 tags: []
 title: Some of the fonts on the static page are like system defaults, we should have well chosen suitable fornts for all text
-updated_at: "2026-07-13T12:52:27Z"
+updated_at: "2026-07-13T12:53:26Z"
 ---
 
 Some of the fonts on the static page are like system defaults, we should have well chosen suitable fornts for all text
