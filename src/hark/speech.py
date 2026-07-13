@@ -1018,6 +1018,10 @@ def run_listen(
                         and body_so_far != last_partial_text
                         and on_partial is not None
                     ):
+                        from hark.partial import partial_fragment
+
+                        prev_body = last_partial_text
+                        frag = partial_fragment(prev_body, body_so_far)
                         partial_seq += 1
                         last_partial_text = body_so_far
                         ev = make_partial_event(
@@ -1026,12 +1030,16 @@ def run_listen(
                             text=body_so_far,
                             kind=partial_kind,
                             provider=tr.provider,
+                            fragment=frag,
+                            prev_text=prev_body,
                         )
                         ev["stt_seq"] = stt_seq
                         try:
                             on_partial(ev)
                         except Exception:
                             pass
+                        # Prefer fragment in logs so each radio slice is visible
+                        # (full cumulative body is still on the event as text).
                         syslog(
                             "listen.partial",
                             component="stt",
@@ -1039,7 +1047,11 @@ def run_listen(
                             stream_id=stream,
                             seq=partial_seq,
                             stt_seq=stt_seq,
-                            text=body_so_far[:300],
+                            fragment=(frag or "")[:300],
+                            text_len=len(body_so_far),
+                            text=(body_so_far[:120] + "…")
+                            if len(body_so_far) > 120
+                            else body_so_far,
                             provider=tr.provider,
                             partial=True,
                             final=False,

@@ -77,20 +77,25 @@ def compact_mode_a_event(event: dict[str, Any]) -> dict[str, Any]:
         )
     elif kind == "ambient.partial":
         text = event.get("text")
+        full_len = len(text) if isinstance(text, str) else 0
         if isinstance(text, str) and len(text) > 400:
             text = text[:397] + "…"
+        frag = event.get("fragment")
+        if isinstance(frag, str) and len(frag) > 240:
+            frag = frag[:237] + "…"
         compact.update(
             {
                 "stream_id": event.get("stream_id"),
                 "seq": event.get("seq"),
+                # Prefer delta for Mode A / logs; keep full body truncated as text
+                "fragment": frag if frag is not None else text,
                 "text": text,
-                "text_len": len(event.get("text") or "")
-                if isinstance(event.get("text"), str)
-                else None,
+                "text_len": full_len or None,
                 "partial": True,
                 "final": False,
                 "instructions": (
                     "RADIO PARTIAL — HOLD. Do not TTS a full answer. "
+                    "Use fragment for the new slice; text is cumulative. "
                     "Optional: hark listen-end --stream-id <id> if they clearly finished. "
                     "Then STOP; wait for next partial or final ambient.prompt."
                 ),

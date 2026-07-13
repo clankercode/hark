@@ -197,6 +197,8 @@ def test_soft_end_sentence_final_over():
         "Over.",  # sole utterance
         "over",
         "done with the plan? over",
+        "okay, over",  # comma is a soft sentence boundary
+        "ready, over.",
     ]
     for text in positives:
         hit = evaluate_radio_transcript(text, soft_end_phrases_enabled=True)

@@ -98,7 +98,9 @@ DEFAULT_SOFT_END_PHRASES_ENABLED: bool = True
 _PUNCT_TRAIL = re.compile(r"[\s\.\!\?\,\;\:…]+$", re.UNICODE)
 _WS = re.compile(r"\s+")
 # Sentence-ending punct at end of prefix before a sentence-final soft phrase.
-_SENTENCE_END = re.compile(r"[.!?…;:]+$")
+# Comma counts as a soft sentence boundary so "okay, over" / "ready, over"
+# finalize while mid-clause "turn it over" / "this is over" still do not.
+_SENTENCE_END = re.compile(r"[.!?…;:,]+$")
 
 
 def normalize_for_match(text: str) -> str:

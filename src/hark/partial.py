@@ -31,6 +31,20 @@ def new_stream_id() -> str:
     return f"s{int(time.time() * 1000):x}{secrets.token_hex(3)}"
 
 
+def partial_fragment(prev_text: str | None, full_text: str) -> str:
+    """Delta since last partial; full text if STT replaced the body."""
+    full = (full_text or "").strip()
+    prev = (prev_text or "").strip()
+    if not full:
+        return ""
+    if not prev:
+        return full
+    if full.startswith(prev):
+        return full[len(prev) :].lstrip()
+    # STT rewrote earlier words — surface full body as the fragment
+    return full
+
+
 def make_partial_event(
     *,
     stream_id: str,
@@ -40,8 +54,14 @@ def make_partial_event(
     provider: str | None = None,
     phrase: str | None = None,
     event_id: str | None = None,
+    fragment: str | None = None,
+    prev_text: str | None = None,
 ) -> dict[str, Any]:
     from hark.listen_control import agent_control_block
+
+    frag = fragment
+    if frag is None:
+        frag = partial_fragment(prev_text, text)
 
     return {
         "schema": "hark.event.v1",
@@ -53,6 +73,8 @@ def make_partial_event(
         "stream_id": stream_id,
         "seq": seq,
         "text": text,
+        "fragment": frag,
+        "text_len": len(text or ""),
         "phrase": phrase,
         "provider": provider,
         "warning": HOLD_WARNING,
