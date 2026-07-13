@@ -1,7 +1,10 @@
 # I002 — TTS/STT ducking when music or other media is playing
 
+**Status:** shipped (B044 detection · B045 TTS duck · B046 STT duck · B047 config/docs/doctor).
+
 Planning intake for idea **I002**. Implementation is split across **B044–B047**.
-This document is design only — do not treat as shipped behavior.
+Runtime behavior is in `src/hark/audio/media.py` + `docs/AUDIO_DESIGN.md`; this
+file keeps design notes and epic decomposition.
 
 ## Problem
 
@@ -59,7 +62,7 @@ Module: `src/hark/audio/media.py` (`hark.audio.media`):
   (`filter_duckable(..., exclude_conference=True)` / precedence in AUDIO_DESIGN).
 - Public: `MediaMatch`, `is_media_active(cfg) -> MediaMatch`, `duckable_indices_and_volumes`.
 
-### Duck during TTS (B045)
+### Duck during TTS (B045) — shipped
 
 ```text
 with duck_media(level=cfg.audio.duck_level):
@@ -67,7 +70,7 @@ with duck_media(level=cfg.audio.duck_level):
 ```
 
 - Snapshot per-input volume → `pactl set-sink-input-volume N <pct>%` → restore in `finally`.
-- Default **on**: `duck_media_during_tts = true`, `duck_level ≈ 0.2`.
+- Default **on**: `duck_media_during_tts = true`, `duck_level = 0.15` (not 0.2).
 - Log `media.ducked` / restore counts to syslog for dogfood.
 
 ### Duck during STT (B046) — shipped
@@ -78,27 +81,32 @@ with duck_media(level=cfg.audio.duck_level):
 - `pause_media_during_stt` (MPRIS Pause/Play), default **on** (user refinement / dogfood).
 - Callers pass `enabled` / `pause_players` explicitly (do not inherit TTS defaults).
 
-### Config / docs (B047)
+### Config / docs / doctor (B047) — shipped
 
 ```toml
 [audio]
 duck_media_during_tts = true
+pause_media_during_tts = false
 duck_media_during_stt = true
-duck_level = 0.15
 pause_media_during_stt = true   # dogfood default on (plan originally said false)
+duck_level = 0.15
 # duck_exclude_apps = ["easyeffects"]  # optional
+media_check_mpris = true
 ```
 
-Document in `docs/AUDIO_DESIGN.md`; doctor notes when pactl missing.
+- `docs/AUDIO_DESIGN.md` — defaults table, fail-open, conference precedence, half-duplex.
+- Env defaults (TOML absent): `HARK_DUCK_MEDIA_DURING_{TTS,STT}`,
+  `HARK_PAUSE_MEDIA_DURING_{TTS,STT}`, `HARK_DUCK_LEVEL`, `HARK_MEDIA_CHECK_MPRIS`.
+- `hark doctor` soft-reports `pactl` / `playerctl` readiness (never hard-fail).
 
 ## Work items
 
-| ID | Title | Est | Depends |
-|----|-------|-----|---------|
-| **B044** | Detect active media playback (Pulse/PipeWire + optional MPRIS) | 2h | — |
-| **B045** | Duck other media volume during TTS playback | 3h | B044 |
-| **B046** | Duck or pause media during STT capture windows | 3h | B044 |
-| **B047** | Config, docs, and doctor checks for media ducking | 2h | B045, B046 |
+| ID | Title | Est | Depends | Status |
+|----|-------|-----|---------|--------|
+| **B044** | Detect active media playback (Pulse/PipeWire + optional MPRIS) | 2h | — | shipped |
+| **B045** | Duck other media volume during TTS playback | 3h | B044 | shipped |
+| **B046** | Duck or pause media during STT capture windows | 3h | B044 | shipped |
+| **B047** | Config, docs, and doctor checks for media ducking | 2h | B045, B046 | shipped |
 
 Total ~10h (matches I002 estimate).
 

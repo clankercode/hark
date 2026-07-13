@@ -687,6 +687,101 @@ def test_config_duck_defaults(tmp_path):
     assert cfg.audio.media_check_mpris is True
 
 
+def test_config_duck_keys_roundtrip(tmp_path):
+    """load → config_to_dict preserves duck keys (B047)."""
+    from hark.config import config_to_dict, load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[audio]
+duck_media_during_tts = false
+pause_media_during_tts = true
+duck_media_during_stt = false
+pause_media_during_stt = false
+duck_level = 0.25
+duck_exclude_apps = ["easyeffects"]
+media_check_mpris = false
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    d = config_to_dict(cfg)["audio"]
+    assert d["duck_media_during_tts"] is False
+    assert d["pause_media_during_tts"] is True
+    assert d["duck_media_during_stt"] is False
+    assert d["pause_media_during_stt"] is False
+    assert d["duck_level"] == 0.25
+    assert d["duck_exclude_apps"] == ["easyeffects"]
+    assert d["media_check_mpris"] is False
+
+
+def test_config_duck_defaults_roundtrip(tmp_path):
+    from hark.config import config_to_dict, load_config
+
+    cfg = load_config(tmp_path / "missing.toml")
+    d = config_to_dict(cfg)["audio"]
+    assert d["duck_media_during_tts"] is True
+    assert d["pause_media_during_tts"] is False
+    assert d["duck_media_during_stt"] is True
+    assert d["pause_media_during_stt"] is True
+    assert d["duck_level"] == 0.15
+    assert d["media_check_mpris"] is True
+
+
+def test_config_duck_env_defaults(tmp_path, monkeypatch):
+    """HARK_* duck env supplies defaults only when TOML key is absent."""
+    from hark.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setenv("HARK_DUCK_MEDIA_DURING_TTS", "0")
+    monkeypatch.setenv("HARK_PAUSE_MEDIA_DURING_TTS", "1")
+    monkeypatch.setenv("HARK_DUCK_MEDIA_DURING_STT", "false")
+    monkeypatch.setenv("HARK_PAUSE_MEDIA_DURING_STT", "no")
+    monkeypatch.setenv("HARK_DUCK_LEVEL", "0.4")
+    monkeypatch.setenv("HARK_MEDIA_CHECK_MPRIS", "off")
+    cfg = load_config(path)
+    assert cfg.audio.duck_media_during_tts is False
+    assert cfg.audio.pause_media_during_tts is True
+    assert cfg.audio.duck_media_during_stt is False
+    assert cfg.audio.pause_media_during_stt is False
+    assert cfg.audio.duck_level == 0.4
+    assert cfg.audio.media_check_mpris is False
+
+
+def test_config_duck_toml_wins_over_env(tmp_path, monkeypatch):
+    from hark.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[audio]
+duck_media_during_tts = true
+duck_level = 0.15
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HARK_DUCK_MEDIA_DURING_TTS", "0")
+    monkeypatch.setenv("HARK_DUCK_LEVEL", "0.9")
+    cfg = load_config(path)
+    assert cfg.audio.duck_media_during_tts is True
+    assert cfg.audio.duck_level == 0.15
+
+
+def test_default_config_toml_duck_comments():
+    """Example config comments match shipped defaults (B047)."""
+    from hark.config import DEFAULT_CONFIG_TOML
+
+    assert "duck_media_during_tts = true" in DEFAULT_CONFIG_TOML
+    assert "pause_media_during_tts = false" in DEFAULT_CONFIG_TOML
+    assert "duck_media_during_stt = true" in DEFAULT_CONFIG_TOML
+    assert "pause_media_during_stt = true" in DEFAULT_CONFIG_TOML
+    assert "duck_level = 0.15" in DEFAULT_CONFIG_TOML
+    assert "media_check_mpris = true" in DEFAULT_CONFIG_TOML
+    assert 'duck_exclude_apps = ["easyeffects"]' in DEFAULT_CONFIG_TOML
+
+
 def test_run_tts_wires_duck_and_meta(monkeypatch):
     """run_tts play path uses duck_media; meta includes media_ducked."""
     from contextlib import contextmanager

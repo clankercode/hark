@@ -221,28 +221,81 @@ fighting the call with ducking. Media ducking (I002 / B044–B047) applies only
 when conference hold does **not** take the path — i.e. music/podcasts and other
 non-call sink-inputs.
 
+```text
+conference active + hold_during_conference?
+  yes → B017 hold / chime / queue (no media duck fight)
+  no  → media ducking if enabled and duckable sink-inputs present
+```
+
 Detection lives in `hark.audio.media` (`is_media_active` → `MediaMatch`): Pulse/
 PipeWire **sink-inputs** (RUNNING / Corked=no; excludes Hark’s own ffplay/paplay
-streams) plus optional MPRIS (`playerctl`). Fail-open if `pactl` is missing.
-Conference streams may still appear in the match; callers must prefer B017 hold
-over duck.
+streams) plus optional MPRIS (`playerctl`). Conference streams may still appear
+in the match; duck lists use `exclude_conference=True` so callers do not
+volume-fight Zoom/Teams while hold is authoritative.
 
-**TTS ducking (B045):** when `audio.duck_media_during_tts` is true (default),
-`run_tts` wraps playback with `duck_media(...)`: snapshot non-Hark sink-input
-volumes → lower each to `prior * duck_level` (default **0.15**) via
-`pactl set-sink-input-volume` → always restore in `finally`. Optional
-`pause_media_during_tts` pauses Playing MPRIS players (`playerctl -p NAME pause`)
-then ducks remaining sources, and resumes those players on exit. Kill-switch:
-`duck_media_during_tts = false`. Does **not** change default sink / master volume.
+### Fail-open and restore
 
-**STT ducking (B046):** when `audio.duck_media_during_stt` is true (default),
-`run_listen` wraps the full answer-window / post-wake capture with the same
-`duck_media` primitive, passing **explicit** STT flags
-(`enabled=duck_media_during_stt`, `pause_players=pause_media_during_stt`).
-Dogfood default: `pause_media_during_stt = true` (MPRIS Pause + volume duck).
-Restores on end / cancel / timeout / exception. **Not** armed for continuous
-idle ambient wake (local Vosk half-duplex wake loop uses `record_seconds` only —
-never enters `run_listen`). Independent of `mic_muted_during_tts` (half-duplex:
-TTS mute ends, then listen ducks separately). Shared: `duck_level`,
-`duck_exclude_apps`, `media_check_mpris`, `exclude_conference=True`.
+- Missing **`pactl`**, parse errors, or failed `set-sink-input-volume` → no duck
+  (TTS/STT behave as today). Never changes default sink / master volume.
+- Prior per-stream volumes (and any MPRIS players we paused) are **always**
+  restored in `finally`, including on exception / cancel / timeout.
+- Missing **`playerctl`** degrades MPRIS detect/pause only; volume duck still
+  works when `pactl` is present.
+- `hark doctor` surfaces `pactl` / `playerctl` readiness as a soft warning
+  (status `ready` / `degraded` / `disabled`) — never a hard doctor failure.
+
+### TTS ducking (B045)
+
+When `audio.duck_media_during_tts` is true (default), `run_tts` wraps playback
+with `duck_media(...)`: snapshot non-Hark sink-input volumes → lower each to
+`prior * duck_level` (default **0.15**) via `pactl set-sink-input-volume` →
+always restore in `finally`. Optional `pause_media_during_tts` pauses Playing
+MPRIS players (`playerctl -p NAME pause`) then ducks remaining sources, and
+resumes those players on exit. Kill-switch: `duck_media_during_tts = false`.
+
+### STT ducking (B046)
+
+When `audio.duck_media_during_stt` is true (default), `run_listen` wraps the
+full answer-window / post-wake capture with the same `duck_media` primitive,
+passing **explicit** STT flags (`enabled=duck_media_during_stt`,
+`pause_players=pause_media_during_stt`). Dogfood default:
+`pause_media_during_stt = true` (MPRIS Pause + volume duck). Restores on end /
+cancel / timeout / exception.
+
+**Not** armed for continuous idle ambient wake (local Vosk half-duplex wake loop
+uses `record_seconds` only — never enters `run_listen`). Independent of
+`mute_mic_during_tts` (half-duplex: TTS mic mute ends, then listen ducks
+separately). Shared: `duck_level`, `duck_exclude_apps`, `media_check_mpris`,
+`exclude_conference=True`.
+
+### Config defaults (shipped)
+
+| Key | Default | Role |
+|-----|---------|------|
+| `duck_media_during_tts` | `true` | Volume duck while TTS plays |
+| `pause_media_during_tts` | `false` | MPRIS Pause during TTS (+ duck rest) |
+| `duck_media_during_stt` | `true` | Volume duck during answer / post-wake listen |
+| `pause_media_during_stt` | `true` | MPRIS Pause during STT (dogfood) |
+| `duck_level` | **0.15** | Fraction of prior per-stream volume (not 0.2) |
+| `duck_exclude_apps` | `[]` | Extra app name / binary substrings to never duck |
+| `media_check_mpris` | `true` | Secondary media signal via `playerctl` |
+
+Env defaults when the TOML key is **absent** (explicit TOML wins):  
+`HARK_DUCK_MEDIA_DURING_TTS`, `HARK_PAUSE_MEDIA_DURING_TTS`,
+`HARK_DUCK_MEDIA_DURING_STT`, `HARK_PAUSE_MEDIA_DURING_STT`, `HARK_DUCK_LEVEL`,
+`HARK_MEDIA_CHECK_MPRIS`.
+
+Example (`hark config init` / `DEFAULT_CONFIG_TOML`):
+
+```toml
+[audio]
+duck_media_during_tts = true
+pause_media_during_tts = false
+duck_media_during_stt = true
+pause_media_during_stt = true   # dogfood default ON
+duck_level = 0.15
+# duck_exclude_apps = ["easyeffects"]
+media_check_mpris = true
+```
+
 Design detail: [plans/I002-media-ducking.md](plans/I002-media-ducking.md).
