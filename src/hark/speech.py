@@ -12,6 +12,7 @@ from typing import Any
 from hark.audio.capture import (
     MicLease,
     capture_utterance,
+    clamp_pre_roll_ms,
     effective_radio_segment_pad_ms,
     pad_pcm16_silence,
     write_wav_bytes,
@@ -525,6 +526,8 @@ def run_listen(
         if initial_timeout_s is not None
         else getattr(cfg.listen, "initial_timeout_s", 45.0)
     )
+    # B079: ≥250 ms pre-speech from the capture ring when the gate opens
+    gate_pre_roll_ms = clamp_pre_roll_ms(getattr(cfg.listen, "pre_roll_ms", 300))
     nudge_no_open_text = (
         no_open_nudge_text
         if no_open_nudge_text is not None
@@ -713,6 +716,7 @@ def run_listen(
                             abs_open_db=gate_abs_open,
                             open_margin_db=gate_open_margin,
                             initial_timeout_s=gate_timeout_s,
+                            preroll_ms=gate_pre_roll_ms,
                         )
                     except TimeoutError as exc:
                         if recording_cued:
@@ -981,6 +985,7 @@ def run_listen(
                         audio_ok_after=seg_ok_after,
                         abs_open_db=gate_abs_open,
                         open_margin_db=gate_open_margin,
+                        preroll_ms=gate_pre_roll_ms,
                     )
                 except TimeoutError:
                     agent_act = poll_listen_action(stream)

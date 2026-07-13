@@ -127,6 +127,8 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "endpoint_max_silence_s",
         "smart_turn_model_path",
         "smart_turn_threshold",
+        # Pre-speech lead-in from capture ring (B079); 250–500 ms
+        "pre_roll_ms",
     }),
     "ambient": frozenset({
         "enabled",
@@ -145,6 +147,10 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         "engine",
         "model_path",
         "snippet_s",
+        # Overlapping wake window hop (B079); hop < snippet_s
+        "snippet_hop_s",
+        # Continuous capture ring capacity seconds (B079)
+        "ring_s",
         "timeout_s",
         # Continuous idle ambient.timeout heartbeat (default on)
         "surface_timeouts",
@@ -341,6 +347,8 @@ class ListenConfig:
     smart_turn_model_path: str | None = None
     # Completion probability at/above which smart turn ends the turn.
     smart_turn_threshold: float = 0.5
+    # Pre-speech PCM kept when the energy gate opens (B079). Clamped 250–500 ms.
+    pre_roll_ms: int = 300
 
 
 @dataclass
@@ -362,6 +370,11 @@ class AmbientConfig:
     engine: str = "vosk"
     model_path: str | None = None
     snippet_s: float = 2.5
+    # Hop between overlapping score windows (B079). None → ~0.3 * snippet_s.
+    # Must stay < snippet_s so greeting+name rarely straddles non-overlapping cuts.
+    snippet_hop_s: float | None = None
+    # Continuous capture ring capacity (seconds). Enough for snippet + pre-roll.
+    ring_s: float = 5.0
     # One-shot wake wait / continuous loop tick (seconds). 0 = wait indefinitely
     # (no ambient.timeout cycle). Continuous Mode A still uses this as the idle
     # cycle length when > 0; see surface_timeouts to hide the heartbeat event.
@@ -573,9 +586,12 @@ open_margin_db = 8.0         # dB above adaptive noise floor
 initial_timeout_s = 45       # wait for speech open before timeout (answer windows)
 no_open_retry = true         # re-listen once if gate never opens
 no_open_nudge = true         # TTS then re-listen once more on no-open
+# Pre-speech lead-in when the gate opens (B079). Clamped 250–500 ms.
+pre_roll_ms = 300
 
 # Ambient: when NOT replying to a blocked agent question
-# Local 2–3s snippets scan for activation; cloud STT only after wake.
+# Continuous mic stream + overlapping local windows scan for activation;
+# cloud STT only after wake (B079).
 # Setup: ./scripts/setup-ambient.sh
 #
 # Wake customization — pick ONE style (see docs/CUSTOM_WAKE.md):
@@ -617,6 +633,11 @@ engine = "vosk"              # vosk (default) | sherpa_kws | text_probe (tests)
 #   engine = "sherpa_kws"
 #   # model_path = "~/.local/share/hark/models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
 snippet_s = 2.5
+# Overlapping wake windows (B079): hop < snippet so "hey <name>" is not chopped.
+# Default hop ≈ 0.3 * snippet_s when omitted (e.g. 2.5 → 0.75 s).
+# snippet_hop_s = 0.75
+# Continuous mic ring capacity (seconds) while ambient is armed.
+ring_s = 5.0
 # One-shot wake wait / continuous idle cycle length (seconds). 0 = wait forever
 # (no ambient.timeout). Continuous Mode A re-enters the wake wait each timeout_s.
 timeout_s = 300
@@ -705,6 +726,17 @@ def _as_list_str(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _clamp_pre_roll_ms(value: Any, *, default: int = 300) -> int:
+    """Clamp listen.pre_roll_ms to the B079 range (250–500 ms)."""
+    if value is None:
+        return default
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(250, min(500, v))
+
+
 def _as_bool(value: Any, *, default: bool) -> bool:
     if value is None:
         return default
@@ -780,6 +812,12 @@ def _build_ambient_config(
             engine=str(ambient_raw.get("engine", "vosk")),
         ),
         snippet_s=float(ambient_raw.get("snippet_s", 2.5)),
+        snippet_hop_s=(
+            float(ambient_raw["snippet_hop_s"])
+            if ambient_raw.get("snippet_hop_s") is not None
+            else None
+        ),
+        ring_s=float(ambient_raw.get("ring_s", 5.0)),
         timeout_s=float(ambient_raw.get("timeout_s", 300)),
         surface_timeouts=_resolve_surface_timeouts(ambient_raw),
         debug=bool(
@@ -1274,6 +1312,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
             ),
             smart_turn_model_path=smart_turn_model_path,
             smart_turn_threshold=float(listen_raw.get("smart_turn_threshold", 0.5)),
+            pre_roll_ms=_clamp_pre_roll_ms(listen_raw.get("pre_roll_ms", 300)),
         ),
         ambient=_build_ambient_config(
             ambient_raw if isinstance(ambient_raw, dict) else {},
@@ -1472,6 +1511,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "endpoint_max_silence_s": cfg.listen.endpoint_max_silence_s,
             "smart_turn_model_path": cfg.listen.smart_turn_model_path,
             "smart_turn_threshold": cfg.listen.smart_turn_threshold,
+            "pre_roll_ms": cfg.listen.pre_roll_ms,
         },
         "ambient": {
             "enabled": cfg.ambient.enabled,
@@ -1482,6 +1522,8 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "engine": cfg.ambient.engine,
             "model_path": cfg.ambient.model_path,
             "snippet_s": cfg.ambient.snippet_s,
+            "snippet_hop_s": cfg.ambient.snippet_hop_s,
+            "ring_s": cfg.ambient.ring_s,
             "timeout_s": cfg.ambient.timeout_s,
             "surface_timeouts": cfg.ambient.surface_timeouts,
             "debug": cfg.ambient.debug,
