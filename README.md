@@ -105,7 +105,7 @@ From a local checkout: `./install.sh` (uses that tree; no re-clone).
 ### Skills only (`npx skills`)
 
 ```bash
-npx skills add clankercode/hark -g -y
+npx skills add ultradyn/hark -g -y
 # pick agents: -a claude-code -a opencode
 ```
 
