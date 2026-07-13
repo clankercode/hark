@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-13T12:37:35Z"
+depends_on: []
+estimate_hours: 1
+id: B037
+priority: high
+status: pending
+tags:
+    - ambient
+    - radio
+    - stt
+    - dogfood
+title: 'Radio mode: shorter silence for more frequent partial STT updates'
+updated_at: "2026-07-13T12:37:35Z"
+---
+## Dogfood
+Operator in radio end_mode: partials arrive only after a long quiet (same ~2.1s end_silence style delay). They want **many smaller partials** while speaking, with shorter silence between partial STT updates.
+
+## Problem
+Radio keeps the mic open until end phrase, but interim STT / partial emission appears gated by a long silence delay (similar to silence-mode end_silence_s ≈ 2.1s). That starves the Mode A agent of mid-utterance updates and encourages wrong behavior (replying on rare partials).
+
+## Wanted
+- In **radio mode only**, use a **shorter** silence threshold for emitting `ambient.partial` / interim STT (configurable, e.g. 0.4–0.8s default)
+- Keep **end-of-utterance / end-phrase** path separate (end phrases still required to finalize)
+- Do **not** change silence-mode end_silence_s behavior for normal answer windows unless intentional
+- Document the radio partial cadence vs end_silence_s
+
+## Related
+- listen.stream_partials
+- radio_end_silence_s (segment boundaries)
+- Mode A skill: HOLD on partials, TTS only on final ambient.prompt
