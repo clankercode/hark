@@ -1,20 +1,21 @@
 ---
 claimed_at: "2026-07-13T13:58:29Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-13T14:01:40Z"
 complexity: low
 created_at: "2026-07-13T13:12:00Z"
 depends_on:
     - B045
     - B046
+duration_minutes: 3.195861396283333
 estimate_hours: 2
 id: B047
 priority: medium
 started_at: "2026-07-13T13:58:29Z"
-status: in_progress
+status: done
 tags: []
 title: Config, docs, and doctor checks for media ducking
-updated_at: "2026-07-13T13:58:29Z"
+updated_at: "2026-07-13T14:01:40Z"
 ---
 ## Problem
 Operators need discoverable knobs and docs for I002 ducking; doctor should explain missing Pulse tools.
