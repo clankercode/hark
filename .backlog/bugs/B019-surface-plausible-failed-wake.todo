@@ -1,0 +1,36 @@
+---
+complexity: medium
+created_at: "2026-07-13T08:32:27Z"
+depends_on: []
+estimate_hours: 1
+id: B019
+priority: high
+status: pending
+tags:
+    - ambient
+    - wake
+    - dogfood
+    - monitor
+title: Surface plausible failed wake activations to Mode A monitor (grouped)
+updated_at: "2026-07-13T08:32:27Z"
+---
+## Problem
+Failed activation-phrase attempts that are *close enough to be plausible* should be reviewed by the orchestrator agent. Unrelated speech (long fragments / many words) should be discarded immediately and never surfaced.
+
+## Surfacing schedule (via Monitor)
+Auto-surface failed near-misses on the Mode A monitor in groups:
+1. 1st failed (alone)
+2. 2nd + 3rd (together)
+3. 4th + 5th (together)
+4. thereafter groups of 3
+
+## Agent instructions on surface
+When a group is emitted, include clear instructions for the agent to:
+- evaluate whether a new/adjusted activation phrase (or alias) should be added
+- update config (`activation_phrases` / `extra_trigger_phrases` / etc.)
+- reload the ambient/hark listener config (prefer standard mechanism: SIGHUP if supported, else document restart path e.g. Mode A restart)
+
+## Implementation notes
+- Define "plausible" (edit distance / token overlap / fuzzy wake aliases vs raw vosk text)
+- Emit HEP or syslog events the existing watch/ambient monitor can follow
+- Do not spam on noise / multi-word unrelated sentences
