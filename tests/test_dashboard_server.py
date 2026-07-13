@@ -334,10 +334,18 @@ def test_placeholder_index_when_no_bundle(state, tmp_path):
         server.shutdown()
 
 
-def test_dictation_stub_501(state, tmp_path):
+def test_dictation_bad_mode_400_and_no_capture(state, tmp_path, monkeypatch):
+    # NEVER let a unit test open the real microphone: a real capture here
+    # holds the process-wide MicLease and ducks media, poisoning later tests.
+    def forbid(*a, **kw):
+        raise AssertionError("test must not start a real capture")
+
+    monkeypatch.setattr("hark.speech.run_listen", forbid)
     server = _server(tmp_path)
     try:
-        status, body, _ = _post_json(server, "/api/v1/dictation/start", {"mode": "host"})
-        assert status == 501 and body["error"]["code"] == "not_implemented"
+        status, body, _ = _post_json(server, "/api/v1/dictation/start", {"mode": "browser"})
+        assert status == 400 and body["error"]["code"] == "bad_request"
+        status, body, _ = _post_json(server, "/api/v1/dictation/stop", {})
+        assert status == 409 and body["error"]["code"] == "no_capture"
     finally:
         server.shutdown()

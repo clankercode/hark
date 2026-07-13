@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import { api } from "./lib/api";
 import { conferenceHold, deliveries, wireDataRefreshes } from "./lib/data";
 import { connState, connect, events, serverInfo, severityOf } from "./lib/stream";
+import { DictateOverlay } from "./components/Dictate";
 import { EventsView } from "./views/EventsView";
 import { HealthView } from "./views/HealthView";
 import { HerdrView } from "./views/HerdrView";
@@ -74,6 +75,7 @@ function AuthGate() {
 
 export function App() {
   const view = useSignal<ViewId>("events");
+  const dictating = useSignal(false);
   useEffect(() => {
     wireDataRefreshes();
     connect();
@@ -106,10 +108,19 @@ export function App() {
         {errorCount.value > 0 && (
           <span class="badge err">{errorCount.value} errors</span>
         )}
-        <span style="margin-left:auto;color:var(--text-faint);font-size:11px">
+        <button
+          class="btn small"
+          style="margin-left:auto"
+          onClick={() => (dictating.value = true)}
+          title="dictate a prompt or answer by voice"
+        >
+          ◉ dictate
+        </button>
+        <span style="color:var(--text-faint);font-size:11px">
           {serverInfo.value ? `${serverInfo.value.server} ${serverInfo.value.version}` : ""}
         </span>
       </header>
+      {dictating.value && <DictateOverlay onClose={() => (dictating.value = false)} />}
       <div class="main">
         <nav class="sidenav">
           <div class="navlabel">console</div>

@@ -140,6 +140,9 @@ class DashboardServer(ThreadingHTTPServer):
         self.hub = Hub()
         self.state = state_dir()
         self.pump = TailPump(self.hub, self.state)
+        from hark.dashboard.dictation import HostDictation
+
+        self.host_dictation = HostDictation()
         self.started_at = utc_now_iso()
         self.static_root = resolve_static_root()
         super().__init__((host, port), DashboardHandler)
@@ -341,8 +344,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
     def _handle_dictation(self, path: str) -> None:
-        # B065 lands capture; the endpoints are contract-reserved until then
-        self._err(HTTPStatus.NOT_IMPLEMENTED, "not_implemented", path)
+        from hark.dashboard import dictation
+
+        action = path[len("/api/v1/dictation/") :]
+        if action == "transcribe":
+            raw = self._read_body(limit=MAX_AUDIO_BODY)
+            if raw is None:
+                return
+            status, payload = dictation.transcribe_blob(
+                self.server.cfg, raw, self.headers.get("Content-Type") or ""
+            )
+            self._send_json(status, payload)
+        elif action == "start":
+            body = self._read_json()
+            if body is None:
+                return
+            if body.get("mode") != "host":
+                self._err(HTTPStatus.BAD_REQUEST, "bad_request", "mode must be 'host'")
+                return
+            status, payload = self.server.host_dictation.start(
+                self.server.cfg, self.server.pump.publish_serve
+            )
+            self._send_json(status, payload)
+        elif action in ("stop", "cancel"):
+            status, payload = self.server.host_dictation.control(action)
+            self._send_json(status, payload)
+        else:
+            self._err(HTTPStatus.NOT_FOUND, "not_found", path)
 
     # ---------------------------------------------------------------- events
 
