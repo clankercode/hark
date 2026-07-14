@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-14T15:35:26Z"
+depends_on: []
+estimate_hours: 1
+id: B107
+priority: high
+status: pending
+tags: []
+title: Do complete audit of recent commits over handling mic termination, related to B106; doens't seem to be working very well since like near 5-7am maybe
+updated_at: "2026-07-14T15:35:26Z"
+---
+
+Do complete audit of recent commits over handling mic termination, related to B106; doens't seem to be working very well since like near 5-7am maybe
