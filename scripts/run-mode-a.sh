@@ -78,8 +78,18 @@ collect_mode_a_pids_into() {
 write_legacy_pidfile() {
   (($# > 0)) || return 1
   local temporary="${PIDFILE}.$$.tmp"
-  printf '%s\n' "$@" >"$temporary"
-  mv -f "$temporary" "$PIDFILE"
+  local lock_fd
+  local status=0
+  exec {lock_fd}>"${PIDFILE}.lock" || return $?
+  if ! flock -x "$lock_fd"; then
+    exec {lock_fd}>&-
+    return 1
+  fi
+  printf '%s\n' "$@" >"$temporary" && mv -f "$temporary" "$PIDFILE" || status=$?
+  rm -f "$temporary"
+  flock -u "$lock_fd" || status=$?
+  exec {lock_fd}>&-
+  return "$status"
 }
 
 signal_pids() {
@@ -100,7 +110,6 @@ graceful_stop() {
 
   if ((${#pids[@]} == 0)); then
     echo "no Hark workers running"
-    rm -f "$PIDFILE"
     return 0
   fi
 
@@ -122,7 +131,7 @@ graceful_stop() {
 
     if ((${#still[@]} == 0)); then
       echo "all Hark workers exited cleanly (${waited}s)"
-      rm -f "$PIDFILE" "$BUSY"
+      rm -f "$BUSY"
       return 0
     fi
 
@@ -149,7 +158,7 @@ graceful_stop() {
     else
       echo "force-killing remaining processes: none"
     fi
-    rm -f "$PIDFILE" "$BUSY"
+    rm -f "$BUSY"
     return 0
   fi
 
@@ -237,9 +246,6 @@ if [[ $prev_count -gt 0 ]]; then
   sleep 0.5
 fi
 
-# Fresh pidfile: only live processes from this start will be recorded
-rm -f "$PIDFILE"
-
 started=()
 
 if [[ "$DO_WATCH" -eq 1 ]]; then
@@ -283,7 +289,7 @@ elif ((${#started[@]} > 0)); then
   write_legacy_pidfile "${started[@]}"
   live=("${started[@]}")
 else
-  rm -f "$PIDFILE"
+  : # the successful collector already canonicalized empty ownership
 fi
 
 if [[ -f "$PIDFILE" ]]; then

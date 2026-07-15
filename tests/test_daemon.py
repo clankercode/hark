@@ -104,7 +104,9 @@ def test_spawn_workers_reports_first_role_failure_and_closes_log(
 
     monkeypatch.setattr(daemon.subprocess, "Popen", fail_first)
 
-    with pytest.raises(daemon.WorkerSpawnError, match="watch startup failed.*fork refused"):
+    with pytest.raises(
+        daemon.WorkerSpawnError, match="watch startup failed.*fork refused"
+    ):
         daemon.spawn_mode_a_workers(root=state)
 
     assert len(streams) == 1
@@ -273,9 +275,9 @@ def test_spawn_workers_records_and_reports_child_that_survives_rollback(
     assert watch.poll() is None
     assert watch.wait_calls == 2
     assert daemon.read_pids_file(pidfile) == [777]
-    assert [(record.pid, record.role) for record in daemon.read_worker_records(pidfile)] == [
-        (101, "watch")
-    ]
+    assert [
+        (record.pid, record.role) for record in daemon.read_worker_records(pidfile)
+    ] == [(101, "watch")]
 
 
 def test_spawn_workers_rolls_back_and_reports_early_child_exit(
@@ -326,7 +328,9 @@ def test_spawn_workers_restores_pidfile_when_write_fails(
     monkeypatch.setattr(daemon, "write_worker_records", fail_write)
     monkeypatch.setattr(daemon.os, "killpg", killpg)
 
-    with pytest.raises(daemon.WorkerSpawnError, match="pidfile startup failed.*disk full"):
+    with pytest.raises(
+        daemon.WorkerSpawnError, match="pidfile startup failed.*disk full"
+    ):
         daemon.spawn_mode_a_workers(root=state)
 
     assert pidfile.read_bytes() == b"777\n"
@@ -366,6 +370,31 @@ def test_spawn_workers_successfully_starts_both_roles_and_closes_logs(
         (102, "ambient"),
     ]
     assert all(stream.closed for stream in streams)
+
+
+def test_spawn_workers_rechecks_existing_ownership_inside_transaction(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    child = spawn_hark_worker("watch", state)
+    pidfile = state / "mode-a.pids"
+    pidfile.write_text(f"{child.pid}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        daemon.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("spawned despite existing ownership")
+        ),
+    )
+    try:
+        with pytest.raises(
+            daemon.WorkerSpawnError,
+            match=rf"pidfile startup failed.*already running.*{child.pid}",
+        ):
+            daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+        assert child.poll() is None
+        assert pidfile.read_text(encoding="utf-8") == f"{child.pid}\n"
+    finally:
+        kill_child(child)
 
 
 def test_run_foreground_reports_transactional_worker_failure(

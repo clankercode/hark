@@ -32,6 +32,9 @@ from hark.worker_process import (
     capture_worker_identity,
     collect_worker_records,
     read_worker_records,
+    replace_owned_worker_records,
+    worker_pidfile_lock,
+    write_worker_pidfile_bytes,
     write_worker_records,
 )
 
@@ -420,12 +423,11 @@ def _rollback_worker_start(
                     )
                     for _, proc in survivors
                 )
-                pid_path.parent.mkdir(parents=True, exist_ok=True)
-                pid_path.write_bytes(payload)
+                write_worker_pidfile_bytes(pid_path, payload)
             elif original_pidfile is None:
-                pid_path.unlink(missing_ok=True)
+                write_worker_pidfile_bytes(pid_path, None)
             else:
-                pid_path.write_bytes(original_pidfile)
+                write_worker_pidfile_bytes(pid_path, original_pidfile)
         except OSError as exc:
             failures.append(f"pidfile restore failed ({exc})")
 
@@ -440,7 +442,35 @@ def spawn_mode_a_workers(
     root: Path | None = None,
     log_dir: Path | None = None,
 ) -> list[subprocess.Popen[Any]]:
-    """Transactionally start workers and record their shared mode-a pidfile."""
+    """Transactionally start workers under the shared ownership lock."""
+    root = root or state_dir()
+    pid_path = mode_a_pids_path(root)
+    with worker_pidfile_lock(pid_path):
+        existing = collect_worker_records(pid_path, rewrite=False)
+        if existing:
+            pids = ", ".join(str(record.pid) for record in existing)
+            raise WorkerSpawnError(
+                "pidfile",
+                DaemonConflict(f"Hark workers are already running (pids: {pids})"),
+            )
+        return _spawn_mode_a_workers_locked(
+            session=session,
+            do_watch=do_watch,
+            do_ambient=do_ambient,
+            root=root,
+            log_dir=log_dir,
+        )
+
+
+def _spawn_mode_a_workers_locked(
+    *,
+    session: str = "default",
+    do_watch: bool = True,
+    do_ambient: bool = True,
+    root: Path | None = None,
+    log_dir: Path | None = None,
+) -> list[subprocess.Popen[Any]]:
+    """Start workers while the caller holds the pidfile transaction lock."""
     root = root or state_dir()
     log_dir = log_dir or root
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -503,7 +533,9 @@ def spawn_mode_a_workers(
         for role, proc in owned:
             if proc.poll() is not None:
                 failed_role = role
-                raise OSError(f"worker exited immediately with status {proc.returncode}")
+                raise OSError(
+                    f"worker exited immediately with status {proc.returncode}"
+                )
 
         failed_role = "pidfile"
         pidfile_touched = True
@@ -516,7 +548,9 @@ def spawn_mode_a_workers(
                 raise OSError(f"worker identity for PID {proc.pid} was not recorded")
             if proc.poll() is not None:
                 failed_role = role
-                raise OSError(f"worker exited immediately with status {proc.returncode}")
+                raise OSError(
+                    f"worker exited immediately with status {proc.returncode}"
+                )
     except BaseException as exc:
         rollback_failures = _rollback_worker_start(
             owned,
@@ -526,7 +560,9 @@ def spawn_mode_a_workers(
             owned_records=owned_records,
         )
         if not isinstance(exc, Exception):
-            note = f"worker startup interrupted during {failed_role}; rollback completed"
+            note = (
+                f"worker startup interrupted during {failed_role}; rollback completed"
+            )
             if rollback_failures:
                 note += " with failures: " + "; ".join(rollback_failures)
             exc.add_note(note)
@@ -541,6 +577,7 @@ def _refresh_owned_worker_records(
 ) -> list[WorkerRecord]:
     """Rebuild durable identity state from workers owned by the supervisor."""
     records: list[WorkerRecord] = []
+    owned_pids = {proc.pid for _, proc in owned if proc.pid}
     for role, proc in owned:
         if not proc.pid or proc.poll() is not None:
             continue
@@ -548,7 +585,7 @@ def _refresh_owned_worker_records(
         if record is None:
             raise OSError(f"could not refresh {role} worker process identity")
         records.append(record)
-    write_worker_records(pid_path, records)
+    replace_owned_worker_records(pid_path, owned_pids=owned_pids, records=records)
     return records
 
 
@@ -581,7 +618,7 @@ def terminate_children(
                     proc.kill()
                 except OSError:
                     pass
-    clear_pid_file(mode_a_pids_path(root))
+    collect_worker_records(mode_a_pids_path(root))
 
 
 def run_foreground(
@@ -624,7 +661,9 @@ def run_foreground(
                 print(f"harkd: failed to spawn workers: {exc}", file=sys.stderr)
                 release_harkd_pidfile(root, pid=os.getpid())
                 return ERROR
-            roles = (["watch"] if do_watch else []) + (["ambient"] if do_ambient else [])
+            roles = (["watch"] if do_watch else []) + (
+                ["ambient"] if do_ambient else []
+            )
             owned_children = list(zip(roles, children, strict=True))
             print(
                 f"harkd: started with workers pids={[c.pid for c in children]} "
@@ -650,7 +689,10 @@ def run_foreground(
                         owned_children, pid_path=mode_a_pids_path(root)
                     )
                 except OSError as exc:
-                    print(f"harkd: failed to refresh worker identity: {exc}", file=sys.stderr)
+                    print(
+                        f"harkd: failed to refresh worker identity: {exc}",
+                        file=sys.stderr,
+                    )
                     return ERROR
             # Keep our own pidfile honest
             if not harkd_pid_path(root).is_file():
@@ -689,7 +731,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also supervise ambient + watch (same pieces as run-mode-a.sh)",
     )
-    st.add_argument("--no-watch", action="store_true", help="with --workers: skip watch")
+    st.add_argument(
+        "--no-watch", action="store_true", help="with --workers: skip watch"
+    )
     st.add_argument(
         "--no-ambient", action="store_true", help="with --workers: skip ambient"
     )
@@ -719,7 +763,10 @@ def dispatch_daemon(args: argparse.Namespace) -> int:
     cmd = args.daemon_cmd
     if cmd == "start":
         if args.workers and args.no_watch and args.no_ambient:
-            print("harkd: --workers with both --no-watch and --no-ambient is empty", file=sys.stderr)
+            print(
+                "harkd: --workers with both --no-watch and --no-ambient is empty",
+                file=sys.stderr,
+            )
             return USAGE
         return run_foreground(
             workers=bool(args.workers),

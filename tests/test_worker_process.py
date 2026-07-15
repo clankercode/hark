@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -204,6 +205,112 @@ def test_malformed_and_stale_entries_are_removed(tmp_path: Path):
     assert not path.exists()
 
 
+def test_unreadable_pidfile_fails_closed_without_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "mode-a.pids"
+    original = b'{"pid":123,"role":"watch","start_time":"1","version":1}\n'
+    path.write_bytes(original)
+    real_read_text = Path.read_text
+
+    def deny_target_read(candidate: Path, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("ownership state unreadable")
+        return real_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_target_read)
+
+    with pytest.raises(PermissionError, match="ownership state unreadable"):
+        worker_process.collect_worker_records(path)
+
+    assert path.read_bytes() == original
+
+
+def test_paused_empty_collector_cannot_erase_concurrent_fresh_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "mode-a.pids"
+    path.write_text("malformed-old-state\n", encoding="utf-8")
+    fresh = worker_process.WorkerRecord(
+        pid=4321, start_time="fresh-owner", role="watch"
+    )
+    collector_at_rewrite = threading.Event()
+    release_collector = threading.Event()
+    writer_entered_unlocked = threading.Event()
+    failures: list[BaseException] = []
+    real_write = worker_process._write_worker_records_unlocked
+
+    def controlled_write(target: Path, records):
+        materialized = list(records)
+        if threading.current_thread().name == "paused-collector":
+            collector_at_rewrite.set()
+            if not release_collector.wait(timeout=2):
+                raise TimeoutError("collector was not released")
+        else:
+            writer_entered_unlocked.set()
+        real_write(target, materialized)
+
+    monkeypatch.setattr(
+        worker_process, "_write_worker_records_unlocked", controlled_write
+    )
+
+    def collect_stale() -> None:
+        try:
+            assert worker_process.collect_worker_records(path) == []
+        except BaseException as exc:
+            failures.append(exc)
+
+    def write_fresh() -> None:
+        try:
+            worker_process.write_worker_records(path, [fresh])
+        except BaseException as exc:
+            failures.append(exc)
+
+    collector = threading.Thread(target=collect_stale, name="paused-collector")
+    collector.start()
+    assert collector_at_rewrite.wait(timeout=2)
+    writer = threading.Thread(target=write_fresh, name="fresh-writer")
+    writer.start()
+
+    # The writer cannot reach its unlocked replace while the collector owns
+    # the transaction lock.  Without serialization it writes now and the
+    # resumed empty collector unlinks that fresh ownership.
+    assert not writer_entered_unlocked.wait(timeout=0.1)
+    release_collector.set()
+    collector.join(timeout=2)
+    writer.join(timeout=2)
+
+    assert not collector.is_alive()
+    assert not writer.is_alive()
+    assert failures == []
+    assert worker_process.read_worker_records(path) == [fresh]
+
+
+def test_owned_writer_preserves_other_live_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "mode-a.pids"
+    other = worker_process.WorkerRecord(
+        pid=1111, start_time="other-owner", role="ambient"
+    )
+    old_owned = worker_process.WorkerRecord(
+        pid=2222, start_time="old-owned", role="watch"
+    )
+    refreshed_owned = worker_process.WorkerRecord(
+        pid=2222, start_time="refreshed-owned", role="watch"
+    )
+    worker_process.write_worker_records(path, [other, old_owned])
+    monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: True)
+
+    worker_process.replace_owned_worker_records(
+        path,
+        owned_pids={old_owned.pid},
+        records=[refreshed_owned],
+    )
+
+    assert worker_process.read_worker_records(path) == [other, refreshed_owned]
+
+
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
 def test_signal_reverifies_after_opening_pidfd(
     monkeypatch: pytest.MonkeyPatch, sig: int
@@ -227,7 +334,9 @@ def test_signal_reverifies_after_opening_pidfd(
         os.close(write_fd)
 
 
-@pytest.mark.parametrize("failure_stage", ["pidfd_open", "pidfd_send_signal", "kill"])
+@pytest.mark.parametrize(
+    "failure_stage", ["pidfd_open", "pidfd_send_signal", "pidfd_unavailable"]
+)
 def test_signal_cli_fails_when_verified_worker_cannot_be_signalled(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -264,10 +373,14 @@ def test_signal_cli_fails_when_verified_worker_cannot_be_signalled(
     else:
         monkeypatch.delattr(worker_process.os, "pidfd_open", raising=False)
         monkeypatch.delattr(worker_process.signal, "pidfd_send_signal", raising=False)
+        monkeypatch.setattr(worker_process, "_LIBC_PIDFD_OPEN", None)
+        monkeypatch.setattr(worker_process, "_LIBC_PIDFD_SEND_SIGNAL", None)
         monkeypatch.setattr(
             worker_process.os,
             "kill",
-            lambda _pid, _sig: (_ for _ in ()).throw(PermissionError("denied")),
+            lambda _pid, _sig: (_ for _ in ()).throw(
+                AssertionError("unsafe PID fallback used")
+            ),
         )
 
     try:
@@ -278,8 +391,81 @@ def test_signal_cli_fails_when_verified_worker_cannot_be_signalled(
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert f"{failure_stage} failed" in captured.err
+    expected = (
+        "pidfd unavailable"
+        if failure_stage == "pidfd_unavailable"
+        else f"{failure_stage} failed"
+    )
+    assert expected in captured.err
     assert "worker pid 1234" in captured.err
+
+
+def test_missing_stdlib_pidfd_uses_libc_adapter_without_pid_kill(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    record = worker_process.WorkerRecord(pid=1234, start_time="verified", role="watch")
+    read_fd, write_fd = os.pipe()
+    opened: list[tuple[int, int]] = []
+    sent: list[tuple[int, int, object, int]] = []
+    monkeypatch.delattr(worker_process.os, "pidfd_open", raising=False)
+    monkeypatch.delattr(worker_process.signal, "pidfd_send_signal", raising=False)
+    monkeypatch.setattr(
+        worker_process,
+        "_LIBC_PIDFD_OPEN",
+        lambda pid, flags: opened.append((pid, flags)) or read_fd,
+    )
+    monkeypatch.setattr(
+        worker_process,
+        "_LIBC_PIDFD_SEND_SIGNAL",
+        lambda fd, sig, info, flags: sent.append((fd, sig, info, flags)) or 0,
+    )
+    monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: True)
+    monkeypatch.setattr(
+        worker_process.os,
+        "kill",
+        lambda _pid, _sig: (_ for _ in ()).throw(
+            AssertionError("unsafe PID fallback used")
+        ),
+    )
+    try:
+        assert worker_process.signal_worker(record, signal.SIGTERM) is True
+    finally:
+        os.close(write_fd)
+
+    assert opened == [(record.pid, 0)]
+    assert sent == [(read_fd, signal.SIGTERM, None, 0)]
+
+
+def test_missing_stdlib_pidfd_rejects_swapped_occupant_after_open(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    record = worker_process.WorkerRecord(pid=1234, start_time="old", role="watch")
+    read_fd, write_fd = os.pipe()
+    sent: list[int] = []
+    monkeypatch.delattr(worker_process.os, "pidfd_open", raising=False)
+    monkeypatch.delattr(worker_process.signal, "pidfd_send_signal", raising=False)
+    monkeypatch.setattr(
+        worker_process, "_LIBC_PIDFD_OPEN", lambda _pid, _flags: read_fd
+    )
+    monkeypatch.setattr(
+        worker_process,
+        "_LIBC_PIDFD_SEND_SIGNAL",
+        lambda _fd, _sig, _info, _flags: sent.append(_sig) or 0,
+    )
+    monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: False)
+    monkeypatch.setattr(
+        worker_process.os,
+        "kill",
+        lambda _pid, _sig: (_ for _ in ()).throw(
+            AssertionError("unsafe PID fallback used")
+        ),
+    )
+    try:
+        assert worker_process.signal_worker(record, signal.SIGKILL) is False
+    finally:
+        os.close(write_fd)
+
+    assert sent == []
 
 
 @pytest.mark.parametrize("benign_stage", ["gone", "identity-mismatch"])
@@ -343,6 +529,49 @@ signal_pids TERM 123 456
     assert trace.read_text(encoding="utf-8").strip() == (
         f"signal {expected_pidfile} TERM --discover"
     )
+
+
+def test_shell_legacy_writer_uses_same_pidfile_lock(tmp_path: Path):
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "scripts" / "run-mode-a.sh"
+    state = tmp_path / "state"
+    pidfile = state / "hark" / "mode-a.pids"
+    entered = tmp_path / "entered"
+    command = f"""
+set -euo pipefail
+export HARK_RUN_MODE_A_SOURCE_ONLY=1
+export XDG_STATE_HOME={state!s}
+source {script!s}
+printf 'entered\n' > {entered!s}
+write_legacy_pidfile 1234
+printf 'done\n'
+"""
+    process: subprocess.Popen[str] | None = None
+    try:
+        with worker_process.worker_pidfile_lock(pidfile):
+            process = subprocess.Popen(
+                ["bash", "-c", command],
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 2
+            while not entered.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert entered.exists()
+            time.sleep(0.05)
+            assert process.poll() is None
+            assert not pidfile.exists()
+
+        stdout, stderr = process.communicate(timeout=2)
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == "done"
+        assert pidfile.read_text(encoding="utf-8") == "1234\n"
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
 
 
 def test_shell_stop_retains_pidfile_when_identity_collection_fails(tmp_path: Path):

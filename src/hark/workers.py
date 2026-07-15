@@ -35,7 +35,6 @@ from hark.worker_process import (
     collect_worker_records,
     record_matches_process,
     signal_worker_records,
-    write_worker_records,
 )
 
 # Default grace after SIGTERM before SIGKILL (seconds). Matches run-mode-a.sh;
@@ -119,7 +118,6 @@ def stop_workers(
     records = collect_worker_records(path)
     live = [record.pid for record in records]
     if not records:
-        clear_pid_file(path)
         return {
             "ok": True,
             "stopped": [],
@@ -136,7 +134,7 @@ def stop_workers(
         still_records = _still_same_workers(records)
         still = [record.pid for record in still_records]
         if not still_records:
-            clear_pid_file(path)
+            collect_worker_records(path)
             busy = busy_lock_path(root)
             try:
                 busy.unlink(missing_ok=True)
@@ -149,8 +147,9 @@ def stop_workers(
                 "message": "workers stopped",
                 "pids": [],
             }
-        # Keep pidfile honest while waiting
-        write_worker_records(path, still_records)
+        # Canonicalize the current file transactionally without replacing it
+        # from this older stop snapshot; a concurrent fresh owner must survive.
+        collect_worker_records(path)
         # Prefer waiting out an active recording when busy.lock is present
         # (same intent as run-mode-a.sh --stop).
         time.sleep(0.1 if busy_lock_path(root).is_file() else 0.05)
@@ -173,7 +172,7 @@ def stop_workers(
         still = [record.pid for record in still_records]
 
     if still:
-        write_worker_records(path, still_records)
+        collect_worker_records(path)
         return {
             "ok": False,
             "stopped": [p for p in live if p not in still],
@@ -183,7 +182,7 @@ def stop_workers(
             "pids": still,
         }
 
-    clear_pid_file(path)
+    collect_worker_records(path)
     try:
         busy_lock_path(root).unlink(missing_ok=True)
     except OSError:
@@ -253,7 +252,6 @@ def start_workers(
     # Prefer live scan of what we wrote; drop children that died immediately.
     live = collect_worker_pids(root)
     if not live:
-        clear_pid_file(mode_a_pids_path(root))
         return {
             "ok": False,
             "error": "workers exited immediately after start (check ambient.jsonl / watch.jsonl)",
@@ -285,9 +283,7 @@ def restart_workers(
 ) -> dict[str, Any]:
     """Stop then start workers (reason=restart for ambient TTS cue)."""
     root = root or state_dir()
-    stop_result = stop_workers(
-        root, timeout_s=timeout_s, force=force, reason="restart"
-    )
+    stop_result = stop_workers(root, timeout_s=timeout_s, force=force, reason="restart")
     if not stop_result.get("ok"):
         return {
             "ok": False,
@@ -412,7 +408,10 @@ def cmd_start(args: Any) -> int:
             do_watch = True
     do_ambient = not bool(getattr(args, "no_ambient", False))
     if not do_watch and not do_ambient:
-        print("hark start: nothing to start (--no-watch and --no-ambient)", file=sys.stderr)
+        print(
+            "hark start: nothing to start (--no-watch and --no-ambient)",
+            file=sys.stderr,
+        )
         return USAGE
     result = start_workers(
         session=str(getattr(args, "session", None) or "default"),
@@ -424,9 +423,7 @@ def cmd_start(args: Any) -> int:
             **result,
             "watch_skipped": True,
             "watch_skip_reason": (
-                "session_profile.scope=session_local"
-                if not no_watch
-                else "--no-watch"
+                "session_profile.scope=session_local" if not no_watch else "--no-watch"
             ),
         }
     return _print_result(result, as_json=bool(getattr(args, "json", False)))
