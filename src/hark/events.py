@@ -252,6 +252,11 @@ def make_agent_status_event(
     choices: list[str] | None = None,
     pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Pack a status-edge HEP from already-decided fields (no pane policy).
+
+    Caller (PaneClassifier) decides *whether* to emit; this only maps
+    ``to_status`` → kind/priority and attaches fingerprint/risk packaging.
+    """
     kind = "agent.state_changed"
     priority = 40
     if to_status == "blocked":
@@ -311,10 +316,11 @@ def make_agent_needs_input(
     choices: list[str] | None = None,
     pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Synthetic re-block: status is done/idle but pane still needs a human.
+    """Pack ``agent.needs_input`` from already-decided false-done fields.
 
-    The orchestrator should treat this like agent.blocked (speak + answer). Bound for
-    ``hark answer`` when a fingerprint is present.
+    Does not run menu heuristics — caller supplies ``question_text`` and optional
+    ``hit`` (from ``looks_like_pending_question``). Treat like agent.blocked for
+    speak + bound answer when a fingerprint is present.
     """
     choice_list = list(choices) if choices is not None else list(hit.choices if hit else ())
     q_text = question_text or ""
@@ -367,10 +373,10 @@ def make_agent_busy_subagent(
     hit: ActiveSubagentsHit,
     pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Herdr reports done/idle but the pane still shows active Tasks/subagents.
+    """Pack busy-subagent HEP from already-decided ``hit`` (no pane scan here).
 
-    Reclassifies to ``working`` so Mode A does not treat the turn as finished.
-    ``state.herdr`` retains the wire status from Herdr for diagnostics.
+    Sets ``state.to=working`` with ``state.herdr`` retaining the wire status.
+    Caller must have already run ``detect_active_subagents``.
     """
     has_cap = bool(pane_capture and pane_capture.get("text"))
     n = max(1, int(hit.count or 1))
@@ -420,7 +426,10 @@ def make_agent_question_changed(
     choices: list[str] | None = None,
     pane_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Still blocked (or needs input); the ask fingerprint changed."""
+    """Pack ``agent.question_changed`` from already-decided text/fingerprint inputs.
+
+    Caller decided the ask changed; this only packs HEP fields + risk/FP.
+    """
     q_text = question_text or ""
     risk = classify_question(q_text, choices)
     fp = question_fingerprint(q_text, choices) if q_text else None

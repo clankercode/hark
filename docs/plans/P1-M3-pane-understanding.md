@@ -336,3 +336,26 @@ assert any(e["kind"] == "agent.needs_input" for e in events)
 ```
 
 No socket, no client, no `question_for` callback — text is on the observation.
+
+## E2.T003 — HEP `make_agent_*` builder contract (LOCKED)
+
+Builders in `hark.events` are **pack-only**. They must not:
+
+- call `looks_like_pending_question` / `detect_active_subagents`
+- read panes or call Herdr
+- decide whether a false-done or busy-subagent edge occurred
+
+They **may**:
+
+- map decided `to_status` → wire `kind` / priority (status event packing)
+- compute fingerprint + risk packaging from provided `question_text` / choices
+- attach `pane_capture` and wake `instructions` strings
+
+| Builder | Decided inputs from classifier |
+|---------|--------------------------------|
+| `make_agent_status_event` | from/to status, optional text + capture |
+| `make_agent_needs_input` | from/to, text, optional `PendingQuestionHit` |
+| `make_agent_busy_subagent` | from, herdr_status, `ActiveSubagentsHit` |
+| `make_agent_question_changed` | to_status, new question text + capture |
+
+Policy for *when* to call each builder lives solely in `PaneClassifier`.
