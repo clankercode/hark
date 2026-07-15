@@ -19,7 +19,7 @@ tasks:
       file: T001-define-radiosession-state-mach.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Define RadioSession state machine + types
     - complexity: high
