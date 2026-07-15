@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-07-15T05:51:53Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:52:07Z"
 complexity: medium
 created_at: "2026-07-15T04:29:54Z"
 depends_on:
     - P1.M3.E3.T001
+duration_minutes: 0.24494585248333334
 estimate_hours: 2
 id: P1.M3.E4.T001
 priority: high
 started_at: "2026-07-15T05:51:53Z"
-status: in_progress
+status: done
 tags: []
 title: Port false-done / busy-subagent / binding tests
-updated_at: "2026-07-15T05:51:53Z"
+updated_at: "2026-07-15T05:52:07Z"
 ---
 # Port false-done / busy-subagent / binding tests
 
