@@ -362,6 +362,8 @@ def test_soft_end_trailing_thank_you():
         ("please implement the fix over and thanks", "over", "please implement the fix"),
         ("please implement the fix over thankyou", "over", "please implement the fix"),
         ("refactor the module that's all thank u", "that's all", "refactor the module"),
+        ("please implement the fix over thank you very much", "over", "please implement the fix"),
+        ("please implement the fix over,thanks", "over", "please implement the fix"),
     ]
     for text, phrase, body_sub in cases:
         hit = evaluate_radio_transcript(text, soft_end_phrases_enabled=True)

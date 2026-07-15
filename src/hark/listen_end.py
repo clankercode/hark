@@ -108,6 +108,8 @@ DEFAULT_SOFT_END_PHRASES_ENABLED: bool = True
 # match because the phrase is not utterance-final. Conservative list only;
 # mid-clause "for now" / "I know" stay non-courtesy so they do not false-finish.
 DEFAULT_TRAILING_COURTESY: tuple[str, ...] = (
+    "thank you very much",
+    "thanks very much",
     "thank you so much",
     "thanks so much",
     "thanks a lot",
@@ -241,8 +243,12 @@ def strip_trailing_courtesy(
             if not norm.endswith(p):
                 continue
             before = len(norm) - len(p)
-            if before > 0 and not norm[before - 1].isspace():
-                continue
+            if before > 0:
+                prev = norm[before - 1]
+                # Space is the normal boundary; also allow glued punct from STT
+                # ("over,thanks" / "over.thanks") so trailers still strip (B107).
+                if not (prev.isspace() or prev in ".,!?;:"):
+                    continue
             norm = _strip_trail_punct(norm[:before].rstrip())
             changed = True
             break
