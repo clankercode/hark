@@ -9,7 +9,7 @@ epics:
       locked: false
       name: 'E1: Plan ListenSessionPolicy'
       path: 01-e1-plan-listensessionpolicy
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: from_config(cfg, profile=...) and explicit construction for tests. No ambient section reads inside speech after migration.
