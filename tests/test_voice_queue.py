@@ -267,7 +267,7 @@ def test_cmd_queue_announce_ignores_stale_only(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_queue_live_soft_filter_drops_idle_panes(tmp_path, monkeypatch, capsys):
-    """B101: live soft-filter excludes not-blocked panes from announce/count."""
+    """B101: live soft-filter excludes not-compatible panes from announce/count."""
     store = DeliveryStore(tmp_path / "events.jsonl")
     now = time.time()
     for eid, pane in (("blocked", "w1:p1"), ("idle", "w1:p2")):
@@ -294,7 +294,18 @@ def test_cmd_queue_live_soft_filter_drops_idle_panes(tmp_path, monkeypatch, caps
                 revision=1,
             )
 
+        def read_pane(self, pane_id, lines=60):
+            return "Allow this action?"
+
     monkeypatch.setattr(cli, "_client_for", lambda cfg, session_id: FakeClient())
+    # Bound FP is synthetic; force live FP to match event id for blocked path.
+    import hark.answerability.live as answer_live
+
+    def _fp_for_excerpt(excerpt: str) -> str:
+        # Queue soft-filter only needs blocked pane to stay answerable.
+        return "blake2b:blocked"
+
+    monkeypatch.setattr(answer_live, "question_fingerprint", _fp_for_excerpt)
 
     rc = cli.cmd_queue(
         _queue_args(announce=False, offline=False, max_age=3600), cfg=object()

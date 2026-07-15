@@ -1703,28 +1703,31 @@ def cmd_ambient(args: argparse.Namespace, cfg) -> int:
 def _queue_live_answerable(cfg, ev: dict) -> tuple[bool, str]:
     """Return whether a bound event still looks answerable on Herdr (B101).
 
-    Fail-soft on Herdr errors: keep the event rather than silently dropping it.
+    Uses Answerability (same matrix as ``hark answer``). Fail-soft on Herdr
+    transport errors and fingerprint unavailability: keep the event rather
+    than silently dropping it.
     """
+    from hark.answerability import assess_live, hep_kind_from_bound, reasons as R
+
     session_id = str(ev.get("session_id") or "")
     pane_id = str(ev.get("pane_id") or "")
     try:
-        live = _client_for(cfg, session_id).get_agent(pane_id)
+        client = _client_for(cfg, session_id)
+        verdict = assess_live(
+            pane_id=pane_id,
+            bound_revision=int(ev.get("pane_revision") or 0),
+            bound_fingerprint=ev.get("question_fingerprint"),
+            hep_kind=hep_kind_from_bound(ev),
+            client=client,
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft; leave pending
         return True, f"herdr_error:{exc}"
-    if live is None:
-        return False, "pane_gone"
-    # Answerable when blocked (needs input). Idle/working panes are stale queue noise.
-    if live.status != "blocked":
-        return False, "not_blocked"
-    rev = ev.get("pane_revision")
-    if (
-        isinstance(rev, int)
-        and rev > 0
-        and getattr(live, "revision", None) is not None
-        and live.revision != rev
-    ):
-        return False, "stale_revision"
-    return True, "ok"
+    if verdict.ok:
+        return True, "ok"
+    # Transient pane read failures: keep (do not expire solely on FP unavail).
+    if verdict.reason == R.FINGERPRINT_UNAVAILABLE:
+        return True, verdict.reason
+    return False, verdict.reason
 
 
 def cmd_queue(args: argparse.Namespace, cfg=None) -> int:
