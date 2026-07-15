@@ -10,7 +10,7 @@ stats:
     in_progress: 0
     pending: 4
     total: 4
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on:
@@ -50,6 +50,6 @@ tasks:
       file: T004-radio-idle-streaming-idle-clam.todo
       id: T004
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Radio idle / streaming idle clamp as policy fields

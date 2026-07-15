@@ -18,7 +18,7 @@ epics:
       locked: false
       name: 'E2: Extract radio Answer Window session'
       path: 02-e2-extract-radio-answer-window
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: 'Pull silence path: energy gate / endpoint strategy, empty-STT recovery, no-open recovery, echo reject, agent finish/cancel. Same external interface as radio profile.'

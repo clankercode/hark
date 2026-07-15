@@ -1,20 +1,21 @@
 ---
 claimed_at: "2026-07-15T05:11:41Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:12:31Z"
 complexity: medium
 created_at: "2026-07-15T04:29:39Z"
 depends_on:
     - P1.M1.E2.T001
     - P1.M6.E2.T002
+duration_minutes: 0.8366191829166667
 estimate_hours: 2
 id: P1.M1.E2.T004
 priority: high
 started_at: "2026-07-15T05:11:41Z"
-status: in_progress
+status: done
 tags: []
 title: Radio idle / streaming idle clamp as policy fields
-updated_at: "2026-07-15T05:11:41Z"
+updated_at: "2026-07-15T05:12:31Z"
 ---
 # Radio idle / streaming idle clamp as policy fields
 
