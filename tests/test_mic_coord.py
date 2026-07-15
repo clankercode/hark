@@ -490,6 +490,41 @@ def test_unknown_future_schema_fails_closed_without_rewrite(tmp_path, monkeypatc
         ]
 
 
+def test_legacy_shaped_registry_fails_closed_without_collapsing_owners(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    token_a = request_ambient_pause(reason="a")
+    token_b = request_ambient_pause(reason="b")
+    path = mic_coord.pause_path()
+    registry = json.loads(path.read_text(encoding="utf-8"))
+    del registry["version"]
+
+    # Both an accidentally stripped v2 registry and a malformed explicit v1
+    # registry retain A+B. Neither is the genuine three-field singleton.
+    for ambiguous in (registry, {**registry, "version": 1}):
+        path.write_text(
+            json.dumps(ambiguous, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        prior = path.read_bytes()
+
+        assert read_ambient_pause() == ambiguous
+        clear_ambient_pause(token_a)
+        try:
+            request_ambient_pause(reason="c")
+            raise AssertionError("expected unsupported-schema failure")
+        except RuntimeError as exc:
+            assert "unsupported ambient pause version" in str(exc)
+
+        assert path.read_bytes() == prior
+        persisted = json.loads(prior)
+        assert [owner["token"] for owner in persisted["owners"]] == [
+            token_a,
+            token_b,
+        ]
+
+
 def test_empty_v2_registry_is_unlinked(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     path = mic_coord.pause_path()
@@ -524,6 +559,30 @@ def test_live_legacy_single_owner_is_migrated(tmp_path, monkeypatch):
     assert "legacy" not in state["owners"][0]
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted == state
+
+
+def test_explicit_v1_genuine_singleton_is_migrated(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = mic_coord.pause_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "reason": "listen",
+                "pid": os.getpid(),
+                "requested_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = read_ambient_pause()
+
+    assert state is not None
+    assert state["version"] == mic_coord.AMBIENT_PAUSE_VERSION
+    assert state["owners"][0]["reason"] == "listen"
+    assert json.loads(path.read_text(encoding="utf-8")) == state
 
 
 def test_dead_legacy_single_owner_is_pruned(tmp_path, monkeypatch):

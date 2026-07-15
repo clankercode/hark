@@ -47,6 +47,10 @@ DEFAULT_YIELD_TIMEOUT_S = 15.0
 _POLL_S = 0.05
 AMBIENT_PAUSE_VERSION = 2
 _LEGACY_AMBIENT_PAUSE_VERSIONS = frozenset({1})
+_LEGACY_SINGLETON_FIELDS = frozenset({"reason", "pid", "requested_at"})
+_REGISTRY_ONLY_PAUSE_FIELDS = frozenset(
+    {"owners", "token", "process_start", "boot_id", "legacy"}
+)
 DEFAULT_PAUSE_OWNER_MAX_AGE_S = 4 * 60 * 60
 _FUTURE_SKEW_S = 5.0
 
@@ -246,6 +250,12 @@ def _read_live_owners_unlocked(*, now: float) -> tuple[list[dict[str, Any]], boo
         and not isinstance(version, bool)
         and version == AMBIENT_PAUSE_VERSION
     )
+    expected_legacy_fields = _LEGACY_SINGLETON_FIELDS | (
+        {"version"} if has_version else set()
+    )
+    genuine_legacy_singleton = (
+        not has_version or known_legacy_version
+    ) and payload.keys() == expected_legacy_fields
     if current_version:
         raw_owners = payload.get("owners")
         if not isinstance(raw_owners, list):
@@ -253,20 +263,20 @@ def _read_live_owners_unlocked(*, now: float) -> tuple[list[dict[str, Any]], boo
         # An empty v2 registry represents no pause and must not leave a marker
         # that disagrees with read_ambient_pause()/ambient_pause_requested().
         dirty = not raw_owners
-    elif (not has_version or known_legacy_version) and {
-        "reason",
-        "pid",
-        "requested_at",
-    } <= payload.keys():
+    elif genuine_legacy_singleton:
         # Rolling upgrade from the singleton format. Until procfs and boot id
         # can be read, the explicit legacy marker remains a fail-closed owner.
         raw_owners = [_legacy_owner(payload)]
         dirty = True
-    elif has_version:
+    elif (
+        has_version
+        or _REGISTRY_ONLY_PAUSE_FIELDS.intersection(payload)
+        or _LEGACY_SINGLETON_FIELDS <= payload.keys()
+    ):
         # A future writer may retain the v2 top-level compatibility fields.
-        # Never mistake those fields for the singleton legacy schema: doing so
-        # would collapse an owner registry and discard tokens we do not know
-        # how to interpret.
+        # Likewise, a stripped-version registry or a singleton-shaped payload
+        # with extra registry fields is not genuine legacy state. Never
+        # collapse owner/token data that we do not know how to interpret.
         raise _UnsupportedPauseSchema(payload)
     else:
         return [], True
