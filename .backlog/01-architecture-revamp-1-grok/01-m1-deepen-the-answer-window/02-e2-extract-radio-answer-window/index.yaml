@@ -39,7 +39,7 @@ tasks:
       file: T003-wire-listen-end-listen-control.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Wire listen_end + listen_control as internals
     - complexity: medium

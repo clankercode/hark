@@ -39,6 +39,6 @@ tasks:
       file: T003-echo-reject-last-tts-ownership.todo
       id: T003
       priority: medium
-      status: pending
+      status: in_progress
       tags: []
       title: Echo reject + last_tts ownership in session
