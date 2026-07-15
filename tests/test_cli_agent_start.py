@@ -542,7 +542,7 @@ def test_agent_start_relative_override_is_pinned_before_launch_cwd(
     launch_cwd = tmp_path / "launch"
     validation_cwd.mkdir()
     launch_cwd.mkdir()
-    validated = _executable(validation_cwd / "custom-codex")
+    _executable(validation_cwd / "custom-codex")
     sentinel = _executable(launch_cwd / "custom-codex")
     monkeypatch.chdir(validation_cwd)
 
@@ -555,7 +555,10 @@ def test_agent_start_relative_override_is_pinned_before_launch_cwd(
     )
 
     assert code == OK
-    assert client.started[0][1] == [str(validated.resolve()), "--configured"]
+    assert client.started[0][1] == [
+        f"{validation_cwd}/./custom-codex",
+        "--configured",
+    ]
     assert client.started[0][1][0] != str(sentinel.resolve())
     assert client.started[0][2]["cwd"] == str(launch_cwd)
     assert '"source": "override"' in captured.out

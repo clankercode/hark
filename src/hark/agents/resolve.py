@@ -205,7 +205,11 @@ def _resolve_override_executable(
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         )
     try:
-        selected = os.path.abspath(resolved)
+        selected = (
+            resolved
+            if os.path.isabs(resolved)
+            else os.path.join(os.getcwd(), resolved)
+        )
         target = str(Path(selected).resolve(strict=True))
     except (OSError, RuntimeError, ValueError) as exc:
         raise ResolveError(

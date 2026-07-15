@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -174,11 +175,10 @@ def test_override_safe_path_preserves_prefix_and_extra_args(
         extra_args=["--requested"],
     )
 
-    assert resolved.argv == [
-        str(target.resolve()),
-        "--configured",
-        "--requested",
-    ]
+    selected = (
+        os.path.join(str(tmp_path), override) if relative else override
+    )
+    assert resolved.argv == [selected, "--configured", "--requested"]
     assert resolved.source == "override"
 
 
@@ -198,7 +198,10 @@ def test_override_relative_path_entry_is_pinned_absolute(
         path="relative-bin",
     )
 
-    assert resolved.argv == [str(target.resolve()), "--configured"]
+    assert resolved.argv == [
+        os.path.join(str(tmp_path), "relative-bin/custom-codex"),
+        "--configured",
+    ]
 
 
 def test_override_symlink_preserves_selected_argv0_dispatch(
@@ -223,7 +226,10 @@ def test_override_symlink_preserves_selected_argv0_dispatch(
         overrides={"codex": ["./custom-codex", "--configured"]},
     )
 
-    assert resolved.argv == [str(shim.absolute()), "--configured"]
+    assert resolved.argv == [
+        os.path.join(str(tmp_path), "./custom-codex"),
+        "--configured",
+    ]
     executed = subprocess.run(
         resolved.argv[:1],
         check=True,
@@ -231,6 +237,40 @@ def test_override_symlink_preserves_selected_argv0_dispatch(
         text=True,
     )
     assert executed.stdout == "selected"
+
+
+def test_override_preserves_symlink_before_dotdot_execution(
+    tmp_path: Path, monkeypatch
+):
+    elsewhere = tmp_path / "elsewhere"
+    nested = elsewhere / "nested"
+    nested.mkdir(parents=True)
+    (tmp_path / "linkdir").symlink_to(nested, target_is_directory=True)
+
+    actual = elsewhere / "custom-codex"
+    actual.write_text("#!/bin/sh\nprintf actual\n")
+    actual.chmod(0o755)
+    sentinel = tmp_path / "custom-codex"
+    sentinel.write_text("#!/bin/sh\nprintf sentinel\n")
+    sentinel.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+
+    command = "./linkdir/../custom-codex"
+    resolved = resolve_agent_argv(
+        "codex",
+        overrides={"codex": [command, "--configured"]},
+    )
+
+    assert resolved.argv[0] == os.path.join(str(tmp_path), command)
+    executed = subprocess.run(
+        resolved.argv[:1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert executed.stdout == "actual"
+    assert Path(resolved.argv[0]).resolve() == actual.resolve()
+    assert Path(resolved.argv[0]).resolve() != sentinel.resolve()
 
 
 def test_adhoc_argv(tmp_path: Path):
