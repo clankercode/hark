@@ -88,6 +88,18 @@ An interim HEP transcript for an open radio answer window (`partial=true`); not
 a final prompt and not a delivery authorization.
 _Avoid_: final prompt; complete answer
 
+**SpeakThenListen** (half-duplex handoff):
+The deep module that owns TTS → arm → listen transitions (and optional confirm
+turns): near-end arm, half-duplex vs overlap pre-arm discard, and attaching
+`tts_info` to listen errors. Answer Window is listen-only; this module opens it
+via profiles after speaking.
+_Avoid_: barge-in as default; scattering mute/duck/overlap thread state across CLI call sites
+
+**Overlap pre-arm**:
+Optional early capture near TTS end (`audio.overlap_prearm`) while discarding
+frames until TTS finishes plus `overlap_discard_ms` (ADR-009 no barge-in).
+_Avoid_: true full-duplex; treating discarded TTS tail as operator speech
+
 ### Orchestration
 
 **Orchestrator** (handsfree agent):
@@ -107,3 +119,4 @@ _Avoid_: tmux as the product name; equating Herdr with Hark
 - Product goals: [docs/PRODUCT.md](docs/PRODUCT.md)
 - Answer Window deepen design: [docs/plans/P1-M1-answer-window.md](docs/plans/P1-M1-answer-window.md)
 - Bound Answerability design: [docs/plans/P1-M2-answerability.md](docs/plans/P1-M2-answerability.md)
+- SpeakThenListen deepen design: [docs/plans/P1-M4-speak-then-listen.md](docs/plans/P1-M4-speak-then-listen.md)

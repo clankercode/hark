@@ -6,6 +6,13 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- refactor(speak-then-listen, P1.M4): deepen TTS→listen handoff and confirm
+  turns into `hark.speak_then_listen` — half-duplex states (speaking/armed/
+  listening/confirming), overlap pre-arm + discard ownership (ADR-009),
+  `tts_info` on listen errors. `speech.speak_and_listen` / `run_ask` are thin
+  re-exports; mute/duck/conference adapters stay, call order owned by the TTS
+  play stack. CLI ask / `tts --listen` JSON fields unchanged. See
+  `docs/plans/P1-M4-speak-then-listen.md`, `docs/ARCHITECTURE.md`.
 - refactor(pane-understanding, P1.M3): deepen watch classify into
   `hark.pane_understanding` — `PaneClassifier` + pure heuristics (false-done
   menus, busy-subagent Tasks strip, question_changed). `watch` is I/O only

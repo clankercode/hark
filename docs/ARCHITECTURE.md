@@ -77,6 +77,20 @@ Capture after TTS or ambient wake is a single deep module
 
 **Locality:** radio soft-end, streaming idle clamp, and partial HEP shapes live behind one seam. **Leverage:** Mode A CLI, ambient, speak-then-listen, and dashboard dictation share the same open path. Streaming / idle knobs are **policy fields** (not re-read from `[ambient]` inside the session loop). Design note: [plans/P1-M1-answer-window.md](plans/P1-M1-answer-window.md). Domain terms: root [CONTEXT.md](../CONTEXT.md).
 
+## SpeakThenListen (deep half-duplex handoff)
+
+TTS → listen transitions and confirm turns are a single deep module
+(`hark.speak_then_listen`): **`speak_and_listen` / `run_ask`**.
+
+| Layer | Owns |
+|-------|------|
+| **External interface** | `speak_and_listen` (TTS + arm + listen), `run_ask` (optional confirm), `HandoffState` phases (`speaking` / `armed` / `listening` / `confirming`) |
+| **Implementation** | Near-end arm, half-duplex vs overlap pre-arm, discard window (`audio_ok_after` + `overlap_discard_ms`), `tts_info` on listen errors, confirm readback + silence listen + lexicon |
+| **Calls** | `speech.run_tts` (conference → mute → duck play stack; adapters stay) · `speech.run_listen` / Answer Window profiles (`bound_answer`, `confirm`) |
+| **Thin facades** | `speech.speak_and_listen` / `speech.run_ask` re-export; CLI `cmd_ask` / `cmd_tts --listen` unchanged |
+
+**Locality:** ADR-009 half-duplex / no barge-in and overlap discard live behind one seam — not nested thread state scattered in call sites. **Leverage:** Mode A ask, `tts --listen`, and confirm turns share the same handoff. Answer Window remains **listen-only**. Design note: [plans/P1-M4-speak-then-listen.md](plans/P1-M4-speak-then-listen.md).
+
 ## Bound Answerability (deep delivery gate)
 
 Whether a bound event is still safe to answer is a single deep module
