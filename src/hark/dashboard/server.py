@@ -27,6 +27,7 @@ from hark.dashboard import api
 from hark.dashboard.tailer import MultiTailer, read_page, records_with_cursors
 from hark.events import utc_now_iso
 from hark.paths import state_dir
+from hark.state_feed import canonicalize_cursor
 from hark.syslog import log
 
 SCHEMA = "hark.dashboard.v1"
@@ -36,6 +37,25 @@ COOKIE_NAME = "hark_dash"
 MAX_JSON_BODY = 1 << 20  # 1 MiB
 MAX_AUDIO_BODY = 32 << 20  # 32 MiB
 LOCALHOST_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+SUBSCRIBER_QUEUE_SIZE = 1000
+
+
+class SubscriberQueue(queue.Queue):
+    """Bounded subscriber queue whose drops are visible to the consumer."""
+
+    def __init__(self) -> None:
+        super().__init__(maxsize=SUBSCRIBER_QUEUE_SIZE)
+        self._overflow = threading.Event()
+
+    @property
+    def overflowed(self) -> bool:
+        return self._overflow.is_set()
+
+    def mark_overflow(self) -> None:
+        self._overflow.set()
+
+    def clear_overflow(self) -> None:
+        self._overflow.clear()
 
 
 class Hub:
@@ -48,18 +68,18 @@ class Hub:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._subs: list[queue.Queue] = []
+        self._subs: list[SubscriberQueue] = []
         self.serve_seq = 0
         self._spectrum: dict[str, Any] | None = None
         self._spectrum_seq = 0
 
-    def subscribe(self) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=1000)
+    def subscribe(self) -> SubscriberQueue:
+        q = SubscriberQueue()
         with self._lock:
             self._subs.append(q)
         return q
 
-    def unsubscribe(self, q: queue.Queue) -> None:
+    def unsubscribe(self, q: SubscriberQueue) -> None:
         with self._lock:
             if q in self._subs:
                 self._subs.remove(q)
@@ -71,8 +91,9 @@ class Hub:
             try:
                 q.put_nowait(envelope)
             except queue.Full:
-                # slow consumer: drop for them, never block the pump
-                pass
+                # Never block the pump, but make the loss observable so the
+                # SSE handler can catch durable records up from disk.
+                q.mark_overflow()
 
     def set_spectrum(self, payload: dict[str, Any]) -> None:
         """Overwrite the latest live spectrum frame (coalesced)."""
@@ -466,7 +487,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------- events
 
     def _handle_events(self, qs: dict[str, list[str]]) -> None:
-        since = (qs.get("since") or [None])[0]
+        raw_since = (qs.get("since") or [None])[0]
+        try:
+            since = canonicalize_cursor(raw_since) if raw_since is not None else None
+        except ValueError:
+            self._err(HTTPStatus.BAD_REQUEST, "bad_cursor", "invalid cursor")
+            return
         sources_raw = (qs.get("sources") or [None])[0]
         sources = set(sources_raw.split(",")) if sources_raw else None
         limit = min(int((qs.get("limit") or ["500"])[0]), 2000)
@@ -505,10 +531,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(f"id: {envelope['cursor']}\ndata: {data}\n\n".encode("utf-8"))
         self.wfile.flush()
 
+    def _sse_replay(self, since: str, wanted: set[str] | None) -> str:
+        """Write durable records after *since* and return the delivered cursor."""
+        stream_cursor = since
+        records, _, _ = read_page(
+            self.server.state, since=since, sources=wanted, limit=None
+        )
+        for record, record_cursor in records_with_cursors(records, since):
+            self._sse_write(
+                {
+                    "schema": SCHEMA,
+                    "type": "event",
+                    "source": record.source,
+                    "cursor": record_cursor,
+                    "payload": record.payload,
+                }
+            )
+            stream_cursor = record_cursor
+        return stream_cursor
+
+    def _recover_subscriber_overflow(
+        self,
+        subscriber: SubscriberQueue,
+        stream_cursor: str,
+        wanted: set[str] | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Catch durable drops up, then discard their queued duplicates.
+
+        The queue remains subscribed throughout.  Clearing the flag before the
+        durable scan means any publication racing the scan sets it again and
+        forces another pass.  Once a pass completes without overflow, every
+        persisted item already in the full queue is covered by the scan and
+        can be discarded.  Non-durable serve events are retained for delivery.
+        """
+        while True:
+            subscriber.clear_overflow()
+            stream_cursor = self._sse_replay(stream_cursor, wanted)
+            if subscriber.overflowed:
+                continue
+
+            retained: list[dict[str, Any]] = []
+            queued = subscriber.qsize()
+            for _ in range(queued):
+                try:
+                    envelope = subscriber.get_nowait()
+                except queue.Empty:
+                    break
+                if envelope["source"] == "serve" and (
+                    wanted is None or "serve" in wanted
+                ):
+                    retained.append(envelope)
+            if subscriber.overflowed:
+                continue
+            return stream_cursor, retained
+
     def _handle_stream(self, qs: dict[str, list[str]]) -> None:
         sources_raw = (qs.get("sources") or [None])[0]
         wanted = set(sources_raw.split(",")) if sources_raw else None
-        since = self.headers.get("Last-Event-ID") or (qs.get("since") or [None])[0]
+        raw_since = self.headers.get("Last-Event-ID") or (qs.get("since") or [None])[0]
+        try:
+            since = canonicalize_cursor(raw_since) if raw_since is not None else None
+        except ValueError:
+            self._err(HTTPStatus.BAD_REQUEST, "bad_cursor", "invalid cursor")
+            return
 
         # body ends when the connection does (SSE); no keep-alive reuse
         self.close_connection = True
@@ -540,29 +625,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 }
             )
             if since:
-                records, _, _ = read_page(
-                    self.server.state, since=since, sources=wanted, limit=None
-                )
-                for r, record_cursor in records_with_cursors(records, since):
-                    self._sse_write(
-                        {
-                            "schema": SCHEMA,
-                            "type": "event",
-                            "source": r.source,
-                            "cursor": record_cursor,
-                            "payload": r.payload,
-                        }
-                    )
-                    stream_cursor = record_cursor
+                stream_cursor = self._sse_replay(since, wanted)
             last_ping = time.monotonic()
             last_spec_seq = 0
+            retained: list[dict[str, Any]] = []
             # Short timeout so spectrum can refresh near 60 fps without a
             # dedicated connection (coalesced latest frame only).
             while True:
-                try:
-                    envelope = q.get(timeout=0.016)
-                except queue.Empty:
-                    envelope = None
+                if q.overflowed:
+                    stream_cursor, recovered_serve = self._recover_subscriber_overflow(
+                        q, stream_cursor, wanted
+                    )
+                    retained.extend(recovered_serve)
+                if retained:
+                    envelope = retained.pop(0)
+                else:
+                    try:
+                        envelope = q.get(timeout=0.016)
+                    except queue.Empty:
+                        envelope = None
                 if envelope is not None:
                     if (
                         wanted is None

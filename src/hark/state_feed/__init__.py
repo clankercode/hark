@@ -8,7 +8,7 @@ dashboard MultiTailer) share :class:`StateFeedFollower` for hardened follow
 
 from __future__ import annotations
 
-from hark.state_feed.cursor import format_cursor, parse_cursor
+from hark.state_feed.cursor import canonicalize_cursor, format_cursor, parse_cursor
 from hark.state_feed.follower import StateFeedFollower, line_count
 from hark.state_feed.present import present_for_monitor
 from hark.state_feed.record import FeedRecord
@@ -18,6 +18,7 @@ __all__ = [
     "FeedRecord",
     "SourceFollower",
     "StateFeedFollower",
+    "canonicalize_cursor",
     "format_cursor",
     "line_count",
     "parse_cursor",

@@ -357,6 +357,49 @@ def test_stream_replay_preserves_source_filter_and_unseen_cursor(state, tmp_path
         server.shutdown()
 
 
+@pytest.mark.parametrize(
+    "raw_cursor",
+    (
+        "watch%3A0%0Aid%3A%20watch%3A999",
+        "watch%3A1%2C",
+        "watch%3A1%2C%2Cambient%3A2",
+        "watch%3A1%2Cwatch%3A2",
+        "watch%3A-1",
+    ),
+)
+def test_stream_rejects_invalid_cursor_before_sse_headers(
+    state, tmp_path, raw_cursor
+):
+    server = _server(tmp_path)
+    try:
+        connection = _conn(server)
+        connection.request("GET", f"/api/v1/stream?since={raw_cursor}")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        assert response.status == HTTPStatus.BAD_REQUEST
+        assert response.getheader("Content-Type") == "application/json; charset=utf-8"
+        assert body["error"]["code"] == "bad_cursor"
+        connection.close()
+    finally:
+        server.shutdown()
+
+
+def test_stream_canonicalizes_cursor_before_sse_id(state, tmp_path):
+    server = _server(tmp_path)
+    connection = None
+    try:
+        connection, response = _open_stream(
+            server, "/api/v1/stream?since=watch%3A000"
+        )
+        hello_id, hello = _read_sse_event(response)
+        assert hello["type"] == "hello"
+        assert hello_id == "watch:0"
+    finally:
+        if connection is not None:
+            connection.close()
+        server.shutdown()
+
+
 def test_rest_to_stream_handoff_captures_concurrent_append_and_live_reconnect(
     state, tmp_path, monkeypatch
 ):
@@ -468,6 +511,79 @@ def test_rest_to_stream_handoff_captures_rotation_after_snapshot(
         _, event = _read_sse_event(response)
         assert event["payload"]["n"] == "new"
     finally:
+        if connection is not None:
+            connection.close()
+        server.shutdown()
+
+
+def test_stream_queue_overflow_durably_catches_up_and_reconnects(
+    state, tmp_path, monkeypatch
+):
+    import hark.dashboard.server as dashboard_server
+
+    server = _server(tmp_path)
+    connection = None
+    try:
+        real_read_page = dashboard_server.read_page
+        snapshot_taken = threading.Event()
+        release_snapshot = threading.Event()
+
+        def paused_read_page(*args, **kwargs):
+            result = real_read_page(*args, **kwargs)
+            snapshot_taken.set()
+            assert release_snapshot.wait(10), "test did not release replay snapshot"
+            return result
+
+        monkeypatch.setattr(dashboard_server, "read_page", paused_read_page)
+        connection, response = _open_stream(
+            server, "/api/v1/stream?sources=watch&since=watch%3A0"
+        )
+        hello_id, _ = _read_sse_event(response)
+        assert hello_id == "watch:0"
+        assert snapshot_taken.wait(5)
+
+        total = dashboard_server.SUBSCRIBER_QUEUE_SIZE + 105
+        _write_jsonl(
+            state / "watch.jsonl",
+            *(
+                {**HEP_BLOCKED, "event_id": f"overflow-{n}", "n": n}
+                for n in range(total)
+            ),
+        )
+        with server.hub._lock:
+            subscriber = server.hub._subs[0]
+        deadline = time.monotonic() + 10
+        while not subscriber.overflowed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert subscriber.overflowed, "subscriber queue did not overflow"
+
+        release_snapshot.set()
+        delivered_before_drop = total - 55
+        cursor = hello_id
+        seen: list[int] = []
+        for expected in range(delivered_before_drop):
+            cursor, event = _read_sse_event(response)
+            seen.append(event["payload"]["n"])
+            assert parse_cursor(cursor)["watch"] == expected + 1
+        assert seen == list(range(delivered_before_drop))
+
+        connection.close()
+        connection = None
+        monkeypatch.setattr(dashboard_server, "read_page", real_read_page)
+        connection, response = _open_stream(
+            server,
+            "/api/v1/stream?sources=watch",
+            headers={"Last-Event-ID": cursor},
+        )
+        resumed_hello, _ = _read_sse_event(response)
+        assert resumed_hello == cursor
+        tail: list[int] = []
+        for expected in range(delivered_before_drop, total):
+            _, event = _read_sse_event(response)
+            tail.append(event["payload"]["n"])
+        assert tail == list(range(delivered_before_drop, total))
+    finally:
+        release_snapshot.set()
         if connection is not None:
             connection.close()
         server.shutdown()

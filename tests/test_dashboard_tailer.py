@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from hark.dashboard.tailer import (
     MultiTailer,
     SourceTailer,
@@ -12,6 +14,7 @@ from hark.dashboard.tailer import (
     read_page,
     records_with_cursors,
 )
+from hark.state_feed import canonicalize_cursor
 
 
 def _write(path: Path, *objs: dict, mode: str = "a") -> None:
@@ -105,6 +108,21 @@ def test_parse_cursor():
     assert parse_cursor(None) == {}
     assert parse_cursor("bogus") == {}
     assert parse_cursor("watch:x,ambient:3") == {"ambient": 3}
+
+
+def test_external_cursor_grammar_is_strict_and_canonical():
+    assert canonicalize_cursor("watch:0002,ambient:03") == "watch:2,ambient:3"
+    for invalid in (
+        "",
+        "watch:1,",
+        "watch:1,,ambient:2",
+        "watch:-1",
+        "watch:1,watch:2",
+        "watch:1\nid: watch:999",
+        " watch:1",
+    ):
+        with pytest.raises(ValueError):
+            canonicalize_cursor(invalid)
 
 
 def test_multitailer_composite_cursor_and_delivery_split(tmp_path):

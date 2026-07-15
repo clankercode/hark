@@ -79,6 +79,11 @@ Every SSE `data:` line is one envelope (`stream.schema.json`):
   while the backing file is not rotated.
 - Cursors are **opaque to clients** beyond equality/passthrough. Clients MUST
   NOT construct cursors except from `hello`, event envelopes, or page results.
+- Servers validate external cursors before use.  The grammar is one or more
+  comma-separated `key:seq` pairs, where keys match
+  `[A-Za-z][A-Za-z0-9_.-]*`, sequences are unsigned decimal integers, and keys
+  are unique.  Invalid cursor input is rejected with `400 bad_cursor` before
+  any SSE frame is emitted.
 - If a server cannot honor a cursor (rotation, restart, unknown), it MUST fall
   back to a recent tail (its default backfill window) rather than erroring.
   Dashboards are monitoring UIs; a gap beats a dead stream.
