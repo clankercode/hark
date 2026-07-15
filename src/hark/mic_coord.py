@@ -46,6 +46,7 @@ from hark.syslog import log as syslog
 DEFAULT_YIELD_TIMEOUT_S = 15.0
 _POLL_S = 0.05
 AMBIENT_PAUSE_VERSION = 2
+_LEGACY_AMBIENT_PAUSE_VERSIONS = frozenset({1})
 DEFAULT_PAUSE_OWNER_MAX_AGE_S = 4 * 60 * 60
 _FUTURE_SKEW_S = 5.0
 
@@ -213,26 +214,60 @@ def _legacy_owner(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _UnsupportedPauseSchema(RuntimeError):
+    """A future registry version that this process must not rewrite."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(
+            f"unsupported ambient pause version: {payload.get('version')!r}"
+        )
+        self.payload = payload
+
+
 def _read_live_owners_unlocked(*, now: float) -> tuple[list[dict[str, Any]], bool]:
     path = pause_path()
     if not path.is_file():
         return [], False
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return [], True
     if not isinstance(payload, dict):
         return [], True
-    if payload.get("version") == AMBIENT_PAUSE_VERSION:
+    version = payload.get("version")
+    has_version = "version" in payload
+    known_legacy_version = (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version in _LEGACY_AMBIENT_PAUSE_VERSIONS
+    )
+    current_version = (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version == AMBIENT_PAUSE_VERSION
+    )
+    if current_version:
         raw_owners = payload.get("owners")
         if not isinstance(raw_owners, list):
             return [], True
-        dirty = False
-    elif {"reason", "pid", "requested_at"} <= payload.keys():
+        # An empty v2 registry represents no pause and must not leave a marker
+        # that disagrees with read_ambient_pause()/ambient_pause_requested().
+        dirty = not raw_owners
+    elif (not has_version or known_legacy_version) and {
+        "reason",
+        "pid",
+        "requested_at",
+    } <= payload.keys():
         # Rolling upgrade from the singleton format. Until procfs and boot id
         # can be read, the explicit legacy marker remains a fail-closed owner.
         raw_owners = [_legacy_owner(payload)]
         dirty = True
+    elif has_version:
+        # A future writer may retain the v2 top-level compatibility fields.
+        # Never mistake those fields for the singleton legacy schema: doing so
+        # would collapse an owner registry and discard tokens we do not know
+        # how to interpret.
+        raise _UnsupportedPauseSchema(payload)
     else:
         return [], True
     owners = []
@@ -306,6 +341,10 @@ def read_ambient_pause() -> dict[str, Any] | None:
             if dirty:
                 _write_owners_unlocked(owners)
             return _payload_for_owners(owners) if owners else None
+    except _UnsupportedPauseSchema as exc:
+        # The marker itself is the fail-closed signal. Return it unchanged and
+        # leave the on-disk future schema for a compatible process to manage.
+        return exc.payload
     except OSError:
         # An unreadable marker is safer treated as a pause than ignored.
         if pause_path().is_file():
@@ -345,18 +384,21 @@ def request_ambient_pause(
         "boot_id": boot_id,
     }
     with _pause_lock():
-        owners, _dirty = _read_live_owners_unlocked(now=time.time())
+        try:
+            owners, _dirty = _read_live_owners_unlocked(now=time.time())
+        except _UnsupportedPauseSchema as exc:
+            raise RuntimeError(str(exc)) from exc
         attempted = [*owners, owner]
         try:
             _write_owners_unlocked(attempted)
-        except OSError:
+        except BaseException:  # rollback must include cancellation/interrupts
             # os.replace may have succeeded before directory fsync failed. Roll
             # back this exact token while still holding the registry lock. A
             # second fsync failure is suppressed only after the on-disk content
             # has been restored (replace/unlink happens before parent fsync).
             try:
                 _write_owners_unlocked(owners)
-            except OSError:
+            except BaseException:
                 pass
             raise
     syslog(
@@ -400,7 +442,7 @@ def clear_ambient_pause(token: str | None = None) -> None:
                     token=token,
                     remaining=len(retained),
                 )
-    except OSError:
+    except (_UnsupportedPauseSchema, OSError):
         pass
 
 

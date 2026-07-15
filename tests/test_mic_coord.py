@@ -329,6 +329,16 @@ def test_malformed_pause_state_is_pruned(tmp_path, monkeypatch):
     assert not path.exists()
 
 
+def test_deeply_nested_json_is_pruned_without_recursion_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = mic_coord.pause_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+
+    assert not ambient_pause_requested()
+    assert not path.exists()
+
+
 def test_invalid_utf8_pause_state_is_pruned(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     path = mic_coord.pause_path()
@@ -421,6 +431,73 @@ def test_failed_parent_fsync_does_not_strand_first_owner(tmp_path, monkeypatch):
     except OSError as exc:
         assert "injected" in str(exc)
     assert not mic_coord.pause_path().exists()
+
+
+def test_keyboard_interrupt_after_replace_restores_exact_prior_owners(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    retained_token = request_ambient_pause(reason="retained")
+    path = mic_coord.pause_path()
+    prior = json.loads(path.read_text(encoding="utf-8"))
+    interrupt = KeyboardInterrupt("injected after replace")
+
+    def interrupt_fsync(_path):
+        raise interrupt
+
+    monkeypatch.setattr(mic_coord, "_fsync_parent", interrupt_fsync)
+    try:
+        request_ambient_pause(reason="attempted")
+        raise AssertionError("expected KeyboardInterrupt")
+    except KeyboardInterrupt as exc:
+        assert exc is interrupt
+
+    restored = json.loads(path.read_text(encoding="utf-8"))
+    assert restored == prior
+    assert [owner["token"] for owner in restored["owners"]] == [retained_token]
+
+
+def test_unknown_future_schema_fails_closed_without_rewrite(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    token_a = request_ambient_pause(reason="a")
+    token_b = request_ambient_pause(reason="b")
+    path = mic_coord.pause_path()
+    current = json.loads(path.read_text(encoding="utf-8"))
+
+    # JSON/Python equality aliases must not masquerade as an absent or integer
+    # legacy version (True == 1 and 1.0 == 1 in Python).
+    for unknown_version in (3, None, True, 1.0):
+        future = {**current, "version": unknown_version}
+        path.write_text(
+            json.dumps(future, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        prior = path.read_bytes()
+
+        state = read_ambient_pause()
+        assert state == future
+        clear_ambient_pause(token_a)
+        try:
+            request_ambient_pause(reason="c")
+            raise AssertionError("expected unsupported-schema failure")
+        except RuntimeError as exc:
+            assert "unsupported ambient pause version" in str(exc)
+
+        assert path.read_bytes() == prior
+        persisted = json.loads(prior)
+        assert [owner["token"] for owner in persisted["owners"]] == [
+            token_a,
+            token_b,
+        ]
+
+
+def test_empty_v2_registry_is_unlinked(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = mic_coord.pause_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"version":2,"owners":[]}\n', encoding="utf-8")
+
+    assert not ambient_pause_requested()
+    assert not path.exists()
 
 
 def test_live_legacy_single_owner_is_migrated(tmp_path, monkeypatch):
