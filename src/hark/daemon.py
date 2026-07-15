@@ -379,9 +379,34 @@ def _rollback_worker_start(
         except (subprocess.TimeoutExpired, OSError) as exc:
             failures.append(f"{role} reap after SIGKILL failed ({exc})")
 
-    if restore_pidfile:
+    survivors: list[tuple[str, subprocess.Popen[Any]]] = []
+    for role, proc in owned:
         try:
-            if original_pidfile is None:
+            still_running = proc.poll() is None
+        except OSError as exc:
+            failures.append(f"{role} final status check failed ({exc})")
+            # If status cannot be established, retain durable ownership rather
+            # than risk making a live attempt-owned child undiscoverable.
+            still_running = True
+        if still_running:
+            survivors.append((role, proc))
+
+    if survivors:
+        failures.append(
+            "surviving workers still running: "
+            + ", ".join(f"{role}={proc.pid}" for role, proc in survivors)
+        )
+
+    if restore_pidfile or survivors:
+        try:
+            if survivors:
+                payload = original_pidfile or b""
+                if payload and not payload.endswith(b"\n"):
+                    payload += b"\n"
+                payload += b"".join(f"{proc.pid}\n".encode() for _, proc in survivors)
+                pid_path.parent.mkdir(parents=True, exist_ok=True)
+                pid_path.write_bytes(payload)
+            elif original_pidfile is None:
                 pid_path.unlink(missing_ok=True)
             else:
                 pid_path.write_bytes(original_pidfile)
@@ -472,13 +497,19 @@ def spawn_mode_a_workers(
             if proc.poll() is not None:
                 failed_role = role
                 raise OSError(f"worker exited immediately with status {proc.returncode}")
-    except Exception as exc:
+    except BaseException as exc:
         rollback_failures = _rollback_worker_start(
             owned,
             pid_path=pid_path,
             original_pidfile=original_pidfile,
             restore_pidfile=pidfile_touched,
         )
+        if not isinstance(exc, Exception):
+            note = f"worker startup interrupted during {failed_role}; rollback completed"
+            if rollback_failures:
+                note += " with failures: " + "; ".join(rollback_failures)
+            exc.add_note(note)
+            raise
         raise WorkerSpawnError(failed_role, exc, rollback_failures) from exc
 
     return [proc for _, proc in owned]

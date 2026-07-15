@@ -20,6 +20,7 @@ class FakeWorker:
         self.returncode = returncode
         self.wait_calls = 0
         self.terminate_error: OSError | None = None
+        self.kill_error: OSError | None = None
 
     def poll(self) -> int | None:
         return self.returncode
@@ -36,6 +37,8 @@ class FakeWorker:
         self.returncode = -signal.SIGTERM
 
     def kill(self) -> None:
+        if self.kill_error is not None:
+            raise self.kill_error
         self.returncode = -signal.SIGKILL
 
 
@@ -98,6 +101,42 @@ def test_spawn_workers_rolls_back_first_child_when_second_role_fails(
     assert not (state / "mode-a.pids").exists()
 
 
+@pytest.mark.parametrize(
+    "interrupt",
+    [KeyboardInterrupt(), SystemExit(17)],
+    ids=["keyboard-interrupt", "system-exit"],
+)
+def test_spawn_workers_rolls_back_then_preserves_base_exception(
+    state: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: BaseException,
+):
+    watch = FakeWorker(101)
+    calls = 0
+
+    def interrupt_second(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return watch
+        raise interrupt
+
+    def killpg(pid: int, sig: int) -> None:
+        assert (pid, sig) == (watch.pid, signal.SIGTERM)
+        watch.returncode = -sig
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", interrupt_second)
+    monkeypatch.setattr(daemon.os, "killpg", killpg)
+
+    with pytest.raises(type(interrupt)) as caught:
+        daemon.spawn_mode_a_workers(root=state)
+
+    assert caught.value is interrupt
+    assert watch.returncode == -signal.SIGTERM
+    assert watch.wait_calls == 1
+    assert not (state / "mode-a.pids").exists()
+
+
 def test_spawn_workers_reports_rollback_signal_failure(
     state: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -130,6 +169,40 @@ def test_spawn_workers_reports_rollback_signal_failure(
     assert "terminate refused" in message
     assert watch.returncode == -signal.SIGKILL
     assert watch.wait_calls == 2
+
+
+def test_spawn_workers_records_and_reports_child_that_survives_rollback(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pidfile = state / "mode-a.pids"
+    pidfile.write_bytes(b"777\n")
+    watch = FakeWorker(101)
+    watch.terminate_error = OSError("terminate refused")
+    watch.kill_error = OSError("kill refused")
+    calls = 0
+
+    def fail_second(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return watch
+        raise OSError("ambient fork refused")
+
+    def deny_group_signal(_pid: int, sig: int) -> None:
+        raise PermissionError(f"signal {sig} refused")
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", fail_second)
+    monkeypatch.setattr(daemon.os, "killpg", deny_group_signal)
+
+    with pytest.raises(daemon.WorkerSpawnError) as caught:
+        daemon.spawn_mode_a_workers(root=state)
+
+    message = str(caught.value)
+    assert "rollback failures" in message
+    assert "surviving workers still running: watch=101" in message
+    assert watch.poll() is None
+    assert watch.wait_calls == 2
+    assert set(daemon.read_pids_file(pidfile)) == {101, 777}
 
 
 def test_spawn_workers_rolls_back_and_reports_early_child_exit(
