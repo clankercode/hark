@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-07-15T21:06:33Z"
+claimed_by: codex-urban-morn-b847
+completed_at: null
 complexity: high
 created_at: "2026-07-15T21:02:45Z"
 depends_on: []
 estimate_hours: 1
 id: B134
 priority: critical
-status: pending
-tags:
-    - delivery
-    - concurrency
-    - safety
-    - idempotency
+started_at: "2026-07-15T21:06:33Z"
+status: in_progress
+tags: []
 title: Concurrent bound answers can double-send the same event
-updated_at: "2026-07-15T21:02:45Z"
+updated_at: "2026-07-15T21:06:33Z"
 ---
 ## Evidence
 answer_bound_event performs get, already_delivered, pending check, live Answerability, Herdr send, then DeliveryStore.mark. already_delivered scans only historical delivered records and mark appends after the send; there is no atomic acquisition across threads or processes. A deterministic two-thread reproduction against one bound event produced send_count=2, returned delivered twice, and appended two delivered records. docs/HARKD.md promises library idempotency and no silent double-send.
