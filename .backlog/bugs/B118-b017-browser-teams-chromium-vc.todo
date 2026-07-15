@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-15T06:34:46Z"
+depends_on: []
+estimate_hours: 1
+id: B118
+priority: high
+status: pending
+tags: []
+title: 'B017: browser Teams/Chromium VC not detected (process+stream free while Chromium Playback + Chromium input RecordStream active)'
+updated_at: "2026-07-15T06:34:46Z"
+---
+
+B017: browser Teams/Chromium VC not detected (process+stream free while Chromium Playback + Chromium input RecordStream active)
