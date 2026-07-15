@@ -10,7 +10,7 @@ stats:
     in_progress: 0
     pending: 3
     total: 3
-status: pending
+status: done
 tasks:
     - complexity: medium
       depends_on: []
@@ -28,7 +28,7 @@ tasks:
       file: T002-update-context-md-domain-terms.todo
       id: T002
       priority: medium
-      status: in_progress
+      status: done
       tags: []
       title: Update CONTEXT.md / domain terms if missing
     - complexity: low
@@ -38,6 +38,6 @@ tasks:
       file: T003-lock-acceptance-criteria-non-g.todo
       id: T003
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Lock acceptance criteria + non-goals

@@ -9,7 +9,7 @@ epics:
       locked: false
       name: 'E1: Plan Answer Window deepen'
       path: 01-e1-plan-answer-window-deepen
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: 'Pull radio half of run_listen into a deep session module: segment capture, pad/overlap, STT join, partial emit, end evaluation (delegate listen_end), agent control poll, idle/max_listen exits. Keep pure helpers; collapse shallow partial instruction builders as internals.'
