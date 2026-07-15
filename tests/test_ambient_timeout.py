@@ -236,11 +236,12 @@ def test_loop_dual_writes_prompt_when_stdout_is_restart_log(monkeypatch, tmp_pat
     feed_text = feed.read_text(encoding="utf-8")
     assert "b104-loop-prompt" in restart_text
     assert "b104-loop-prompt" in feed_text
-    assert '"kind":"ambient.prompt"' in feed_text or '"kind": "ambient.prompt"' in feed_text
+    assert (
+        '"kind":"ambient.prompt"' in feed_text
+        or '"kind": "ambient.prompt"' in feed_text
+    )
 
-    feed_events = [
-        json.loads(line) for line in feed_text.splitlines() if line.strip()
-    ]
+    feed_events = [json.loads(line) for line in feed_text.splitlines() if line.strip()]
     prompts = [e for e in feed_events if e.get("kind") == "ambient.prompt"]
     assert len(prompts) == 1
     assert prompts[0]["text"] == "ship the dual-write fix over"
@@ -251,11 +252,18 @@ def test_loop_dual_writes_prompt_when_stdout_is_restart_log(monkeypatch, tmp_pat
 
     out_mon = io.StringIO()
     n = replay_matching(
-        [feed], kinds=MODE_A_WAKE_KINDS, limit=20, for_monitor=True, out=out_mon
+        [feed],
+        kinds=MODE_A_WAKE_KINDS,
+        limit=20,
+        for_monitor=True,
+        out=out_mon,
+        include_test_events=True,
     )
     assert n >= 1
     mon_kinds = [
-        json.loads(l).get("kind") for l in out_mon.getvalue().splitlines() if l.strip()
+        json.loads(line).get("kind")
+        for line in out_mon.getvalue().splitlines()
+        if line.strip()
     ]
     assert "ambient.prompt" in mon_kinds
 

@@ -14,7 +14,6 @@ Singleflight: only one feed consumer should run (B102). A second
 from __future__ import annotations
 
 import fcntl
-import io
 import json
 import os
 import sys
@@ -29,6 +28,8 @@ from hark import paths as hark_paths
 
 # Exclusive consumer lock under XDG state (flock + pid for diagnostics).
 MONITOR_PID_NAME = "monitor.pid"
+EVENT_PROVENANCE_ENV = "HARK_EVENT_PROVENANCE"
+TEST_PROVENANCE = "test"
 
 # Events that MUST wake the handsfree orchestrator (persistent Monitor consumers).
 MODE_A_WAKE_KINDS: frozenset[str] = frozenset(
@@ -91,11 +92,24 @@ def io_targets_path(out: TextIO | None, path: Path) -> bool:
         return False
 
 
+def _stored_event_line(event: dict[str, Any]) -> str:
+    """Return the authoritative NDJSON representation for persisted events.
+
+    Execution provenance is reserved metadata: when the process declares it,
+    it overrides caller-supplied data in a copy.  Callers may still emit their
+    original object to a non-canonical machine stream unchanged.
+    """
+    stored_event = dict(event)
+    provenance = os.environ.get(EVENT_PROVENANCE_ENV, "").strip()
+    if provenance:
+        stored_event["hark_provenance"] = provenance
+    return json.dumps(stored_event, separators=(",", ":"), ensure_ascii=False) + "\n"
+
+
 def append_ambient_jsonl(
     event: dict[str, Any],
     *,
     root: Path | None = None,
-    line: str | None = None,
 ) -> bool:
     """Best-effort append of one HEP object to state ``ambient.jsonl``.
 
@@ -106,13 +120,8 @@ def append_ambient_jsonl(
     try:
         path = ambient_feed_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = line
-        if payload is None:
-            payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n"
-        elif not payload.endswith("\n"):
-            payload = payload + "\n"
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(payload)
+            fh.write(_stored_event_line(event))
         return True
     except Exception:
         return False
@@ -131,9 +140,15 @@ def emit_hep(
     so redirect-to-restart-log still feeds ``hark monitor`` without duplicating
     the normal path.
     """
-    line = json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n"
+    feed = ambient_feed_path(root)
+    out_is_feed = io_targets_path(out, feed)
     if out is not None:
         try:
+            line = (
+                _stored_event_line(event)
+                if out_is_feed
+                else json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n"
+            )
             out.write(line)
             out.flush()
         except Exception:
@@ -142,10 +157,9 @@ def emit_hep(
         # No stream → nothing to dual-write (callers that only want the feed
         # should use append_ambient_jsonl directly, e.g. TTS lifecycle).
         return
-    feed = ambient_feed_path(root)
-    if io_targets_path(out, feed):
+    if out_is_feed:
         return
-    append_ambient_jsonl(event, root=root, line=line)
+    append_ambient_jsonl(event, root=root)
 
 
 class MonitorBusyError(RuntimeError):
@@ -350,7 +364,14 @@ def event_kind(obj: dict[str, Any]) -> str:
     return str(obj.get("kind") or obj.get("event") or "")
 
 
-def should_surface(obj: dict[str, Any], kinds: frozenset[str]) -> bool:
+def should_surface(
+    obj: dict[str, Any],
+    kinds: frozenset[str],
+    *,
+    include_test_events: bool = False,
+) -> bool:
+    if not include_test_events and obj.get("hark_provenance") == TEST_PROVENANCE:
+        return False
     return event_kind(obj) in kinds
 
 
@@ -359,6 +380,8 @@ def emit_line(
     *,
     for_monitor: bool,
     out: TextIO,
+    monitor_mode: str | None = None,
+    source: str | None = None,
 ) -> None:
     if for_monitor:
         try:
@@ -380,7 +403,13 @@ def emit_line(
                 ),
             }
     else:
-        payload = obj
+        payload = dict(obj)
+    if monitor_mode is not None:
+        payload = dict(payload)
+        payload["monitor_delivery"] = {
+            "mode": monitor_mode,
+            "source": source,
+        }
     out.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
     out.flush()
 
@@ -392,11 +421,12 @@ def replay_matching(
     limit: int,
     for_monitor: bool,
     out: TextIO,
+    include_test_events: bool = False,
 ) -> int:
     """Replay last *limit* matching events (chronological) from files."""
     if limit <= 0:
         return 0
-    matched: list[dict[str, Any]] = []
+    matched: list[tuple[dict[str, Any], str]] = []
     for path in paths:
         if not path.is_file():
             continue
@@ -406,16 +436,25 @@ def replay_matching(
             continue
         for line in lines:
             obj = parse_event_line(line)
-            if obj and should_surface(obj, kinds):
-                matched.append(obj)
+            if obj and should_surface(
+                obj, kinds, include_test_events=include_test_events
+            ):
+                matched.append((obj, path.name))
+
     # keep last N across all files by observed_at if present else order
-    def sort_key(o: dict[str, Any]) -> str:
-        return str(o.get("observed_at") or "")
+    def sort_key(item: tuple[dict[str, Any], str]) -> str:
+        return str(item[0].get("observed_at") or "")
 
     matched.sort(key=sort_key)
     tail = matched[-limit:]
-    for obj in tail:
-        emit_line(obj, for_monitor=for_monitor, out=out)
+    for obj, source in tail:
+        emit_line(
+            obj,
+            for_monitor=for_monitor,
+            out=out,
+            monitor_mode="replay",
+            source=source,
+        )
     return len(tail)
 
 
@@ -426,6 +465,7 @@ def follow_state_files(
     for_monitor: bool = True,
     out: TextIO | None = None,
     poll_s: float = 0.05,
+    include_test_events: bool = False,
 ) -> int:
     """Follow JSONL state files; print matching handsfree wake events forever.
 
@@ -450,8 +490,16 @@ def follow_state_files(
             for rec in follower.poll():
                 progressed = True
                 obj = rec.payload
-                if obj and should_surface(obj, kinds):
-                    emit_line(obj, for_monitor=for_monitor, out=out)
+                if obj and should_surface(
+                    obj, kinds, include_test_events=include_test_events
+                ):
+                    emit_line(
+                        obj,
+                        for_monitor=for_monitor,
+                        out=out,
+                        monitor_mode="live",
+                        source=rec.source,
+                    )
             if not progressed:
                 time.sleep(poll_s)
     except KeyboardInterrupt:
@@ -508,9 +556,7 @@ def run_monitor(
             replay_matching(
                 paths, kinds=kinds, limit=replay, for_monitor=for_monitor, out=out
             )
-        return follow_state_files(
-            paths, kinds=kinds, for_monitor=for_monitor, out=out
-        )
+        return follow_state_files(paths, kinds=kinds, for_monitor=for_monitor, out=out)
     finally:
         if lock is not None:
             lock.release()
