@@ -36,7 +36,7 @@ epics:
       locked: false
       name: 'E4: Tests + SAFETY/docs for false-done delivery'
       path: 04-e4-tests-safety-docs-for-false
-      status: pending
+      status: done
 estimate_hours: 16
 id: P1.M2
 locked: false
@@ -47,4 +47,4 @@ stats:
     in_progress: 0
     pending: 8
     total_tasks: 8
-status: pending
+status: done

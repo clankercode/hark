@@ -21,7 +21,7 @@ milestones:
       locked: false
       name: 'M2: Deepen Bound Answerability'
       path: 02-m2-deepen-bound-answerability
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: Candidate 3 (Worth exploring). Understanding is this agent really done? requires bouncing pure heuristics in events.py and stateful EdgeTracker in watch.py. Extract deep Pane Understanding module at seam between Herdr agent snapshots and HEP kinds; leave socket/poll I/O thin.
