@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +35,15 @@ class WorkerRecord:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class WorkerSignalOutcome:
+    """Result of trying to signal one recorded process lifetime."""
+
+    record: WorkerRecord
+    sent: bool = False
+    error: str | None = None
 
 
 def _proc_stat(pid: int) -> tuple[str, str] | None:
@@ -72,8 +83,6 @@ def worker_role_from_argv(argv: Sequence[str]) -> str | None:
     """Classify only the launch shapes Hark itself uses for workers."""
     if not argv:
         return None
-    if any("run-mode-a" in arg for arg in argv):
-        return None
 
     executable = Path(argv[0]).name.lower()
 
@@ -87,7 +96,7 @@ def worker_role_from_argv(argv: Sequence[str]) -> str | None:
     if executable == "hark":
         return role_at(1)
 
-    is_python = executable.startswith(("python", "pypy"))
+    is_python = re.fullmatch(r"(?:python|pypy)(?:\d+(?:\.\d+)*)?", executable)
     if is_python:
         # Console script through a Python shebang: `python /path/hark ROLE ...`.
         if len(argv) > 1 and Path(argv[1]).name == "hark":
@@ -287,38 +296,55 @@ def collect_worker_records(
     return result
 
 
-def signal_worker(record: WorkerRecord, sig: int) -> bool:
+def _signal_worker(record: WorkerRecord, sig: int) -> WorkerSignalOutcome:
     """Verify identity immediately before safely signalling one worker.
 
     On Linux, a pidfd pins the process lifetime across verification and signal,
     closing the final PID-reuse race.  The fallback still re-verifies directly
-    before ``kill`` for platforms lacking pidfd support.
+    before ``kill`` for platforms lacking pidfd support.  A process that has
+    exited or changed identity is a benign miss; an error signalling a still
+    verified process is reported separately so callers can fail closed.
     """
     pidfd_open = getattr(os, "pidfd_open", None)
     pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
     if pidfd_open is not None and pidfd_send_signal is not None:
         try:
             pidfd = pidfd_open(record.pid)
-        except (OSError, ValueError):
-            return False
+        except ProcessLookupError:
+            return WorkerSignalOutcome(record)
+        except (OSError, ValueError) as exc:
+            if not record_matches_process(record):
+                return WorkerSignalOutcome(record)
+            return WorkerSignalOutcome(record, error=f"pidfd_open failed: {exc}")
         try:
             if not record_matches_process(record):
-                return False
+                return WorkerSignalOutcome(record)
             try:
                 pidfd_send_signal(pidfd, sig)
-            except (OSError, ValueError):
-                return False
-            return True
+            except ProcessLookupError:
+                return WorkerSignalOutcome(record)
+            except (OSError, ValueError) as exc:
+                return WorkerSignalOutcome(
+                    record, error=f"pidfd_send_signal failed: {exc}"
+                )
+            return WorkerSignalOutcome(record, sent=True)
         finally:
             os.close(pidfd)
 
     if not record_matches_process(record):
-        return False
+        return WorkerSignalOutcome(record)
     try:
         os.kill(record.pid, sig)
-    except OSError:
-        return False
-    return True
+    except ProcessLookupError:
+        return WorkerSignalOutcome(record)
+    except (OSError, ValueError) as exc:
+        return WorkerSignalOutcome(record, error=f"kill failed: {exc}")
+    return WorkerSignalOutcome(record, sent=True)
+
+
+def signal_worker(record: WorkerRecord, sig: int) -> bool:
+    """Return whether *sig* was sent to the exact recorded worker lifetime."""
+    return _signal_worker(record, sig).sent
 
 
 def signal_worker_records(
@@ -353,7 +379,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     records = collect_worker_records(args.pidfile, discover=args.discover)
     if args.command == "signal":
-        records = signal_worker_records(records, args.signal)
+        outcomes = [_signal_worker(record, args.signal) for record in records]
+        records = [outcome.record for outcome in outcomes if outcome.sent]
+        errors = [outcome for outcome in outcomes if outcome.error is not None]
+        for outcome in errors:
+            print(
+                f"failed to signal worker pid {outcome.record.pid}: {outcome.error}",
+                file=sys.stderr,
+            )
+        if errors:
+            return 1
     for record in records:
         print(record.pid)
     return 0

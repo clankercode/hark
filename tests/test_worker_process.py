@@ -22,6 +22,10 @@ import hark.worker_process as worker_process
         (["/venv/bin/hark", "watch", "--for-monitor"], "watch"),
         (["python3", "/venv/bin/hark", "ambient"], "ambient"),
         (["python", "-m", "hark", "watch", "--session", "lab"], "watch"),
+        (
+            ["python", "-m", "hark", "watch", "--session", "run-mode-a-lab"],
+            "watch",
+        ),
         (["/usr/bin/uv", "run", "hark", "ambient"], "ambient"),
     ],
 )
@@ -35,6 +39,9 @@ def test_worker_role_accepts_real_launch_shapes(argv: list[str], role: str):
         ["bash", "-c", "sleep 60", "hark", "ambient"],
         ["python", "-c", "import time", "hark", "watch"],
         ["python", "script.py", "hark", "ambient"],
+        ["python-malware", "-m", "hark", "watch"],
+        ["pypymalware", "/venv/bin/hark", "ambient"],
+        ["python3", "/repo/scripts/run-mode-a.sh", "ambient"],
         ["uv", "tool", "hark", "watch"],
     ],
 )
@@ -220,6 +227,99 @@ def test_signal_reverifies_after_opening_pidfd(
         os.close(write_fd)
 
 
+@pytest.mark.parametrize("failure_stage", ["pidfd_open", "pidfd_send_signal", "kill"])
+def test_signal_cli_fails_when_verified_worker_cannot_be_signalled(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_stage: str,
+):
+    record = worker_process.WorkerRecord(pid=1234, start_time="verified", role="watch")
+    monkeypatch.setattr(
+        worker_process, "collect_worker_records", lambda *_args, **_kwargs: [record]
+    )
+    monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: True)
+
+    write_fd: int | None = None
+    if failure_stage == "pidfd_open":
+        monkeypatch.setattr(
+            worker_process.os,
+            "pidfd_open",
+            lambda _pid: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        monkeypatch.setattr(
+            worker_process.signal,
+            "pidfd_send_signal",
+            lambda _fd, _sig: None,
+            raising=False,
+        )
+    elif failure_stage == "pidfd_send_signal":
+        read_fd, write_fd = os.pipe()
+        monkeypatch.setattr(worker_process.os, "pidfd_open", lambda _pid: read_fd)
+        monkeypatch.setattr(
+            worker_process.signal,
+            "pidfd_send_signal",
+            lambda _fd, _sig: (_ for _ in ()).throw(PermissionError("denied")),
+            raising=False,
+        )
+    else:
+        monkeypatch.delattr(worker_process.os, "pidfd_open", raising=False)
+        monkeypatch.delattr(worker_process.signal, "pidfd_send_signal", raising=False)
+        monkeypatch.setattr(
+            worker_process.os,
+            "kill",
+            lambda _pid, _sig: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+    try:
+        assert worker_process.main(["signal", "/tmp/mode-a.pids", "KILL"]) == 1
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"{failure_stage} failed" in captured.err
+    assert "worker pid 1234" in captured.err
+
+
+@pytest.mark.parametrize("benign_stage", ["gone", "identity-mismatch"])
+def test_signal_cli_ignores_workers_that_are_no_longer_the_recorded_process(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    benign_stage: str,
+):
+    record = worker_process.WorkerRecord(pid=1234, start_time="old", role="watch")
+    monkeypatch.setattr(
+        worker_process, "collect_worker_records", lambda *_args, **_kwargs: [record]
+    )
+    monkeypatch.setattr(
+        worker_process.signal,
+        "pidfd_send_signal",
+        lambda _fd, _sig: None,
+        raising=False,
+    )
+    if benign_stage == "gone":
+        monkeypatch.setattr(
+            worker_process.os,
+            "pidfd_open",
+            lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
+        )
+    else:
+        monkeypatch.setattr(
+            worker_process.os,
+            "pidfd_open",
+            lambda _pid: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        monkeypatch.setattr(
+            worker_process, "record_matches_process", lambda _record: False
+        )
+
+    assert worker_process.main(["signal", "/tmp/mode-a.pids", "TERM"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 def test_shell_signal_adapter_delegates_to_identity_module(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     script = repo / "scripts" / "run-mode-a.sh"
@@ -276,6 +376,44 @@ printf '%s\n' "$status"
     assert pidfile.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_shell_force_stop_retains_pidfile_when_kill_signal_fails(tmp_path: Path):
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "scripts" / "run-mode-a.sh"
+    state = tmp_path / "state"
+    pidfile = state / "hark" / "mode-a.pids"
+    pidfile.parent.mkdir(parents=True)
+    pidfile.write_text("sentinel\n", encoding="utf-8")
+    command = f"""
+set -euo pipefail
+export HARK_RUN_MODE_A_SOURCE_ONLY=1
+export XDG_STATE_HOME={state!s}
+export HARK_STOP_GRACE_S=0
+source {script!s}
+worker_identity() {{
+  case "$1" in
+    collect) printf '1234\\n' ;;
+    signal) [[ "$3" == TERM ]] ;;
+  esac
+}}
+set +e
+graceful_stop 1 stop
+status=$?
+set -e
+printf '%s\n' "$status"
+"""
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip().endswith("1")
+    assert "force-killing remaining processes: 1234" in result.stdout
+    assert "retaining pidfile" in result.stderr
+    assert pidfile.read_text(encoding="utf-8") == "sentinel\n"
+
+
 def test_shell_start_refuses_when_initial_identity_collection_fails(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     script = repo / "scripts" / "run-mode-a.sh"
@@ -316,14 +454,14 @@ def test_shell_post_spawn_collection_failure_retains_legacy_pid(tmp_path: Path):
     uv = fake_bin / "uv"
     uv.write_text(
         "#!/bin/sh\n"
-        'if printf \'%s\\n\' "$*" | grep -q hark.worker_process; then\n'
+        "if printf '%s\\n' \"$*\" | grep -q hark.worker_process; then\n"
         f"  n=$(cat {count!s} 2>/dev/null || echo 0)\n"
         "  n=$((n + 1))\n"
         f"  printf '%s\\n' \"$n\" > {count!s}\n"
-        "  [ \"$n\" -eq 1 ] && exit 0\n"
+        '  [ "$n" -eq 1 ] && exit 0\n'
         "  exit 42\n"
         "fi\n"
-        "case \"$*\" in\n"
+        'case "$*" in\n'
         "  *'python -c'*) exit 0 ;;\n"
         "esac\n"
         "exec sleep 60\n",
