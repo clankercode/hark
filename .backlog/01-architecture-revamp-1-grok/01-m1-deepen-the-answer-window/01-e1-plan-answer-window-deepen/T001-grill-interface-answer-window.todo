@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:00:26Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:01:43Z"
 complexity: medium
 created_at: "2026-07-15T04:29:38Z"
 depends_on: []
+duration_minutes: 1.2847669582166668
 estimate_hours: 2
 id: P1.M1.E1.T001
 priority: high
 started_at: "2026-07-15T05:00:26Z"
-status: in_progress
+status: done
 tags: []
 title: 'Grill interface: Answer Window open(policy)→result'
-updated_at: "2026-07-15T05:00:26Z"
+updated_at: "2026-07-15T05:01:43Z"
 ---
 # Grill interface: Answer Window open(policy)→result
 
