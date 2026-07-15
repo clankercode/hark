@@ -45,7 +45,7 @@ epics:
       locked: false
       name: 'E5: Tests + docs for Answer Window'
       path: 05-e5-tests-docs-for-answer-windo
-      status: pending
+      status: done
 estimate_hours: 32
 id: P1.M1
 locked: false
@@ -56,4 +56,4 @@ stats:
     in_progress: 0
     pending: 16
     total_tasks: 16
-status: pending
+status: done

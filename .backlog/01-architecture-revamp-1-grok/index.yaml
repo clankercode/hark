@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: 'M1: Deepen the Answer Window'
       path: 01-m1-deepen-the-answer-window
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: 'Candidate 2 (Strong). Product hole: false-done menus surface as agent.needs_input and register for bound delivery, then hark answer rejects not_blocked. One deep Answerability module: fingerprint, revision, pane liveness, status compatibility (blocked OR still-needs-input) shared by answer, queue, dashboard. Files: answering.py, delivery.py, watch.py, events.py, cli.py, fingerprint.py. Aligns ADR-002/007; SAFETY.md says compatible state.'
