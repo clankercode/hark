@@ -28,6 +28,6 @@ tasks:
       file: T002-map-edgetracker-fields-to-modu.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Map EdgeTracker fields to module-owned state
