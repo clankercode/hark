@@ -508,3 +508,79 @@ def test_result_for_agent_finish_and_cancel():
     assert can.end_phrase == "agent:cancel"
     assert can.cancelled is True
     assert can.text == "partial body"  # falls back to last_partial_text
+
+
+def test_profiles_streaming_differ_without_session_ambient_read():
+    """E2.T004: bound_answer vs post_wake; idle from policy fields only."""
+    from types import SimpleNamespace
+
+    from hark.answer_window import RadioSession, policy_from_config
+
+    cfg = SimpleNamespace(
+        listen=SimpleNamespace(
+            end_mode="radio",
+            max_listen_s=90.0,
+            end_silence_s=2.1,
+            radio_idle_end_silence_s=6.3,
+            end_phrases=("hark send",),
+            cancel_phrases=("hark cancel",),
+            soft_end_phrases=("over",),
+            soft_end_phrases_enabled=True,
+            strip_phrase=True,
+            stream_partials=True,
+            radio_partial_silence_s=0.6,
+            radio_segment_overlap_ms=300,
+            radio_segment_pad_ms=250,
+            abs_open_db=-48.0,
+            open_margin_db=8.0,
+            initial_timeout_s=45.0,
+            pre_roll_ms=300,
+            no_open_retry=True,
+            no_open_nudge=True,
+            empty_stt_retry=True,
+            empty_stt_nudge=True,
+            endpoint_strategy="energy",
+            smart_turn_model_path=None,
+            smart_turn_threshold=None,
+            endpoint_probe_silence_s=0.4,
+            endpoint_max_silence_s=6.0,
+        ),
+        audio=SimpleNamespace(
+            mute_edge_pad_ms=300,
+            duck_media_during_stt=True,
+            pause_media_during_stt=False,
+            answer_arm_cue=True,
+        ),
+        ambient=SimpleNamespace(streaming=True, streaming_ack_min_quiet_s=2.0),
+        stt=SimpleNamespace(provider="xai"),
+    )
+    bound = policy_from_config(cfg, "bound_answer")
+    post = policy_from_config(cfg, "post_wake")
+    assert bound.streaming is False
+    assert post.streaming is True
+    bound_sess = RadioSession(policy=bound)
+    post_sess = RadioSession(policy=post)
+    assert bound_sess.radio_idle_s == pytest.approx(6.3)
+    # streaming clamp: max(2.1, 2.0) = 2.1
+    assert post_sess.radio_idle_s == pytest.approx(2.1)
+    # Session does not need cfg.ambient — only policy fields.
+    assert "ambient" not in bound_sess.as_debug_dict()
+
+
+def test_effective_radio_idle_end_s_accepts_explicit_ack():
+    """Helper must not re-read ambient when streaming flags are explicit."""
+    from types import SimpleNamespace
+
+    from hark.speech import effective_radio_idle_end_s
+
+    cfg = SimpleNamespace(
+        listen=SimpleNamespace(end_silence_s=2.1, radio_idle_end_silence_s=6.3),
+        ambient=SimpleNamespace(streaming=True, streaming_ack_min_quiet_s=99.0),
+    )
+    # Explicit streaming=False ignores ambient streaming and ack.
+    assert effective_radio_idle_end_s(
+        cfg, streaming=False, streaming_ack_min_quiet_s=2.0
+    ) == pytest.approx(6.3)
+    assert effective_radio_idle_end_s(
+        cfg, streaming=True, streaming_ack_min_quiet_s=2.0
+    ) == pytest.approx(2.1)
