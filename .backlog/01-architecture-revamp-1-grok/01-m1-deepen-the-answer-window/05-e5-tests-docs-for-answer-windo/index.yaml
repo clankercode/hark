@@ -29,7 +29,7 @@ tasks:
       file: T002-architecture-md-changelog-note.todo
       id: T002
       priority: medium
-      status: pending
+      status: in_progress
       tags: []
       title: ARCHITECTURE.md + CHANGELOG note for Answer Window
     - complexity: medium
@@ -39,6 +39,6 @@ tasks:
       file: T003-regression-soft-end-listen-end.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: 'Regression: soft end, listen-end IPC, partial HEP shapes'
