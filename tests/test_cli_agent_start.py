@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from hark.cli import build_parser
 from hark.config import AgentsConfig, HarkConfig, SessionConfig
 from hark.exitcodes import OK, USAGE
@@ -207,6 +209,44 @@ def test_agent_start_reject_list_hit_does_not_fall_back(
     assert "no safe executable" in captured.err
 
 
+@pytest.mark.parametrize(
+    ("command", "target_name"),
+    (("cc --version", "gcc"), ("cr review", "coderabbit")),
+)
+def test_agent_start_quoted_known_unsafe_alias_does_not_fall_back(
+    monkeypatch, capsys, tmp_path: Path, command: str, target_name: str
+):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    target = _executable(bindir / target_name)
+    (bindir / command.split()[0]).symlink_to(target)
+
+    code, client, captured, _ = _run_agent_start(
+        monkeypatch, capsys, tmp_path, [command]
+    )
+
+    assert code == USAGE
+    assert client.started == []
+    assert command.split()[0] in captured.err
+    assert "no safe executable" in captured.err
+
+
+def test_agent_start_quoted_safe_catalog_command_preserves_args(
+    monkeypatch, capsys, tmp_path: Path
+):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    codex = _executable(bindir / "codex")
+
+    code, client, captured, _ = _run_agent_start(
+        monkeypatch, capsys, tmp_path, ["codex --version", "--json"]
+    )
+
+    assert code == OK
+    assert client.started[0][1] == [str(codex), "--version"]
+    assert '"agent_key": "codex"' in captured.out
+
+
 def test_agent_start_unknown_non_executable_does_not_start_pane(
     monkeypatch, capsys, tmp_path: Path
 ):
@@ -221,6 +261,43 @@ def test_agent_start_unknown_non_executable_does_not_start_pane(
     assert code == USAGE
     assert client.started == []
     assert "custom-agent" in captured.err
+
+
+@pytest.mark.parametrize("relative", (False, True))
+def test_agent_start_implicit_non_executable_path_does_not_start_pane(
+    monkeypatch, capsys, tmp_path: Path, relative: bool
+):
+    target = tmp_path / "plain-agent"
+    target.write_text("not executable\n")
+    target.chmod(0o644)
+    monkeypatch.chdir(tmp_path)
+    command = f"./{target.name}" if relative else str(target)
+
+    code, client, captured, _ = _run_agent_start(
+        monkeypatch, capsys, tmp_path, [command]
+    )
+
+    assert code == USAGE
+    assert client.started == []
+    assert command in captured.err
+    assert "regular executable" in captured.err
+
+
+@pytest.mark.parametrize("relative", (False, True))
+def test_agent_start_implicit_unknown_executable_path_regression(
+    monkeypatch, capsys, tmp_path: Path, relative: bool
+):
+    target = _executable(tmp_path / "custom-agent")
+    monkeypatch.chdir(tmp_path)
+    command = f"./{target.name}" if relative else str(target)
+
+    code, client, captured, _ = _run_agent_start(
+        monkeypatch, capsys, tmp_path, [command, "--json"]
+    )
+
+    assert code == OK
+    assert client.started[0][1] == [command]
+    assert '"source": "adhoc"' in captured.out
 
 
 def test_agent_start_unsafe_override_symlink_does_not_fall_back(

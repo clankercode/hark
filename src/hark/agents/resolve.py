@@ -177,6 +177,14 @@ def is_safe_executable(cmd: str, *, path: str | None = None) -> str | None:
     return found
 
 
+def _is_regular_executable(path: str) -> bool:
+    """Return whether ``path`` names a regular executable file."""
+    try:
+        return Path(path).is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
 def _spec_for_key(key: str) -> AgentSpec | None:
     key_l = key.strip().lower()
     mapped = _KEY_BY_TOKEN.get(key_l)
@@ -306,6 +314,7 @@ def resolve_adhoc_argv(
     extra_args: Sequence[str] = (),
     path: str | None = None,
     require_on_path: bool = True,
+    require_safe_executable: bool = False,
 ) -> ResolvedCli:
     """Resolve free-form ad-hoc argv (no catalog alias magic)."""
     if isinstance(command, str):
@@ -325,7 +334,33 @@ def resolve_adhoc_argv(
         )
 
     first = prefix[0]
-    if require_on_path and not first.startswith("/") and not first.startswith("."):
+    if require_safe_executable:
+        found = _which(first, path=path)
+        if not found:
+            candidate = Path(first)
+            if candidate.exists() or candidate.is_symlink():
+                message = (
+                    "implicit ad-hoc command is not a regular executable file: "
+                    f"{first!r}"
+                )
+            else:
+                message = f"ad-hoc command not found on PATH: {first!r}"
+            raise ResolveError(
+                message,
+                reason=ResolveFailureReason.INVALID_ADHOC_COMMAND,
+            )
+        if not _is_regular_executable(found):
+            raise ResolveError(
+                f"implicit ad-hoc command is not a regular executable file: {first!r}",
+                reason=ResolveFailureReason.INVALID_ADHOC_COMMAND,
+            )
+        if _is_rejected(first, found):
+            raise ResolveError(
+                f"implicit ad-hoc command rejected as unsafe: {first!r}",
+                reason=ResolveFailureReason.INVALID_ADHOC_COMMAND,
+            )
+        prefix = [found, *prefix[1:]]
+    elif require_on_path and not first.startswith("/") and not first.startswith("."):
         found = _which(first, path=path)
         if not found:
             raise ResolveError(
@@ -362,15 +397,35 @@ def resolve_flexible(
     path: str | None = None,
     adhoc: bool = False,
 ) -> ResolvedCli:
-    """Catalog resolve, or ad-hoc when ``adhoc`` or unknown name with path-like cmd."""
+    """Resolve a catalog command, or safely fall back for an unknown command head."""
     if adhoc:
         return resolve_adhoc_argv(
             name_or_command, extra_args=extra_args, path=path
         )
     try:
+        command_parts = _split_simple(name_or_command)
+    except ValueError:
+        # Preserve resolve_adhoc_argv's structured malformed-command error.
+        return resolve_adhoc_argv(
+            name_or_command,
+            extra_args=extra_args,
+            path=path,
+            require_safe_executable=True,
+        )
+    if not command_parts:
+        # Preserve resolve_agent_argv's structured empty-command error.
         return resolve_agent_argv(
             name_or_command,
             extra_args=extra_args,
+            overrides=overrides,
+            prefer_aliases=prefer_aliases,
+            path=path,
+        )
+    command_head, *embedded_args = command_parts
+    try:
+        return resolve_agent_argv(
+            command_head,
+            extra_args=[*embedded_args, *extra_args],
             overrides=overrides,
             prefer_aliases=prefer_aliases,
             path=path,
@@ -381,7 +436,10 @@ def resolve_flexible(
         # Only a genuinely unknown catalog token gets implicit ad-hoc policy.
         # resolve_adhoc_argv retains authority over its PATH/input validation.
         return resolve_adhoc_argv(
-            name_or_command, extra_args=extra_args, path=path
+            name_or_command,
+            extra_args=extra_args,
+            path=path,
+            require_safe_executable=True,
         )
 
 
