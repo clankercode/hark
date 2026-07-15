@@ -1,0 +1,58 @@
+---
+complexity: medium
+created_at: "2026-07-15T15:58:03Z"
+depends_on: []
+estimate_hours: 1
+id: B125
+priority: high
+status: pending
+tags: []
+title: 'Hark skill: structured startup interview (scope, autonomy, role, mode)'
+updated_at: "2026-07-15T15:58:03Z"
+---
+## Summary
+
+The hark skill should tell the agent to ask the user several setup questions when starting up (voice-first, one at a time), and pass the answers through so runtime behavior matches operator intent.
+
+Current skill bootstrap (B116 / On skill start) asks about Herdr sessions (local / SSH / mix) and incomplete setup (persona/wake), but does **not** cover operator intent for this handsfree session: event scope, autonomy, role, or ambient mode. Agents jump to “Hark is ready” + monitor without this interview.
+
+## Required startup questions
+
+Ask (by voice, one at a time) when `/hark` or `/handsfree` starts, unless the operator already stated answers in this conversation:
+
+1. **Scope: session-local vs listen to Herdr too**
+   - Session-local only (orchestrator ambient / this chat) vs also forward/watch Herdr agent events.
+   - **Must pass through to Hark when starting** so that in session-local mode Herdr events are **not** forwarded (no blocked/done noise on the monitor path the agent acts on).
+   - Distinct from “which Herdr sockets” (local/SSH) — this is “should Herdr events reach me at all for this run?”
+
+2. **How active vs how autonomous**
+   - Spectrum: mostly silent / speak only when blocked → proactive status → more hands-on babysitting.
+   - Skill should map answers to concrete behavior (when to TTS status, when to ask, when to stay quiet).
+
+3. **Describe the role to be done**
+   - Free-form: what is this handsfree session for? (unblock agents, pair on a feature, review, AFK babysit, etc.)
+   - Use role text to bias follow-ups and TTS style.
+
+4. **What mode to run in?**
+   - Trigger phrase + auto-end (finish on silence/Smart Turn / end phrases without agent radio HOLD loop?)
+   - Trigger phrase + radio (classic HOLD; partials private; end with over / okay hark send)
+   - Conversational (always-on after wake / streaming; respond to partials/turns)
+   - Wire to `[ambient].streaming`, listen end_mode, and skill partial/turn rules so mode choice is not left implicit.
+
+5. **Follow-up questions based on answers**
+   - Conditional: e.g. if Herdr-on → which sessions; if autonomous-high → risk confirm policy; if role is “review only” → no agent-start; if radio → remind end phrases; if conversation → remind no re-wake between turns.
+   - Keep one question per TTS turn.
+
+## Acceptance criteria
+
+- [ ] Skill documents the interview order and hard rule: do not arm workers/monitor as “ready” until required answers are collected (or reconfirmed).
+- [ ] Session-local vs Herdr-listen is passed into Hark start/config so Herdr events are suppressed in session-local mode (product + skill, not skill prose only).
+- [ ] Autonomy + role are recorded for the session (state or spoken ack) and used to gate how chatty/proactive the agent is.
+- [ ] Mode maps to ambient streaming / radio / auto-end behavior with operator-facing labels matching the three options above.
+- [ ] Follow-ups are specified as a small decision tree, not “ad-hoc invent questions.”
+- [ ] Alias skill `handsfree` stays in sync with `hark`.
+
+## Notes
+
+- Overlaps existing B116 session targeting; extend rather than replace.
+- Dogfood gap: skill currently optimizes for “watch Herdr + ambient” as the default path.
