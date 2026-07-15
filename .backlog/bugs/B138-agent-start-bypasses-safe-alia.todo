@@ -1,0 +1,32 @@
+---
+complexity: low
+created_at: "2026-07-15T21:03:34Z"
+depends_on: []
+estimate_hours: 1
+id: B138
+priority: high
+status: pending
+tags:
+    - agent-control
+    - resolver
+    - safety
+    - cli
+title: agent-start bypasses safe alias rejection through blanket ad-hoc fallback
+updated_at: "2026-07-15T21:03:34Z"
+---
+## Evidence
+cmd_agent_start catches every ResolveError from resolve_agent_argv and then calls resolve_adhoc_argv, although its comment says fallback is only for an unknown PATH binary. With PATH limited to /usr/bin, catalog resolution correctly rejects cc because it resolves to the system compiler, but the fallback then resolves /usr/bin/cc as an ad-hoc agent command and cmd_agent_start returns success. This regresses the alias reject contract implemented by B055/B057. Resolver tests cover rejection while CLI tests replace the resolver, so the end-to-end invariant is absent.
+
+## Expected
+A known alias that fails safety validation remains rejected. Automatic ad-hoc fallback occurs only for a genuinely unknown catalog token that independently passes ad-hoc safety rules; explicit --adhoc remains intentional.
+
+## Actual
+The CLI erases the distinction between unknown and unsafe resolver failures and can launch a rejected compiler binary as an agent.
+
+## Acceptance criteria
+- Preserve structured resolver failure reasons so cmd_agent_start can distinguish unknown from rejected or invalid.
+- Never auto-fallback after a known alias, reject-list, unsafe symlink, malformed override, or empty-command failure.
+- Keep explicit --adhoc behavior, including its own safety rules.
+- Prefer the existing resolve_flexible policy or one shared launch-resolution path over recreating fallback policy in CLI.
+- Add end-to-end CLI tests for cc to gcc rejection, unknown safe PATH binary fallback, unsafe unknown binary, overrides, explicit --adhoc, and normal aliases.
+- Error output explains the rejected token without starting a Herdr pane.
