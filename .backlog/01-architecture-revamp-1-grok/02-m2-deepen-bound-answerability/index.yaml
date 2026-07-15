@@ -27,7 +27,7 @@ epics:
       locked: false
       name: 'E3: Wire answer, queue, dashboard through Answerability'
       path: 03-e3-wire-answer-queue-dashboard
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: 'Fixtures: needs_input registered → answer succeeds when pane still has menu; reject on true idle/completed; queue lists correctly. Update SAFETY.md compatible state.'

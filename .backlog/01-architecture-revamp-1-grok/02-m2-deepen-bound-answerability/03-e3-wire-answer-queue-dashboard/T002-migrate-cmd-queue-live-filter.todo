@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-07-15T05:40:48Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:41:24Z"
 complexity: medium
 created_at: "2026-07-15T04:29:53Z"
 depends_on:
     - P1.M2.E3.T001
+duration_minutes: 0.6101887548333333
 estimate_hours: 2
 id: P1.M2.E3.T002
 priority: high
 started_at: "2026-07-15T05:40:48Z"
-status: in_progress
+status: done
 tags: []
 title: Migrate cmd_queue live filter + dashboard /answer
-updated_at: "2026-07-15T05:40:48Z"
+updated_at: "2026-07-15T05:41:24Z"
 ---
 # Migrate cmd_queue live filter + dashboard /answer
 
