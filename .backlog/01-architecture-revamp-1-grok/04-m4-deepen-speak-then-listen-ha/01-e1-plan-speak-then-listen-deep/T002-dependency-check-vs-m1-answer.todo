@@ -1,16 +1,17 @@
 ---
 claimed_at: "2026-07-15T05:53:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:53:07Z"
 complexity: low
 created_at: "2026-07-15T04:30:08Z"
 depends_on:
     - P1.M4.E1.T001
+duration_minutes: 0.008976808
 estimate_hours: 1
 id: P1.M4.E1.T002
 priority: medium
 started_at: "2026-07-15T05:53:07Z"
-status: in_progress
+status: done
 tags: []
 title: Dependency check vs M1 Answer Window
 updated_at: "2026-07-15T05:53:07Z"

@@ -39,7 +39,7 @@ milestones:
       locked: false
       name: 'M4: Deepen Speak-then-Listen Handoff'
       path: 04-m4-deepen-speak-then-listen-ha
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: Candidate 5 (Worth exploring). Two JSONL followers (monitor_feed.follow_state_files vs dashboard MultiTailer) and dual compaction (monitor_profile at watch write, compact_mode_a_event at monitor read). One deep StateFeedFollower; monitor and dashboard are thin adapters. Single HEP presentation profile.
