@@ -106,6 +106,7 @@ If `hark start` is “invalid choice”, reinstall editable before debugging Mod
 [tts]
 voice = "eve"            # or leo / catalog id
 # provider = "xai"
+# playback_speed = 1.0   # pitch-preserving tempo; non-default needs ffmpeg
 
 [ambient]
 enabled = true           # when operator is ready for ambient

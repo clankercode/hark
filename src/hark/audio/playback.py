@@ -663,6 +663,7 @@ def play_audio(
     data: bytes,
     *,
     sample_rate: int | None = None,
+    playback_speed: float = 1.0,
     on_near_end: Callable[[], None] | None = None,
     near_end_ms: int = 0,
     exclusive: bool = True,
@@ -680,12 +681,14 @@ def play_audio(
             return _play_audio_unlocked(
                 data,
                 sample_rate=sample_rate,
+                playback_speed=playback_speed,
                 on_near_end=on_near_end,
                 near_end_ms=near_end_ms,
             )
     return _play_audio_unlocked(
         data,
         sample_rate=sample_rate,
+        playback_speed=playback_speed,
         on_near_end=on_near_end,
         near_end_ms=near_end_ms,
     )
@@ -695,10 +698,20 @@ def _play_audio_unlocked(
     data: bytes,
     *,
     sample_rate: int | None = None,
+    playback_speed: float = 1.0,
     on_near_end: Callable[[], None] | None = None,
     near_end_ms: int = 0,
 ) -> PlayResult:
     fmt = sniff_audio_format(data)
+    if playback_speed != 1.0:
+        data = _apply_playback_speed(
+            data,
+            fmt=fmt,
+            sample_rate=sample_rate,
+            playback_speed=playback_speed,
+        )
+        fmt = "wav"
+        sample_rate = None
     duration_ms = estimate_duration_ms(data, sample_rate)
 
     def _maybe_schedule_near_end() -> threading.Timer | None:
@@ -739,6 +752,7 @@ def play_wav_bytes(
     data: bytes,
     *,
     sample_rate: int | None = None,
+    playback_speed: float = 1.0,
     on_near_end: Callable[[], None] | None = None,
     near_end_ms: int = 0,
     exclusive: bool = True,
@@ -746,10 +760,75 @@ def play_wav_bytes(
     return play_audio(
         data,
         sample_rate=sample_rate,
+        playback_speed=playback_speed,
         on_near_end=on_near_end,
         near_end_ms=near_end_ms,
         exclusive=exclusive,
     )
+
+
+def _atempo_filter(playback_speed: float) -> str:
+    """Build an ffmpeg atempo chain for any finite speed greater than zero."""
+    if not np.isfinite(playback_speed) or playback_speed <= 0:
+        raise ValueError("playback_speed must be a finite number greater than 0")
+
+    remaining = float(playback_speed)
+    factors: list[float] = []
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    factors.append(remaining)
+    return ",".join(f"atempo={factor:.12g}" for factor in factors)
+
+
+def _apply_playback_speed(
+    data: bytes,
+    *,
+    fmt: str,
+    sample_rate: int | None,
+    playback_speed: float,
+) -> bytes:
+    """Return pitch-preserving, tempo-adjusted WAV audio via ffmpeg."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("tts.playback_speed other than 1.0 requires ffmpeg")
+
+    suffix = ".raw" if fmt == "pcm" else f".{fmt}"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as src_tmp:
+        src = Path(src_tmp.name)
+        src_tmp.write(data)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as dest_tmp:
+        dest = Path(dest_tmp.name)
+
+    try:
+        cmd = [ffmpeg, "-y"]
+        if fmt == "pcm":
+            cmd.extend(
+                ["-f", "s16le", "-ar", str(sample_rate or 24000), "-ac", "1"]
+            )
+        cmd.extend(
+            [
+                "-i",
+                str(src),
+                "-filter:a",
+                _atempo_filter(playback_speed),
+                "-ac",
+                "1",
+                str(dest),
+            ]
+        )
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            detail = exc.stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"could not apply TTS playback speed: {detail}") from exc
+        return dest.read_bytes()
+    finally:
+        src.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
 
 
 def _play_pcm16(pcm: bytes, sample_rate: int) -> None:

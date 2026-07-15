@@ -329,6 +329,7 @@ def run_tts(
       cut + ``tts.truncated`` HEP/syslog (monitor-visible) if exceeded.
     - ``tts.chunk_chars``: per-provider synth size; multi-chunk play under one
       mute/duck hold so long replies are not mid-word chopped.
+    - ``tts.playback_speed``: pitch-preserving playback tempo (default 1.0).
     """
     full_text = (text or "").strip()
     if not full_text:
@@ -587,6 +588,7 @@ def run_tts(
                                     is_last = i == len(chunks) - 1
                                     pr = play_wav_bytes(
                                         audio_parts[i],
+                                        playback_speed=cfg.tts.playback_speed,
                                         on_near_end=on_near_end if is_last else None,
                                         near_end_ms=near
                                         if (on_near_end and is_last)

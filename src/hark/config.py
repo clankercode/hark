@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import tomllib
@@ -204,6 +205,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "language",
             "max_chars",
             "chunk_chars",
+            "playback_speed",
             "allow_espeak_fallback",
             # B095: print question text to terminal on ask / tts --listen
             "print_prompt",
@@ -496,6 +498,8 @@ class TtsConfig:
     max_chars: int = 0
     # Per provider synth request size; long text is multi-chunk played in full.
     chunk_chars: int = 1500
+    # Pitch-preserving playback tempo. 1.0 keeps the synthesized speed unchanged.
+    playback_speed: float = 1.0
     allow_espeak_fallback: bool = False
     # Print full question text to the controlling terminal when ask /
     # tts --listen speaks (B095). Default on; does not affect radio partials.
@@ -793,6 +797,7 @@ provider = "auto"
 provider = "auto"
 voice = "eve"                # xAI: eve ara leo rex sal … — hark providers voices
 language = "en"
+# playback_speed = 1.0         # pitch-preserving tempo; non-default needs ffmpeg
 # voice = "ara"
 # max_chars = 0                # total cap per TTS call; 0 = unlimited (speak full agent text)
 # chunk_chars = 1500           # per synth request; multi-chunk plays in full (B091)
@@ -1292,6 +1297,19 @@ def load_config(path: Path | None = None) -> HarkConfig:
             "on",
         )
 
+    raw_playback_speed = tts_raw.get("playback_speed", 1.0)
+    try:
+        if isinstance(raw_playback_speed, bool):
+            raise TypeError
+        tts_playback_speed = float(raw_playback_speed)
+    except (TypeError, ValueError):
+        tts_playback_speed = 0.0
+    if not math.isfinite(tts_playback_speed) or tts_playback_speed <= 0:
+        warnings.append(
+            "tts.playback_speed must be a finite number greater than 0; using 1.0"
+        )
+        tts_playback_speed = 1.0
+
     return HarkConfig(
         version=int(raw.get("version", 1)) if isinstance(raw.get("version", 1), int) else 1,
         sessions=sessions,
@@ -1482,6 +1500,7 @@ def load_config(path: Path | None = None) -> HarkConfig:
             ),
             max_chars=int(tts_raw.get("max_chars", 0)),
             chunk_chars=int(tts_raw.get("chunk_chars", 1500)),
+            playback_speed=tts_playback_speed,
             allow_espeak_fallback=bool(tts_raw.get("allow_espeak_fallback", False)),
             print_prompt=_as_bool(tts_raw.get("print_prompt"), default=True),
         ),
@@ -1723,6 +1742,7 @@ def config_to_dict(cfg: HarkConfig) -> dict[str, Any]:
             "language": cfg.tts.language,
             "max_chars": cfg.tts.max_chars,
             "chunk_chars": cfg.tts.chunk_chars,
+            "playback_speed": cfg.tts.playback_speed,
             "print_prompt": cfg.tts.print_prompt,
         },
         "confirm": {"mode": cfg.confirm.mode},

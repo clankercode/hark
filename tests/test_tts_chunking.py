@@ -54,6 +54,7 @@ def test_pack_word_boundary_long_sentence():
 
 def test_run_tts_plays_all_chunks(monkeypatch):
     plays: list[int] = []
+    playback_speeds: list[float] = []
     synth_calls: list[str] = []
 
     class FakeDuck:
@@ -92,6 +93,7 @@ def test_run_tts_plays_all_chunks(monkeypatch):
     monkeypatch.setattr(
         "hark.speech.play_wav_bytes",
         lambda audio, **k: plays.append(len(audio))
+        or playback_speeds.append(k["playback_speed"])
         or SimpleNamespace(duration_ms=100),
     )
     monkeypatch.setattr("hark.speech.duck_media", lambda *a, **k: FakeDuck())
@@ -114,6 +116,7 @@ def test_run_tts_plays_all_chunks(monkeypatch):
     cfg = HarkConfig()
     cfg.tts.max_chars = 0  # unlimited total
     cfg.tts.chunk_chars = 500  # force multi-chunk
+    cfg.tts.playback_speed = 1.25
     cfg.audio.hold_during_conference = False
     out = run_tts(cfg, long, play=True, conference_policy="force", use_cache=False)
     assert out["ok"] is True
@@ -124,6 +127,7 @@ def test_run_tts_plays_all_chunks(monkeypatch):
     assert out["original_chars"] == len(long.strip())
     assert len(synth_calls) == out["chunks"]
     assert len(plays) == out["chunks"]
+    assert playback_speeds == [1.25] * out["chunks"]
     assert sum(len(s) for s in synth_calls) >= len(long) - 5
 
 

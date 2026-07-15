@@ -207,6 +207,7 @@ provider = "auto"
 [tts]
 provider = "auto"
 max_chars = 500
+# playback_speed = 1.0  # pitch-preserving tempo; non-default needs ffmpeg
 
 [confirm]
 mode = "auto"   # for R0/R1; R2/R3 force always
