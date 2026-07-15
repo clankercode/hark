@@ -118,3 +118,4 @@ bugs:
     - file: B117-teams-vc-detection-miss-at-4-3.todo
     - file: B118-b017-browser-teams-chromium-vc.todo
     - file: B119-tts-mute-mic-cuts-off-operator.todo
+    - file: B120-tts-left-system-mic-muted-mute.todo
