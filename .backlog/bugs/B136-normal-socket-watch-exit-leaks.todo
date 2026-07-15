@@ -1,0 +1,31 @@
+---
+complexity: low
+created_at: "2026-07-15T21:03:11Z"
+depends_on: []
+estimate_hours: 1
+id: B136
+priority: medium
+status: pending
+tags:
+    - watch
+    - ssh
+    - tunnel
+    - lifecycle
+title: Normal socket-watch exit leaks its managed SSH tunnel
+updated_at: "2026-07-15T21:03:11Z"
+---
+## Evidence
+run_watch creates managed Tunnel objects before transport selection. In the socket path it directly returns _watch_socket before entering the later polling try/finally that calls Tunnel.stop. A deterministic reproduction made _watch_socket return 0 and observed stop_calls=0. Tunnel.stop is responsible for terminating the SSH process and removing the local socket. Exceptional socket fallback eventually reaches cleanup; normal socket return does not. This is distinct from B126, where non-watch operations never establish a tunnel.
+
+## Expected
+Every run_watch exit path stops every tunnel it created, regardless of socket or poll transport and whether exit is normal, interrupted, or exceptional.
+
+## Actual
+A normal return from the socket loop bypasses the only tunnel cleanup block.
+
+## Acceptance criteria
+- Enclose tunnel ownership in one cleanup scope that covers client setup, socket loop, poll loop, fallbacks, and all returns.
+- Stop each successfully created tunnel exactly once.
+- Preserve the original watch result and do not mask it with cleanup errors.
+- Tests cover normal socket return, KeyboardInterrupt, reconnect exhaustion, poll fallback, partial tunnel setup failure, and multiple tunnels.
+- Verify local socket files and SSH child processes are removed after exit.
