@@ -14,6 +14,16 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   **radio-only** — silence captures force HOLD (wait for capture end) so
   mid-capture mute cannot race `end_silence_s` (B084 freeze). Radio + streaming
   acks unchanged.
+- fix(streaming, B112 / GH #6): reduce perceived latency between operator speech
+  and `ambient.prompt` in streaming mode. (1) Radio idle auto-finish clamps to
+  `max(end_silence_s, streaming_ack_min_quiet_s)` when `[ambient].streaming` is
+  on so finals land after a natural pause (~2.1s) instead of the classic ~6.3s
+  hold. (2) TTS mute **freezes** silence counters (does not wipe progress);
+  mid-listen streaming acks no longer restart the quiet window. (3) Speech-level
+  energy during mute/pad logs `listen.speech_during_mute` and resets silence so
+  we do not false-finalize. Composes with B098/B105 (partials + quiet gate),
+  B106 (radio end phrases), B108/GH #2 (silence endpoint while streaming).
+  Half-duplex OS mute may still drop speech that starts *during* TTS.
 - fix(stdio, B109): line-buffer stdout/stderr when piped so progressive HEP /
   status streams to consumers instead of full-buffering until exit. Warn once
   on interactive commands (`tts --listen`, `listen`, `ask`, `monitor`, …) when

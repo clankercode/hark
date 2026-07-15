@@ -748,6 +748,8 @@ config_watch_debounce_ms = 400
 # listen ends — continuous speech without that pause is not stepped on.
 # Quiet-gate mid-capture TTS is radio-only (B108): silence end_mode still
 # auto-finalizes on end_silence_s and forces HOLD TTS until capture ends.
+# Also clamps radio idle auto-finish so ambient.prompt lands after a natural
+# pause (~end_silence_s) instead of the classic ~6.3s hold (B112).
 # streaming = false
 # streaming_ack_min_quiet_s = 2.0
 # Once the quiet gate is dogfooded safe, operators may leave streaming = true.
