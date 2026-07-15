@@ -899,23 +899,16 @@ def run_listen(
     partial_kind: str = "ambient.partial",
     discard_leading_ms: int = 0,
     audio_ok_after: Any | None = None,
-    # Prefer profile builders (policy_from_config) over gate kwargs at call sites.
+    # Prefer profile builders (policy_from_config) for gate knobs.
     profile: AnswerWindowProfile | None = None,
-    # B031: energy-gate / post-wake overrides (None = leave to profile/config)
-    abs_open_db: float | None = None,
-    open_margin_db: float | None = None,
-    initial_timeout_s: float | None = None,
-    lead_in_ms: int | None = None,
-    arm_cue: bool | None = None,
-    no_open_retry: bool | None = None,
-    no_open_nudge: bool | None = None,
-    no_open_nudge_text: str | None = None,
 ) -> ListenResult:
     """Capture speech. Radio mode streams partials via on_partial when enabled.
 
     Prefer ``profile=`` (``bound_answer`` / ``post_wake`` / ``confirm``) so gate
-    knobs come from :func:`policy_from_config`. Compat gate kwargs remain for
-    tests and transitional callers; omit them when the profile encodes them.
+    knobs (``abs_open_db``, ``arm_cue``, ``lead_in_ms``, ``no_open_*``, …) come
+    from :func:`policy_from_config` + config. Tests that need one-off gate
+    overrides should call ``open_answer_window(policy_from_config(...), deps=...)``
+    rather than passing gate kwargs here.
 
     on_partial(event_dict) is called for each non-final radio transcript so the orchestrator
     agents can start thinking early. Events always set partial=true. HOLD warnings
@@ -934,8 +927,7 @@ def run_listen(
     and/or ``discard_leading_ms`` so TTS tail / residual echo is dropped before the
     energy gate runs.
 
-    Post-wake / soft gate: use ``profile="post_wake"`` (or pass ``abs_open_db``,
-    ``lead_in_ms``, ``arm_cue``, ``no_open_*`` overrides when needed).
+    Post-wake / soft gate: use ``profile="post_wake"`` (ambient post_wake_* knobs).
     """
 
     # Thin facade (P1.M1.E4): build policy + deps, open answer window.
@@ -967,27 +959,12 @@ def run_listen(
     }
     if end_mode is not None:
         overrides["end_mode"] = end_mode
-    if abs_open_db is not None:
-        overrides["abs_open_db"] = float(abs_open_db)
-    if open_margin_db is not None:
-        overrides["open_margin_db"] = float(open_margin_db)
-    if initial_timeout_s is not None:
-        overrides["initial_timeout_s"] = float(initial_timeout_s)
-    if lead_in_ms is not None:
-        overrides["lead_in_ms"] = int(lead_in_ms or 0)
-    if arm_cue is not None:
-        overrides["arm_cue"] = bool(arm_cue)
-    if no_open_retry is not None:
-        overrides["no_open_retry"] = bool(no_open_retry)
-    if no_open_nudge is not None:
-        overrides["no_open_nudge"] = bool(no_open_nudge)
-    if no_open_nudge_text is not None:
-        overrides["no_open_nudge_text"] = no_open_nudge_text
 
     # Legacy seam (no explicit profile): preserve pre-facade ambient streaming
     # leak so existing tests / Mode A dogfood that omit profile= keep behavior.
     # Explicit profiles own streaming via policy_from_config (bound off; post_wake
-    # inherits [ambient].streaming).
+    # inherits [ambient].streaming). Historical pre-profile gate defaults:
+    # no lead-in / no arm cue unless profile or config encodes them.
     if profile is None:
         ambient = getattr(cfg, "ambient", None)
         ambient_streaming = (
@@ -1001,11 +978,8 @@ def run_listen(
             streaming_ack_min_quiet_s = 2.0
         overrides["streaming"] = ambient_streaming
         overrides["streaming_ack_min_quiet_s"] = streaming_ack_min_quiet_s
-        # Historical defaults when gate kwargs omitted (pre-profile API).
-        if lead_in_ms is None:
-            overrides["lead_in_ms"] = 0
-        if arm_cue is None:
-            overrides["arm_cue"] = False
+        overrides["lead_in_ms"] = 0
+        overrides["arm_cue"] = False
 
     policy = policy_from_config(cfg, effective_profile, **overrides)
     deps = AnswerWindowDeps(

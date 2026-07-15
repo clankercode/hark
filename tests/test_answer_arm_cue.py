@@ -99,10 +99,11 @@ def test_silence_arm_cue_before_speech_no_double_beep(monkeypatch, tmp_path):
         lambda event, **data: logs.append(event),
     )
 
+    # bound_answer: arm_cue from [audio].answer_arm_cue (default on)
     run_listen(
         HarkConfig(),
+        profile="bound_answer",
         post_tts_guard_s=0,
-        arm_cue=True,
     )
 
     assert starts == ["start"]
@@ -138,9 +139,9 @@ def test_radio_arm_cue_before_speech_no_double_beep(monkeypatch, tmp_path):
 
     result = run_listen(
         HarkConfig(listen=ListenConfig(end_mode="radio", stream_partials=False)),
+        profile="bound_answer",
         end_mode="radio",
         post_tts_guard_s=0,
-        arm_cue=True,
     )
 
     assert result.end_mode == "radio"
@@ -172,10 +173,13 @@ def test_radio_without_arm_cue_beeps_on_speech_open(monkeypatch, tmp_path):
     )
 
     run_listen(
-        HarkConfig(listen=ListenConfig(end_mode="radio")),
+        HarkConfig(
+            listen=ListenConfig(end_mode="radio"),
+            audio=AudioConfig(answer_arm_cue=False),
+        ),
+        profile="bound_answer",
         end_mode="radio",
         post_tts_guard_s=0,
-        arm_cue=False,
     )
 
     assert starts == ["start"]

@@ -100,16 +100,19 @@ def test_radio_post_wake_arm_start_and_stop_on_end_phrase(monkeypatch, tmp_path)
         lambda event, **data: logs.append(event),
     )
 
-    # Mirrors complete_after_wake(arm_cue=post_wake_arm_cue)
+    # Mirrors complete_after_wake: post_wake profile encodes lead_in + arm cue
     result = run_listen(
         HarkConfig(
             listen=ListenConfig(end_mode="radio", stream_partials=False),
-            ambient=AmbientConfig(streaming=False),
+            ambient=AmbientConfig(
+                streaming=False,
+                post_wake_lead_in_ms=150,
+                post_wake_arm_cue=True,
+            ),
         ),
+        profile="post_wake",
         end_mode="radio",
         post_tts_guard_s=0,
-        lead_in_ms=150,
-        arm_cue=True,
     )
 
     assert result.end_phrase  # product end
@@ -137,10 +140,13 @@ def test_silence_post_wake_arm_start_and_stop(monkeypatch, tmp_path):
     )
 
     result = run_listen(
-        HarkConfig(listen=ListenConfig(end_mode="silence")),
+        HarkConfig(
+            listen=ListenConfig(end_mode="silence"),
+            ambient=AmbientConfig(post_wake_arm_cue=True),
+        ),
+        profile="post_wake",
         end_mode="silence",
         post_tts_guard_s=0,
-        arm_cue=True,
     )
 
     assert result.text == "deploy now"
@@ -173,11 +179,11 @@ def test_streaming_suppresses_stop_keeps_start(monkeypatch, tmp_path):
     result = run_listen(
         HarkConfig(
             listen=ListenConfig(end_mode="radio", stream_partials=False),
-            ambient=AmbientConfig(streaming=True),
+            ambient=AmbientConfig(streaming=True, post_wake_arm_cue=True),
         ),
+        profile="post_wake",
         end_mode="radio",
         post_tts_guard_s=0,
-        arm_cue=True,
     )
 
     assert result.end_phrase
@@ -201,11 +207,16 @@ def test_radio_lead_in_before_arm_cue(monkeypatch, tmp_path):
     monkeypatch.setattr("hark.speech.syslog", lambda *a, **k: None)
 
     run_listen(
-        HarkConfig(listen=ListenConfig(end_mode="radio")),
+        HarkConfig(
+            listen=ListenConfig(end_mode="radio"),
+            ambient=AmbientConfig(
+                post_wake_lead_in_ms=200,
+                post_wake_arm_cue=True,
+            ),
+        ),
+        profile="post_wake",
         end_mode="radio",
         post_tts_guard_s=0,
-        lead_in_ms=200,
-        arm_cue=True,
     )
     assert 0.2 in sleeps
 

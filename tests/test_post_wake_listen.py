@@ -171,12 +171,12 @@ def test_no_open_nudge_then_success(monkeypatch, tmp_path):
 
     cfg = HarkConfig(
         listen=ListenConfig(no_open_retry=False, no_open_nudge=True),
+        ambient=AmbientConfig(
+            post_wake_no_open_nudge=True,
+            post_wake_no_open_tts="I heard the wake but not your prompt.",
+        ),
     )
-    result = run_listen(
-        cfg,
-        post_tts_guard_s=0,
-        no_open_nudge_text="I heard the wake but not your prompt.",
-    )
+    result = run_listen(cfg, profile="post_wake", post_tts_guard_s=0)
 
     assert result.text == "yes"
     assert tts_calls == ["I heard the wake but not your prompt."]
@@ -242,7 +242,12 @@ def test_no_open_disabled_raises_immediately(monkeypatch, tmp_path):
     assert stt.calls == 0
 
 
-def test_run_listen_passes_gate_overrides(monkeypatch, tmp_path):
+def test_open_answer_window_gate_overrides(monkeypatch, tmp_path):
+    """Gate knobs override via policy_from_config, not run_listen kwargs."""
+    from hark.answer_window.deps import AnswerWindowDeps
+    from hark.answer_window.open_window import open_answer_window
+    from hark.answer_window.policy import policy_from_config
+
     stt = _FakeStt(texts=["hi"])
     caps = _patch_listen_infra(monkeypatch, stt, [_cap()])
     monkeypatch.setattr("hark.speech.syslog", lambda *a, **k: None)
@@ -259,8 +264,9 @@ def test_run_listen_passes_gate_overrides(monkeypatch, tmp_path):
     )
 
     cfg = HarkConfig(listen=ListenConfig(abs_open_db=-40.0, open_margin_db=10.0))
-    run_listen(
+    policy = policy_from_config(
         cfg,
+        "bound_answer",
         post_tts_guard_s=0,
         abs_open_db=-50.0,
         open_margin_db=6.0,
@@ -268,6 +274,7 @@ def test_run_listen_passes_gate_overrides(monkeypatch, tmp_path):
         lead_in_ms=150,
         arm_cue=True,
     )
+    open_answer_window(policy, deps=AnswerWindowDeps(cfg=cfg))
     assert caps[0]["abs_open_db"] == -50.0
     assert caps[0]["open_margin_db"] == 6.0
     assert caps[0]["initial_timeout_s"] == 12.0
