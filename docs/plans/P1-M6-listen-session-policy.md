@@ -1,6 +1,6 @@
 # P1.M6 — ListenSessionPolicy (stop ambient leaking into listen)
 
-**Status:** design locked for E1 (implementation E2–E4)  
+**Status:** implemented (E1–E4 complete 2026-07-15)  
 **Date:** 2026-07-15  
 **Backlog:** `P1.M6`  
 **Depends on:** M1 Answer Window (policy type already exists as `AnswerWindowPolicy`)  

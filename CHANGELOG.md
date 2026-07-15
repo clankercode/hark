@@ -6,6 +6,12 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
 
 ## Unreleased
 
+- refactor(listen-session-policy, P1.M6): stop ambient streaming leaking into
+  bound listen. `ListenSessionPolicy` aliases `AnswerWindowPolicy`; profiles
+  `bound_answer` / `post_wake` / `confirm` own streaming defaults. `run_listen`
+  no longer inherits `[ambient].streaming` without `profile="post_wake"`;
+  TTS quiet-gate reads active-listen policy (`streaming` on `active.json`).
+  See `docs/plans/P1-M6-listen-session-policy.md`.
 - refactor(state-feed, P1.M5): unify JSONL followers into `hark.state_feed` —
   `StateFeedFollower` / `SourceFollower` with partial-line buffer, inode
   rotation, and composite cursors. `hark monitor` and dashboard `MultiTailer`
