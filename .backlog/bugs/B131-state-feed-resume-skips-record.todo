@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-15T21:01:31Z"
+depends_on: []
+estimate_hours: 1
+id: B131
+priority: medium
+status: pending
+tags:
+    - state-feed
+    - rotation
+    - event-loss
+    - dashboard
+title: State feed resume skips records from a rotated shorter file
+updated_at: "2026-07-15T21:01:31Z"
+---
+## Evidence
+SourceFollower.seek_to documents that unknown or rotated positions fall back to file start, but it always reopens the current path and calls _skip_lines with the old line-only sequence. Reproduction: create a 100-line watch file and cursor watch:100, rotate it, create a replacement with new-1 and new-2, then seek_to(100). _skip_lines consumes both new records while trying to reach 100 and poll returns an empty list. Dashboard REST and SSE resume both use this path. Existing state-feed and dashboard tests pass because they do not cover a stale cursor against a new shorter incarnation.
+
+## Expected
+A cursor from an older file incarnation conservatively replays the replacement from its first complete record so new events are not lost.
+
+## Actual
+The old line count is applied to the replacement file and every available new record is skipped.
+
+## Acceptance criteria
+- Resume detects or conservatively handles file-incarnation change, including replacements that are shorter, equal length, or longer than the prior file.
+- A stale cursor replays the new incarnation from its first complete record.
+- A valid same-incarnation cursor still resumes at sequence plus one.
+- Define safe behavior for legacy line-only cursor tokens, preferring duplicates over silent loss.
+- Cover SourceFollower directly and dashboard REST and SSE reconnect paths.
+- Preserve partial-line buffering, truncation handling, and composite cursor compatibility.
