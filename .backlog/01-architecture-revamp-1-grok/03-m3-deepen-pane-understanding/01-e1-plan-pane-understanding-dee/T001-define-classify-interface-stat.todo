@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:44:22Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:45:15Z"
 complexity: medium
 created_at: "2026-07-15T04:29:54Z"
 depends_on: []
+duration_minutes: 0.8953546902833334
 estimate_hours: 1
 id: P1.M3.E1.T001
 priority: high
 started_at: "2026-07-15T05:44:22Z"
-status: in_progress
+status: done
 tags: []
 title: Define classify interface + state types
-updated_at: "2026-07-15T05:44:22Z"
+updated_at: "2026-07-15T05:45:15Z"
 ---
 # Define classify interface + state types
 
