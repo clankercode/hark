@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-07-15T05:09:12Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:11:35Z"
 complexity: medium
 created_at: "2026-07-15T04:29:39Z"
 depends_on:
     - P1.M1.E2.T001
+duration_minutes: 2.38937296355
 estimate_hours: 2
 id: P1.M1.E2.T003
 priority: high
 started_at: "2026-07-15T05:09:12Z"
-status: in_progress
+status: done
 tags: []
 title: Wire listen_end + listen_control as internals
-updated_at: "2026-07-15T05:09:12Z"
+updated_at: "2026-07-15T05:11:35Z"
 ---
 # Wire listen_end + listen_control as internals
 

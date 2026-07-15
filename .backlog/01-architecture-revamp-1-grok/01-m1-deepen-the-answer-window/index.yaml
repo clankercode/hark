@@ -27,7 +27,7 @@ epics:
       locked: false
       name: 'E3: Extract silence Answer Window session'
       path: 03-e3-extract-silence-answer-wind
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: run_listen / ambient complete_after_wake / CLI become thin adapters over Answer Window. Delete kwargs soup from call sites. Preserve Mode A CLI exit codes and HEP partial shapes.
