@@ -1,0 +1,34 @@
+---
+complexity: medium
+created_at: "2026-07-15T03:31:25Z"
+depends_on: []
+estimate_hours: 3
+id: B112
+priority: high
+status: pending
+tags:
+    - streaming
+    - latency
+    - github
+title: 'Perceived regression: long latency between operator speech and prompt delivery (streaming mode)'
+updated_at: "2026-07-15T03:31:25Z"
+---
+## GitHub
+https://github.com/ultradyn/hark/issues/6
+
+**Acceptance:** fix and close GitHub issue #6 as part of completing this bug (comment with resolution + close). May be resolved by composing fixes from related issues (#1/#2, B098/B105) if dogfood shows the latency symptom is gone — still must document and close #6.
+
+## Summary
+After speaking (post wake-word), long delay before `ambient.prompt` reaches the orchestrator — long enough that the operator re-sends, assuming the message was lost.
+
+## Likely factors
+1. Streaming-mode finalization delay — with `[ambient].streaming = true`, prompt may not deliver until explicit end phrase; natural pause does not finalize (related #2).
+2. Mic-mute-during-TTS (half-duplex) — speech during TTS dropped/delayed until unmute.
+3. Related: #1 radio end phrase, #4 streaming end-beep, B098 streaming mode, B105 pause-gated streaming TTS acks.
+
+## Expected
+- Interim partials and/or prompt finalize promptly after a quiet window in streaming mode.
+- Operator speech not silently lost when it overlaps orchestrator TTS.
+
+## Impact
+Breaks core voice-bridge loop trust; duplicate sends.
