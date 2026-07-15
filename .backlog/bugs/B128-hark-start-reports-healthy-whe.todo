@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-15T20:57:34Z"
+depends_on: []
+estimate_hours: 1
+id: B128
+priority: high
+status: pending
+tags:
+    - workers
+    - monitor
+    - reliability
+title: hark start reports healthy when only one requested worker remains
+updated_at: "2026-07-15T20:57:34Z"
+---
+## Evidence
+start_workers treats any non-empty collect_worker_pids result as complete success and returns already_running before checking which roles were requested. mode-a.pids stores only integer PIDs, and workers_status exposes one aggregate running boolean, so neither path can distinguish watch from ambient. If watch exits while ambient remains, hark start and hark start --status report workers running and do not restore watch; blocked Herdr events can then be missed. The inverse leaves wake capture unavailable. The existing test_start_when_already_running confirms that one arbitrary live PID short-circuits startup.
+
+## Expected
+Idempotent start reconciles the requested worker set: preserve healthy requested roles, start missing roles, and report each role separately.
+
+## Actual
+One surviving PID makes the whole worker set look healthy, regardless of whether it is watch, ambient, or even a matching Hark worker.
+
+## Acceptance criteria
+- Persist or discover worker role and process identity for every recorded PID.
+- start_workers compares requested watch and ambient roles with live roles and starts only missing roles without duplicating healthy roles.
+- workers_status and hark start --status report watch and ambient health separately.
+- A failed replacement is reported as partial or failed, never already_running success.
+- Tests cover watch-only survivor, ambient-only survivor, both healthy, both absent, stale PID, and role mismatch.
+- Preserve harkd mutual exclusion and graceful recording shutdown.

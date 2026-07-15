@@ -126,3 +126,4 @@ bugs:
     - file: B125-hark-skill-structured-startup.todo
     - file: B126-remote-herdr-sessions-are-not.todo
     - file: B127-worker-stop-can-signal-an-unre.todo
+    - file: B128-hark-start-reports-healthy-whe.todo
