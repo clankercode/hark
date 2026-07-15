@@ -205,25 +205,26 @@ def _resolve_override_executable(
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         )
     try:
-        pinned = str(Path(resolved).resolve(strict=True))
+        selected = os.path.abspath(resolved)
+        target = str(Path(selected).resolve(strict=True))
     except (OSError, RuntimeError, ValueError) as exc:
         raise ResolveError(
             f"override for agent {agent_key!r} is not a regular executable: "
             f"{command!r}",
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         ) from exc
-    if not _is_regular_executable(pinned):
+    if not _is_regular_executable(target):
         raise ResolveError(
             f"override for agent {agent_key!r} is not a regular executable: "
             f"{command!r}",
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         )
-    if _is_rejected(command, pinned):
+    if _is_rejected(command, target):
         raise ResolveError(
             f"unsafe override for agent {agent_key!r} rejected: {command!r}",
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         )
-    return pinned
+    return selected
 
 
 def _spec_for_key(key: str) -> AgentSpec | None:

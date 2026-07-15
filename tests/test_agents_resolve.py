@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -200,11 +201,18 @@ def test_override_relative_path_entry_is_pinned_absolute(
     assert resolved.argv == [str(target.resolve()), "--configured"]
 
 
-def test_override_symlink_is_pinned_to_validated_target(
+def test_override_symlink_preserves_selected_argv0_dispatch(
     tmp_path: Path, monkeypatch
 ):
-    target = tmp_path / "real-codex"
-    target.write_text("#!/bin/sh\n")
+    target = tmp_path / "agent-dispatcher"
+    target.write_text(
+        "#!/bin/sh\n"
+        'if [ "$(basename "$0")" = "custom-codex" ]; then\n'
+        "  printf selected\n"
+        "else\n"
+        "  printf target\n"
+        "fi\n"
+    )
     target.chmod(0o755)
     shim = tmp_path / "custom-codex"
     shim.symlink_to(target)
@@ -215,7 +223,14 @@ def test_override_symlink_is_pinned_to_validated_target(
         overrides={"codex": ["./custom-codex", "--configured"]},
     )
 
-    assert resolved.argv == [str(target.resolve()), "--configured"]
+    assert resolved.argv == [str(shim.absolute()), "--configured"]
+    executed = subprocess.run(
+        resolved.argv[:1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert executed.stdout == "selected"
 
 
 def test_adhoc_argv(tmp_path: Path):
