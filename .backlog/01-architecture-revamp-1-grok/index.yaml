@@ -48,7 +48,7 @@ milestones:
       locked: false
       name: 'M5: Unify the State Feed Follower'
       path: 05-m5-unify-the-state-feed-follow
-      status: pending
+      status: done
     - complexity: medium
       depends_on: []
       description: Candidate 6 (Worth exploring). Bound listen and ambient post-wake share one path, but streaming policy hangs off [ambient] and leaks into core listen/TTS via getattr(cfg.ambient, streaming). Explicit ListenSessionPolicy.from_config(cfg, profile=...) built at the seam; speech never reads ambient section. Natural first slice of M1.
