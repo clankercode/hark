@@ -29,6 +29,6 @@ tasks:
       file: T002-update-safety-md-skill-notes-f.todo
       id: T002
       priority: medium
-      status: pending
+      status: in_progress
       tags: []
       title: Update SAFETY.md + skill notes for false-done answer path
