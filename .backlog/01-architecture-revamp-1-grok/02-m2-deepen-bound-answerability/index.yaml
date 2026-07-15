@@ -18,7 +18,7 @@ epics:
       locked: false
       name: 'E2: Answerability module implementation'
       path: 02-e2-answerability-module-implem
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: answering.answer_bound_event, cli._queue_live_answerable, dashboard answer path all call the same module. Delete duplicated status==blocked checks.
