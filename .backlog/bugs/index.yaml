@@ -135,3 +135,4 @@ bugs:
     - file: B134-concurrent-bound-answers-can-d.todo
     - file: B135-watch-transport-socket-ignores.todo
     - file: B136-normal-socket-watch-exit-leaks.todo
+    - file: B137-partial-worker-spawn-leaves-an.todo
