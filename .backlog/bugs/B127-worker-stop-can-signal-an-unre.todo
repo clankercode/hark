@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-15T20:56:35Z"
+depends_on: []
+estimate_hours: 1
+id: B127
+priority: high
+status: pending
+tags:
+    - safety
+    - process-lifecycle
+    - pidfile
+title: Worker stop can signal an unrelated process from a stale reused PID
+updated_at: "2026-07-15T20:56:35Z"
+---
+## Evidence
+workers.collect_worker_pids trusts every live integer in mode-a.pids via daemon.live_pids_from_file, which checks only os.kill(pid, 0) plus zombie state. stop_workers then sends SIGTERM and eventually SIGKILL to that list without verifying that a PID is a Hark ambient or watch worker or that it is the same process originally recorded. tests/test_workers.py::test_stop_signals_live_child writes the PID of a plain Python sleep process into mode-a.pids; the passing test confirms hark stop terminates that unrelated process.
+
+## Expected
+A stale pidfile or OS PID reuse must never make Hark signal an unrelated process.
+
+## Actual
+Any live PID present in mode-a.pids is treated as a Hark worker and signaled. The shell launcher has process-shape detection for scanned orphans but still trusts live pidfile entries.
+
+## Acceptance criteria
+- Persist enough process identity to detect PID reuse, such as process start time plus expected Hark worker role.
+- Before SIGTERM or SIGKILL, verify each recorded PID is the same ambient or watch process Hark recorded.
+- Ignore and remove stale or mismatched entries without signaling them.
+- Apply the same validation to Python worker lifecycle and scripts/run-mode-a.sh, ideally through one deep module with the shell as an adapter.
+- Add tests with a live unrelated process and a simulated reused PID that assert no signal is sent.
+- Preserve legitimate graceful stop, busy-lock waiting, restart reason, and orphan recovery.
