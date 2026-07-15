@@ -20,7 +20,7 @@ tasks:
       file: T001-port-monitor-tailer-tests-to-s.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Port monitor + tailer tests to shared core
     - complexity: low
@@ -30,6 +30,6 @@ tasks:
       file: T002-docs-feed-topology-in-architec.todo
       id: T002
       priority: low
-      status: pending
+      status: in_progress
       tags: []
       title: 'Docs: feed topology in ARCHITECTURE.md'

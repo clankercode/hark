@@ -19,7 +19,7 @@ tasks:
       file: T001-adapter-hark-monitor-over-stat.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: 'Adapter: hark monitor over StateFeedFollower'
     - complexity: medium
@@ -29,7 +29,7 @@ tasks:
       file: T002-adapter-dashboard-multitailer.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: 'Adapter: dashboard MultiTailer over same core'
     - complexity: medium
@@ -39,6 +39,6 @@ tasks:
       file: T003-unify-monitor-profile-ambient.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Unify monitor_profile / ambient compact presentation

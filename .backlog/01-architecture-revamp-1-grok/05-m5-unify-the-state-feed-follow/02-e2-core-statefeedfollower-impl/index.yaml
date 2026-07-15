@@ -19,7 +19,7 @@ tasks:
       file: T001-implement-statefeedfollower-co.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Implement StateFeedFollower core (buffer, rotate, multi-path)
     - complexity: medium
@@ -29,6 +29,6 @@ tasks:
       file: T002-cursor-token-format-for-multi.todo
       id: T002
       priority: medium
-      status: pending
+      status: in_progress
       tags: []
       title: Cursor token format for multi-source resume

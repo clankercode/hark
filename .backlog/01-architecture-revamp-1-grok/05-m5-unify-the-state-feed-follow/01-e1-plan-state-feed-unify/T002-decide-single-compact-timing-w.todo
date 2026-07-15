@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-15T05:58:09Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-07-15T04:30:08Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 1
 id: P1.M5.E1.T002
 priority: high
-started_at: null
-status: pending
+started_at: "2026-07-15T05:58:09Z"
+status: in_progress
 tags: []
 title: Decide single compact timing (write vs read)
-updated_at: "2026-07-15T04:30:08Z"
+updated_at: "2026-07-15T05:58:09Z"
 ---
 # Decide single compact timing (write vs read)
 

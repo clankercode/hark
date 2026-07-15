@@ -28,6 +28,6 @@ tasks:
       file: T002-decide-single-compact-timing-w.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Decide single compact timing (write vs read)
