@@ -393,6 +393,36 @@ def test_agent_start_unsafe_override_symlink_does_not_fall_back(
     assert "codex" in captured.err
 
 
+@pytest.mark.parametrize("relative", (False, True))
+@pytest.mark.parametrize("suffix", ("/", "/."))
+def test_agent_start_override_file_with_directory_syntax_does_not_start_pane(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+    relative: bool,
+    suffix: str,
+):
+    validation_cwd = tmp_path / "validation"
+    validation_cwd.mkdir()
+    target = _executable(validation_cwd / "custom-codex")
+    monkeypatch.chdir(validation_cwd)
+    base = f"./{target.name}" if relative else str(target)
+    override = f"{base}{suffix}"
+
+    code, client, captured, _ = _run_agent_start(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["codex"],
+        overrides={"codex": override},
+    )
+
+    assert code == USAGE
+    assert client.started == []
+    assert "codex" in captured.err
+    assert "override" in captured.err
+
+
 @pytest.mark.parametrize(
     ("agent", "override", "target_name"),
     (("claude", "cc", "gcc"), ("cursor-agent", "cr", "coderabbit")),

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import stat
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -180,8 +181,8 @@ def is_safe_executable(cmd: str, *, path: str | None = None) -> str | None:
 def _is_regular_executable(path: str) -> bool:
     """Return whether ``path`` names a regular executable file."""
     try:
-        return Path(path).is_file() and os.access(path, os.X_OK)
-    except OSError:
+        return stat.S_ISREG(os.stat(path).st_mode) and os.access(path, os.X_OK)
+    except (OSError, ValueError):
         return False
 
 
@@ -210,6 +211,19 @@ def _resolve_override_executable(
             if os.path.isabs(resolved)
             else os.path.join(os.getcwd(), resolved)
         )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResolveError(
+            f"override for agent {agent_key!r} is not a regular executable: "
+            f"{command!r}",
+            reason=ResolveFailureReason.INVALID_OVERRIDE,
+        ) from exc
+    if not _is_regular_executable(selected):
+        raise ResolveError(
+            f"override for agent {agent_key!r} is not a regular executable: "
+            f"{command!r}",
+            reason=ResolveFailureReason.INVALID_OVERRIDE,
+        )
+    try:
         target = str(Path(selected).resolve(strict=True))
     except (OSError, RuntimeError, ValueError) as exc:
         raise ResolveError(
@@ -217,12 +231,6 @@ def _resolve_override_executable(
             f"{command!r}",
             reason=ResolveFailureReason.INVALID_OVERRIDE,
         ) from exc
-    if not _is_regular_executable(target):
-        raise ResolveError(
-            f"override for agent {agent_key!r} is not a regular executable: "
-            f"{command!r}",
-            reason=ResolveFailureReason.INVALID_OVERRIDE,
-        )
     if _is_rejected(command, target):
         raise ResolveError(
             f"unsafe override for agent {agent_key!r} rejected: {command!r}",

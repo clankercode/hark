@@ -160,6 +160,26 @@ def test_override_path_requires_regular_executable(
 
 
 @pytest.mark.parametrize("relative", (False, True))
+@pytest.mark.parametrize("suffix", ("/", "/."))
+def test_override_rejects_file_path_with_directory_syntax(
+    tmp_path: Path, monkeypatch, relative: bool, suffix: str
+):
+    target = tmp_path / "custom-codex"
+    target.write_text("#!/bin/sh\n")
+    target.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    base = f"./{target.name}" if relative else str(target)
+    override = f"{base}{suffix}"
+
+    with pytest.raises(
+        ResolveError, match=rf"agent 'codex'.*{target.name}"
+    ) as exc_info:
+        resolve_agent_argv("codex", overrides={"codex": override})
+
+    assert exc_info.value.reason is ResolveFailureReason.INVALID_OVERRIDE
+
+
+@pytest.mark.parametrize("relative", (False, True))
 def test_override_safe_path_preserves_prefix_and_extra_args(
     tmp_path: Path, monkeypatch, relative: bool
 ):
