@@ -18,7 +18,8 @@ tasks:
       file: T001-define-classify-interface-stat.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Define classify interface + state types
     - complexity: medium
       depends_on:
