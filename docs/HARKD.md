@@ -128,7 +128,13 @@ Double-send is prevented by **one delivery owner** plus library idempotency:
    - v0: harkd does **not** auto-deliver — so it cannot race handsfree on send.
 
 2. **Shared `DeliveryStore`** (`events.jsonl` + `deliveries.jsonl`)  
-   - Bound `answer` checks fingerprint, pane revision, and prior delivery status.  
+   - Bound `answer` atomically acquires a durable per-event owner before live
+     validation, then fsyncs `acquired` → `validating` → `sending` before the
+     Herdr write and finally `delivered`, `rejected`, or `uncertain`.
+   - A concurrent answer receives the current stable outcome and cannot send.
+     An abandoned pre-send owner may be recovered; an abandoned `sending`
+     owner becomes `uncertain` and is never retried automatically.
+   - Fingerprint and pane-revision checks remain mandatory after acquisition.
    - Both modes **MUST** use this store; no parallel “shadow” delivery path.
 
 3. **Process exclusivity for always-on loops**  

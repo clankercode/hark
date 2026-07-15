@@ -15,14 +15,13 @@ from typing import Any, Callable
 
 from hark.answerability import assess_live, hep_kind_from_bound
 from hark.delivery import DeliveryStore
-from hark.herdr.client import HerdrError
 
 
 @dataclass
 class AnswerResult:
     ok: bool
     event_id: str
-    status: str  # delivered | rejected | uncertain
+    status: str  # delivered | in_progress | rejected | uncertain
     reason: str | None = None  # rejection reason code
     target: str | None = None
 
@@ -62,10 +61,41 @@ def answer_bound_event(
             bound = store.register_from_hep(hep)
     if bound is None:
         return AnswerResult(False, event_id, "rejected", "unknown_event")
-    if store.already_delivered(event_id):
-        return AnswerResult(False, event_id, "rejected", "already_delivered")
-    if bound.status != "pending":
-        return AnswerResult(False, event_id, "rejected", f"not_pending:{bound.status}")
+
+    target = f"{bound.session_id}/{bound.pane_id}"
+    acquire = getattr(store, "acquire_delivery", None)
+    advance = getattr(store, "advance_delivery", None)
+    owner_token: str | None = None
+    if callable(acquire) and callable(advance):
+        claim = acquire(event_id, event_status=bound.status)
+        if not claim.owned:
+            if claim.status == "delivered":
+                return AnswerResult(
+                    False, event_id, "rejected", "already_delivered", target
+                )
+            if claim.status == "in_progress":
+                return AnswerResult(
+                    False,
+                    event_id,
+                    "in_progress",
+                    claim.reason or "delivery_in_progress",
+                    target,
+                )
+            if claim.status == "uncertain":
+                return AnswerResult(True, event_id, "uncertain", claim.reason, target)
+            return AnswerResult(
+                False, event_id, "rejected", claim.reason or "not_pending", target
+            )
+        owner_token = claim.token
+    else:
+        # Compatibility for small in-memory test/adaptor stores.  Durable
+        # DeliveryStore instances always take the atomic path above.
+        if store.already_delivered(event_id):
+            return AnswerResult(False, event_id, "rejected", "already_delivered")
+        if bound.status != "pending":
+            return AnswerResult(
+                False, event_id, "rejected", f"not_pending:{bound.status}"
+            )
 
     fingerprint = (
         bound.question_fingerprint.strip()
@@ -73,10 +103,22 @@ def answer_bound_event(
         else ""
     )
     if not fingerprint:
-        store.mark(event_id, "rejected", reason="missing_question_fingerprint")
+        if owner_token is not None:
+            advance(
+                event_id,
+                owner_token,
+                "rejected",
+                reason="missing_question_fingerprint",
+            )
+        else:
+            store.mark(event_id, "rejected", reason="missing_question_fingerprint")
         return AnswerResult(False, event_id, "rejected", "missing_question_fingerprint")
 
-    target = f"{bound.session_id}/{bound.pane_id}"
+    if owner_token is not None and not advance(event_id, owner_token, "validating"):
+        return AnswerResult(
+            False, event_id, "in_progress", "delivery_ownership_lost", target
+        )
+
     client = client_for(bound.session_id)
 
     verdict = assess_live(
@@ -87,19 +129,53 @@ def answer_bound_event(
         client=client,
     )
     if not verdict.ok:
-        store.mark(event_id, "rejected", reason=verdict.reason)
+        if owner_token is not None:
+            advance(event_id, owner_token, "rejected", reason=verdict.reason)
+        else:
+            store.mark(event_id, "rejected", reason=verdict.reason)
         return AnswerResult(False, event_id, "rejected", verdict.reason, target)
+
+    if owner_token is not None and not advance(event_id, owner_token, "sending"):
+        return AnswerResult(
+            False, event_id, "in_progress", "delivery_ownership_lost", target
+        )
 
     try:
         if keys:
             client.send_keys(bound.pane_id, list(keys))
-            store.mark(event_id, "delivered", keys=list(keys))
+            delivered = (
+                advance(event_id, owner_token, "delivered", keys=list(keys))
+                if owner_token is not None
+                else None
+            )
+            if owner_token is None:
+                store.mark(event_id, "delivered", keys=list(keys))
         else:
             client.send_text(bound.pane_id, text)
-            store.mark(event_id, "delivered", text=text)
-    except HerdrError as exc:
-        # The write may or may not have landed — never blind-retry.
-        store.mark(event_id, "uncertain", reason=str(exc))
+            delivered = (
+                advance(event_id, owner_token, "delivered", text=text)
+                if owner_token is not None
+                else None
+            )
+            if owner_token is None:
+                store.mark(event_id, "delivered", text=text)
+        if owner_token is not None and not delivered:
+            # The send returned but ownership changed while it was in flight.
+            # The durable state is already uncertain; never report success.
+            return AnswerResult(
+                True,
+                event_id,
+                "uncertain",
+                "delivery_state_changed_after_send",
+                target,
+            )
+    except Exception as exc:  # noqa: BLE001 - any post-boundary error is ambiguous
+        # The write may or may not have landed — never blind-retry, regardless
+        # of which transport/runtime exception escaped the client.
+        if owner_token is not None:
+            advance(event_id, owner_token, "uncertain", reason=str(exc))
+        else:
+            store.mark(event_id, "uncertain", reason=str(exc))
         return AnswerResult(True, event_id, "uncertain", str(exc), target)
 
     return AnswerResult(True, event_id, "delivered", None, target)
