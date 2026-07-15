@@ -4,6 +4,7 @@ import argparse
 import json
 import multiprocessing
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import hark.answering as answering
 import hark.cli as cli
 import hark.dashboard.api as dashboard_api
+import hark.delivery as delivery_module
 from hark.answering import answer_bound_event
 from hark.delivery import BoundEvent, DeliveryStore
 from hark.events import extract_question_excerpt
@@ -309,3 +311,224 @@ def test_duplicate_cli_and_dashboard_submissions_do_not_resend(
     assert (first_status, first_payload["status"]) == (200, "delivered")
     assert (second_status, second_payload["detail"]) == (409, "already_delivered")
     assert dash_client.sent == [("w1:p1", "yes")]
+
+
+def test_skip_cannot_replace_sending_and_ambiguous_send_stays_uncertain(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    send_entered = threading.Event()
+    release_send = threading.Event()
+    client = _LiveClient(
+        send_entered=send_entered,
+        release_send=release_send,
+        send_error=HerdrError("socket closed"),
+    )
+    results: list[Any] = []
+    owner = threading.Thread(
+        target=lambda: results.append(
+            answer_bound_event(
+                "evt", text="yes", store=store, client_for=lambda _sid: client
+            )
+        )
+    )
+    owner.start()
+    assert send_entered.wait(5)
+
+    monkeypatch.setattr(cli, "DeliveryStore", lambda: DeliveryStore(path))
+    assert cli.cmd_skip(argparse.Namespace(event_id="evt")) == ABORT
+
+    release_send.set()
+    owner.join(5)
+    assert not owner.is_alive()
+    assert results[0].status == "uncertain"
+    assert [record["status"] for record in _records(path)][-2:] == [
+        "sending",
+        "uncertain",
+    ]
+
+
+def _race_external_writer_against_send(
+    store: DeliveryStore,
+    action: Any,
+) -> tuple[list[Any], list[Any]]:
+    mark_entered = threading.Event()
+    release_mark = threading.Event()
+    send_entered = threading.Event()
+    release_send = threading.Event()
+    original_mark = store.mark
+
+    def paused_mark(event_id: str, status: str, **extra: Any) -> bool:
+        mark_entered.set()
+        assert release_mark.wait(5)
+        return original_mark(event_id, status, **extra)
+
+    store.mark = paused_mark  # type: ignore[method-assign]
+    action_results: list[Any] = []
+    action_thread = threading.Thread(target=lambda: action_results.append(action()))
+    action_thread.start()
+    assert mark_entered.wait(5)
+
+    client = _LiveClient(send_entered=send_entered, release_send=release_send)
+    answer_results: list[Any] = []
+    owner = threading.Thread(
+        target=lambda: answer_results.append(
+            answer_bound_event(
+                "evt", text="yes", store=store, client_for=lambda _sid: client
+            )
+        )
+    )
+    owner.start()
+    assert send_entered.wait(5)
+
+    release_mark.set()
+    action_thread.join(5)
+    assert not action_thread.is_alive()
+    release_send.set()
+    owner.join(5)
+    assert not owner.is_alive()
+    assert client.sent == [("w1:p1", "yes")]
+    return action_results, answer_results
+
+
+def test_prune_snapshot_cannot_expire_event_after_send_started(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    actions, answers = _race_external_writer_against_send(
+        store,
+        lambda: store.prune(now=10**12, max_age_s=1),
+    )
+
+    assert actions == [[]]
+    assert answers[0].status == "delivered"
+    assert [record["status"] for record in _records(path)][-2:] == [
+        "sending",
+        "delivered",
+    ]
+
+
+def test_invalidation_snapshot_cannot_replace_sending(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    actions, answers = _race_external_writer_against_send(
+        store,
+        lambda: store.invalidate_target("local", "w1:p1", reason="pane.closed"),
+    )
+
+    assert actions == [[]]
+    assert answers[0].status == "delivered"
+    assert [record["status"] for record in _records(path)][-2:] == [
+        "sending",
+        "delivered",
+    ]
+
+
+def test_post_send_failed_cas_forces_durable_uncertain(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    original_advance = store.advance_delivery
+
+    def conflict_after_send(
+        event_id: str, owner_token: str, status: str, **extra: Any
+    ) -> bool:
+        if status == "delivered":
+            with store._locked_delivery_state():
+                store._append_delivery_unlocked(
+                    {"event_id": event_id, "status": "skipped", "ts": 1.0}
+                )
+        return original_advance(event_id, owner_token, status, **extra)
+
+    store.advance_delivery = conflict_after_send  # type: ignore[method-assign]
+    result = answer_bound_event(
+        "evt", text="yes", store=store, client_for=lambda _sid: _LiveClient()
+    )
+
+    assert result.status == "uncertain"
+    assert [record["status"] for record in _records(path)][-2:] == [
+        "skipped",
+        "uncertain",
+    ]
+
+
+def test_external_terminal_during_validation_fences_rejection_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    validation_entered = threading.Event()
+    release_validation = threading.Event()
+    client = _LiveClient()
+
+    def working_agent(pane_id: str) -> AgentInfo:
+        return AgentInfo(
+            session_id="local",
+            pane_id=pane_id,
+            agent="codex",
+            status="working",
+            revision=1,
+        )
+
+    def paused_read(pane_id: str, lines: int = 60) -> str:
+        validation_entered.set()
+        assert release_validation.wait(5)
+        return MENU
+
+    client.get_agent = working_agent  # type: ignore[method-assign]
+    client.read_pane = paused_read  # type: ignore[method-assign]
+    results: list[Any] = []
+    owner = threading.Thread(
+        target=lambda: results.append(
+            answer_bound_event(
+                "evt", text="yes", store=store, client_for=lambda _sid: client
+            )
+        )
+    )
+    owner.start()
+    assert validation_entered.wait(5)
+    assert store.mark("evt", "skipped", reason="operator_skip") is True
+    release_validation.set()
+    owner.join(5)
+
+    assert not owner.is_alive()
+    assert results[0].status == "rejected"
+    assert results[0].reason == "operator_skip"
+    assert [record["status"] for record in _records(path)][-1] == "skipped"
+
+
+def test_cold_delivery_file_fsyncs_file_then_parent_directory(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    calls: list[str] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        mode = os.fstat(fd).st_mode
+        calls.append("directory" if stat.S_ISDIR(mode) else "file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(delivery_module.os, "fsync", recording_fsync)
+    claim = store.acquire_delivery("evt")
+
+    assert claim.owned and claim.token
+    assert calls == ["file", "directory"]
+    calls.clear()
+    assert store.advance_delivery("evt", claim.token, "validating")
+    assert calls == ["file"]
+
+
+def test_external_terminal_cannot_replace_existing_terminal(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    store = DeliveryStore(path)
+    _seed(store)
+    assert store.mark("evt", "delivered", text="yes") is True
+    assert store.mark("evt", "skipped") is False
+    assert [record["status"] for record in _records(path)] == ["delivered"]

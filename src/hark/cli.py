@@ -1575,7 +1575,9 @@ def cmd_answer(args: argparse.Namespace, cfg) -> int:
 
 def cmd_skip(args: argparse.Namespace) -> int:
     store = DeliveryStore()
-    store.mark(args.event_id, "skipped")
+    if not store.mark(args.event_id, "skipped"):
+        eprint("hark skip: event is already being sent or is no longer pending")
+        return ABORT
     print(json.dumps({"ok": True, "event_id": args.event_id, "status": "skipped"}))
     return OK
 

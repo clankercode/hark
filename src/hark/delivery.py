@@ -101,10 +101,20 @@ class DeliveryStore:
 
     def _append_delivery_unlocked(self, record: dict[str, Any]) -> None:
         """Append and fsync one transition while ``_delivery_lock`` is held."""
+        created = not self._deliveries.exists()
         with self._deliveries.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+        if created:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            parent_fd = os.open(self._deliveries.parent, flags)
+            try:
+                # File fsync makes the contents durable; directory fsync makes
+                # the first deliveries.jsonl directory entry durable.
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
 
     def _latest_delivery_unlocked(self, event_id: str) -> dict[str, Any] | None:
         latest: dict[str, Any] | None = None
@@ -271,6 +281,65 @@ class DeliveryStore:
             self._append_delivery_unlocked(record)
             return True
 
+    def current_delivery(
+        self, event_id: str, *, event_status: str = "pending"
+    ) -> DeliveryClaim:
+        """Read the stable delivery outcome without acquiring or recovering."""
+        with self._locked_delivery_state():
+            latest = self._latest_delivery_unlocked(event_id)
+            if latest is None:
+                if event_status == "delivered":
+                    return DeliveryClaim(False, "delivered", reason="already_delivered")
+                if event_status == "uncertain":
+                    return DeliveryClaim(
+                        False, "uncertain", reason="delivery_uncertain"
+                    )
+                return DeliveryClaim(
+                    False, "rejected", reason=f"not_pending:{event_status}"
+                )
+            status = str(latest.get("status") or "")
+            reason = latest.get("reason")
+            reason_s = str(reason) if reason is not None else None
+            if status == "delivered":
+                return DeliveryClaim(False, status, reason="already_delivered")
+            if status == "uncertain":
+                return DeliveryClaim(False, status, reason=reason_s)
+            if status in _ACTIVE_DELIVERY_STATES:
+                return DeliveryClaim(
+                    False, "in_progress", reason="delivery_in_progress"
+                )
+            return DeliveryClaim(
+                False, "rejected", reason=reason_s or f"not_pending:{status}"
+            )
+
+    def ensure_uncertain_after_send(
+        self, event_id: str, owner_token: str, *, reason: str
+    ) -> str:
+        """Make a failed post-send CAS durably safe.
+
+        This is intentionally stronger than an external terminal write: once
+        the send boundary was crossed, any conflicting non-delivered state is
+        unsafe to retry and must become ``uncertain``.
+        """
+        with self._locked_delivery_state():
+            latest = self._latest_delivery_unlocked(event_id)
+            current = str((latest or {}).get("status") or "")
+            if current in ("delivered", "uncertain"):
+                return current
+            self._append_delivery_unlocked(
+                {
+                    "event_id": event_id,
+                    "status": "uncertain",
+                    "ts": time.time(),
+                    "reason": reason,
+                    "owner_token": owner_token,
+                    "owner_pid": (latest or {}).get("owner_pid"),
+                    "owner_thread": (latest or {}).get("owner_thread"),
+                    "superseded_status": current or None,
+                }
+            )
+            return "uncertain"
+
     def save_event(self, event: BoundEvent) -> None:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(event), separators=(",", ":")) + "\n")
@@ -320,15 +389,32 @@ class DeliveryStore:
         self.save_event(ev)
         return ev
 
-    def mark(self, event_id: str, status: str, **extra: Any) -> None:
-        rec = {
-            "event_id": event_id,
-            "status": status,
-            "ts": time.time(),
-            **extra,
-        }
+    def mark(self, event_id: str, status: str, **extra: Any) -> bool:
+        """Apply an external terminal transition if it cannot race a send.
+
+        External actions may fence an owner before the irreversible boundary,
+        but they never replace ``sending`` or any already-terminal outcome.
+        Returns whether the requested transition was appended.
+        """
         with self._locked_delivery_state():
+            latest = self._latest_delivery_unlocked(event_id)
+            previous = str((latest or {}).get("status") or "pending")
+            if previous == "sending" or (
+                latest is not None
+                and previous not in ("pending", "acquired", "validating")
+            ):
+                return False
+            rec = {
+                "event_id": event_id,
+                "status": status,
+                "ts": time.time(),
+                **extra,
+            }
+            if previous in ("acquired", "validating"):
+                rec["superseded_owner_token"] = (latest or {}).get("owner_token")
+                rec["superseded_status"] = previous
             self._append_delivery_unlocked(rec)
+            return True
 
     def _latest_statuses(self) -> dict[str, str]:
         statuses: dict[str, str] = {}
@@ -367,7 +453,8 @@ class DeliveryStore:
                     and data.get("pane_id") == pane_id
                     and statuses.get(event_id, "pending") == "pending"
                 ):
-                    self.mark(event_id, "invalidated", reason=reason)
+                    if not self.mark(event_id, "invalidated", reason=reason):
+                        continue
                     invalidated.append(
                         BoundEvent(
                             **{
@@ -550,8 +637,8 @@ class DeliveryStore:
             if not isinstance(eid, str) or not eid:
                 continue
             reason = str(item.get("_stale_reason") or "stale")
-            self.mark(eid, "expired", reason=reason)
-            expired.append(item)
+            if self.mark(eid, "expired", reason=reason):
+                expired.append(item)
 
         if is_answerable is not None:
             for item in classified["fresh"]:
@@ -566,8 +653,8 @@ class DeliveryStore:
                     continue
                 tagged = dict(item)
                 tagged["_stale_reason"] = reason or "not_answerable"
-                self.mark(eid, "expired", reason=tagged["_stale_reason"])
-                expired.append(tagged)
+                if self.mark(eid, "expired", reason=tagged["_stale_reason"]):
+                    expired.append(tagged)
 
         return expired
 

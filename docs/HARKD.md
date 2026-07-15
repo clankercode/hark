@@ -134,6 +134,11 @@ Double-send is prevented by **one delivery owner** plus library idempotency:
    - A concurrent answer receives the current stable outcome and cannot send.
      An abandoned pre-send owner may be recovered; an abandoned `sending`
      owner becomes `uncertain` and is never retried automatically.
+   - External `skip`, expiry, and target-invalidation actions may fence an
+     `acquired`/`validating` owner, but are refused after `sending` begins and
+     cannot replace an existing terminal outcome.
+   - Every transition fsyncs `deliveries.jsonl`; creation also fsyncs its parent
+     directory so the first durable ownership record survives a cold crash.
    - Fingerprint and pane-revision checks remain mandatory after acquisition.
    - Both modes **MUST** use this store; no parallel “shadow” delivery path.
 

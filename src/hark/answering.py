@@ -34,6 +34,25 @@ class AnswerResult:
         }
 
 
+def _result_for_claim(event_id: str, target: str, claim: Any) -> AnswerResult:
+    """Translate a non-owned durable claim into the public answer result."""
+    if claim.status == "delivered":
+        return AnswerResult(False, event_id, "rejected", "already_delivered", target)
+    if claim.status == "in_progress":
+        return AnswerResult(
+            False,
+            event_id,
+            "in_progress",
+            claim.reason or "delivery_in_progress",
+            target,
+        )
+    if claim.status == "uncertain":
+        return AnswerResult(True, event_id, "uncertain", claim.reason, target)
+    return AnswerResult(
+        False, event_id, "rejected", claim.reason or "not_pending", target
+    )
+
+
 def answer_bound_event(
     event_id: str,
     *,
@@ -65,27 +84,13 @@ def answer_bound_event(
     target = f"{bound.session_id}/{bound.pane_id}"
     acquire = getattr(store, "acquire_delivery", None)
     advance = getattr(store, "advance_delivery", None)
+    current_delivery = getattr(store, "current_delivery", None)
+    ensure_uncertain = getattr(store, "ensure_uncertain_after_send", None)
     owner_token: str | None = None
     if callable(acquire) and callable(advance):
         claim = acquire(event_id, event_status=bound.status)
         if not claim.owned:
-            if claim.status == "delivered":
-                return AnswerResult(
-                    False, event_id, "rejected", "already_delivered", target
-                )
-            if claim.status == "in_progress":
-                return AnswerResult(
-                    False,
-                    event_id,
-                    "in_progress",
-                    claim.reason or "delivery_in_progress",
-                    target,
-                )
-            if claim.status == "uncertain":
-                return AnswerResult(True, event_id, "uncertain", claim.reason, target)
-            return AnswerResult(
-                False, event_id, "rejected", claim.reason or "not_pending", target
-            )
+            return _result_for_claim(event_id, target, claim)
         owner_token = claim.token
     else:
         # Compatibility for small in-memory test/adaptor stores.  Durable
@@ -104,17 +109,29 @@ def answer_bound_event(
     )
     if not fingerprint:
         if owner_token is not None:
-            advance(
+            rejected = advance(
                 event_id,
                 owner_token,
                 "rejected",
                 reason="missing_question_fingerprint",
             )
+            if not rejected and callable(current_delivery):
+                return _result_for_claim(
+                    event_id,
+                    target,
+                    current_delivery(event_id, event_status=bound.status),
+                )
         else:
             store.mark(event_id, "rejected", reason="missing_question_fingerprint")
         return AnswerResult(False, event_id, "rejected", "missing_question_fingerprint")
 
     if owner_token is not None and not advance(event_id, owner_token, "validating"):
+        if callable(current_delivery):
+            return _result_for_claim(
+                event_id,
+                target,
+                current_delivery(event_id, event_status=bound.status),
+            )
         return AnswerResult(
             False, event_id, "in_progress", "delivery_ownership_lost", target
         )
@@ -130,12 +147,24 @@ def answer_bound_event(
     )
     if not verdict.ok:
         if owner_token is not None:
-            advance(event_id, owner_token, "rejected", reason=verdict.reason)
+            rejected = advance(event_id, owner_token, "rejected", reason=verdict.reason)
+            if not rejected and callable(current_delivery):
+                return _result_for_claim(
+                    event_id,
+                    target,
+                    current_delivery(event_id, event_status=bound.status),
+                )
         else:
             store.mark(event_id, "rejected", reason=verdict.reason)
         return AnswerResult(False, event_id, "rejected", verdict.reason, target)
 
     if owner_token is not None and not advance(event_id, owner_token, "sending"):
+        if callable(current_delivery):
+            return _result_for_claim(
+                event_id,
+                target,
+                current_delivery(event_id, event_status=bound.status),
+            )
         return AnswerResult(
             False, event_id, "in_progress", "delivery_ownership_lost", target
         )
@@ -160,8 +189,19 @@ def answer_bound_event(
             if owner_token is None:
                 store.mark(event_id, "delivered", text=text)
         if owner_token is not None and not delivered:
-            # The send returned but ownership changed while it was in flight.
-            # The durable state is already uncertain; never report success.
+            # The send returned but ownership changed while it was in flight;
+            # actively repair legacy/conflicting state to durable uncertainty.
+            durable = (
+                ensure_uncertain(
+                    event_id,
+                    owner_token,
+                    reason="delivery_state_changed_after_send",
+                )
+                if callable(ensure_uncertain)
+                else "uncertain"
+            )
+            if durable == "delivered":
+                return AnswerResult(True, event_id, "delivered", None, target)
             return AnswerResult(
                 True,
                 event_id,
@@ -173,7 +213,9 @@ def answer_bound_event(
         # The write may or may not have landed — never blind-retry, regardless
         # of which transport/runtime exception escaped the client.
         if owner_token is not None:
-            advance(event_id, owner_token, "uncertain", reason=str(exc))
+            persisted = advance(event_id, owner_token, "uncertain", reason=str(exc))
+            if not persisted and callable(ensure_uncertain):
+                ensure_uncertain(event_id, owner_token, reason=str(exc))
         else:
             store.mark(event_id, "uncertain", reason=str(exc))
         return AnswerResult(True, event_id, "uncertain", str(exc), target)
