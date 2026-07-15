@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T06:34:46Z"
 depends_on: []
 estimate_hours: 1
 id: B118
 priority: high
+started_at: null
 status: pending
 tags: []
 title: 'B017: browser Teams/Chromium VC not detected (process+stream free while Chromium Playback + Chromium input RecordStream active)'
@@ -12,3 +14,21 @@ updated_at: "2026-07-15T06:34:46Z"
 ---
 
 B017: browser Teams/Chromium VC not detected (process+stream free while Chromium Playback + Chromium input RecordStream active)
+
+
+## Dogfood evidence (2026-07-15 ~16:34 AEST)
+
+Operator joining Teams; check after 60s sleep.
+
+`detect_conference()` → active=False (no strong conference stream markers).
+
+Live audio while free:
+- 4× Chromium Playback sink-inputs (pid 3174230)
+- 1× Chromium input RecordStream (mic capture)
+- No native teams process; tab URL not in /proc cmdline
+
+Root cause: chromium is a *weak* stream marker only when paired with strong teams/meet/zoom markers. Browser Teams only exposes application.name "Chromium" / "Chromium input".
+
+Evidence file: ~/.local/state/hark/debug/teams-vc-check-2026-07-15-1634.txt
+
+Possible fix: optional heuristic simultaneous Chromium Playback + RecordStream → conference active; or better media.role/tab metadata.
