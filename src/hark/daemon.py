@@ -27,6 +27,13 @@ from typing import Any, Sequence
 from hark import __version__
 from hark.exitcodes import ERROR, OK, USAGE
 from hark.paths import state_dir
+from hark.worker_process import (
+    WorkerRecord,
+    capture_worker_identity,
+    collect_worker_records,
+    read_worker_records,
+    write_worker_records,
+)
 
 HARKD_PID_NAME = "harkd.pid"
 MODE_A_PIDS_NAME = "mode-a.pids"
@@ -185,7 +192,7 @@ def probe_harkd(root: Path | None = None) -> ProcessProbe:
 def probe_mode_a(root: Path | None = None) -> ProcessProbe:
     root = root or state_dir()
     path = mode_a_pids_path(root)
-    live = live_pids_from_file(path)
+    live = [record.pid for record in collect_worker_records(path)]
     return ProcessProbe(
         running=bool(live),
         pids=live,
@@ -329,6 +336,7 @@ def _rollback_worker_start(
     pid_path: Path,
     original_pidfile: bytes | None,
     restore_pidfile: bool,
+    owned_records: dict[int, WorkerRecord] | None = None,
     timeout_s: float = 2.0,
 ) -> list[str]:
     """Stop/reap only workers owned by a failed startup attempt."""
@@ -403,7 +411,15 @@ def _rollback_worker_start(
                 payload = original_pidfile or b""
                 if payload and not payload.endswith(b"\n"):
                     payload += b"\n"
-                payload += b"".join(f"{proc.pid}\n".encode() for _, proc in survivors)
+                records = owned_records or {}
+                payload += b"".join(
+                    (
+                        f"{records[proc.pid].to_json()}\n".encode()
+                        if proc.pid in records
+                        else f"{proc.pid}\n".encode()
+                    )
+                    for _, proc in survivors
+                )
                 pid_path.parent.mkdir(parents=True, exist_ok=True)
                 pid_path.write_bytes(payload)
             elif original_pidfile is None:
@@ -436,6 +452,7 @@ def spawn_mode_a_workers(
         raise WorkerSpawnError("pidfile", exc) from exc
 
     owned: list[tuple[str, subprocess.Popen[Any]]] = []
+    owned_records: dict[int, WorkerRecord] = {}
     failed_role = "watch"
     pidfile_touched = False
 
@@ -458,6 +475,10 @@ def spawn_mode_a_workers(
             raise OSError("worker started without a process ID")
         if proc.poll() is not None:
             raise OSError(f"worker exited immediately with status {proc.returncode}")
+        record = capture_worker_identity(proc.pid, role=role)
+        if record is None:
+            raise OSError(f"could not capture {role} worker process identity")
+        owned_records[proc.pid] = record
 
     try:
         if do_watch:
@@ -486,14 +507,13 @@ def spawn_mode_a_workers(
 
         failed_role = "pidfile"
         pidfile_touched = True
-        expected_pids = [proc.pid for _, proc in owned]
-        write_pid_file(pid_path, expected_pids)
+        write_worker_records(pid_path, owned_records.values())
 
-        recorded_pids = set(read_pids_file(pid_path))
+        recorded = {record.pid: record for record in read_worker_records(pid_path)}
         for role, proc in owned:
-            if proc.pid not in recorded_pids:
+            if recorded.get(proc.pid) != owned_records[proc.pid]:
                 failed_role = role
-                raise OSError(f"worker PID {proc.pid} was not recorded")
+                raise OSError(f"worker identity for PID {proc.pid} was not recorded")
             if proc.poll() is not None:
                 failed_role = role
                 raise OSError(f"worker exited immediately with status {proc.returncode}")
@@ -503,6 +523,7 @@ def spawn_mode_a_workers(
             pid_path=pid_path,
             original_pidfile=original_pidfile,
             restore_pidfile=pidfile_touched,
+            owned_records=owned_records,
         )
         if not isinstance(exc, Exception):
             note = f"worker startup interrupted during {failed_role}; rollback completed"
@@ -513,6 +534,22 @@ def spawn_mode_a_workers(
         raise WorkerSpawnError(failed_role, exc, rollback_failures) from exc
 
     return [proc for _, proc in owned]
+
+
+def _refresh_owned_worker_records(
+    owned: Sequence[tuple[str, subprocess.Popen[Any]]], *, pid_path: Path
+) -> list[WorkerRecord]:
+    """Rebuild durable identity state from workers owned by the supervisor."""
+    records: list[WorkerRecord] = []
+    for role, proc in owned:
+        if not proc.pid or proc.poll() is not None:
+            continue
+        record = capture_worker_identity(proc.pid, role=role)
+        if record is None:
+            raise OSError(f"could not refresh {role} worker process identity")
+        records.append(record)
+    write_worker_records(pid_path, records)
+    return records
 
 
 def terminate_children(
@@ -559,6 +596,7 @@ def run_foreground(
     """Foreground supervisor: hold harkd.pid; optional ambient/watch workers; wait for SIGTERM."""
     root = root or state_dir()
     children: list[subprocess.Popen[Any]] = []
+    owned_children: list[tuple[str, subprocess.Popen[Any]]] = []
     shutting_down = {"flag": False}
 
     def _handle_stop(signum: int, _frame: object) -> None:
@@ -586,6 +624,8 @@ def run_foreground(
                 print(f"harkd: failed to spawn workers: {exc}", file=sys.stderr)
                 release_harkd_pidfile(root, pid=os.getpid())
                 return ERROR
+            roles = (["watch"] if do_watch else []) + (["ambient"] if do_ambient else [])
+            owned_children = list(zip(roles, children, strict=True))
             print(
                 f"harkd: started with workers pids={[c.pid for c in children]} "
                 f"(state={root})",
@@ -605,10 +645,13 @@ def run_foreground(
                 break
             # Refresh mode-a.pids with still-live children
             if children:
-                write_pid_file(
-                    mode_a_pids_path(root),
-                    [c.pid for c in children if c.pid and c.poll() is None],
-                )
+                try:
+                    _refresh_owned_worker_records(
+                        owned_children, pid_path=mode_a_pids_path(root)
+                    )
+                except OSError as exc:
+                    print(f"harkd: failed to refresh worker identity: {exc}", file=sys.stderr)
+                    return ERROR
             # Keep our own pidfile honest
             if not harkd_pid_path(root).is_file():
                 # External clear — re-assert ownership while we run

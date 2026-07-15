@@ -12,7 +12,45 @@ from pathlib import Path
 import pytest
 
 import hark.workers as workers
+import hark.worker_process as worker_process
 from hark.exitcodes import OK, USAGE
+
+
+def spawn_hark_worker(role: str, directory: Path) -> subprocess.Popen[bytes]:
+    """Long-lived process with the same decisive argv shape as a Hark worker."""
+    launcher = directory / "hark"
+    launcher.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal\n"
+        "import time\n"
+        "def stop(*_args):\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    child = subprocess.Popen(
+        [str(launcher), role],
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if worker_process.inspect_worker(child.pid, expected_role=role) is not None:
+            return child
+        time.sleep(0.01)
+    kill_child(child)
+    raise AssertionError(f"worker argv did not become ready for role {role}")
+
+
+def kill_child(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is None:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            child.kill()
+    child.wait(timeout=2)
 
 
 @pytest.fixture
@@ -62,12 +100,16 @@ def test_stop_clears_stale_pidfile(state: Path):
 
 
 def test_start_when_already_running(state: Path):
-    (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    result = workers.start_workers(state, settle_s=0)
-    assert result["ok"] is True
-    assert result["already_running"] is True
-    assert os.getpid() in result["pids"]
-    assert "already running" in result["message"]
+    child = spawn_hark_worker("ambient", state)
+    try:
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        result = workers.start_workers(state, settle_s=0)
+        assert result["ok"] is True
+        assert result["already_running"] is True
+        assert child.pid in result["pids"]
+        assert "already running" in result["message"]
+    finally:
+        kill_child(child)
 
 
 def test_start_refuses_live_harkd(state: Path):
@@ -84,7 +126,6 @@ def test_start_clears_stale_harkd_pid(state: Path, monkeypatch: pytest.MonkeyPat
     def fake_spawn(**kwargs):
         spawned.append(kwargs)
         child_pid = os.getpid()
-        (state / "mode-a.pids").write_text(f"{child_pid}\n", encoding="utf-8")
 
         class P:
             pid = child_pid
@@ -95,6 +136,9 @@ def test_start_clears_stale_harkd_pid(state: Path, monkeypatch: pytest.MonkeyPat
         return [P()]
 
     monkeypatch.setattr(workers, "spawn_mode_a_workers", fake_spawn)
+    monkeypatch.setattr(
+        workers, "collect_worker_pids", lambda _root: [os.getpid()] if spawned else []
+    )
     result = workers.start_workers(state, settle_s=0)
     assert result["ok"] is True
     assert not result.get("already_running")
@@ -125,7 +169,7 @@ def test_start_reports_transactional_spawn_failure(
     assert "rollback failures" in result["error"]
 
 
-def test_stop_signals_live_child(state: Path):
+def test_stop_does_not_signal_unrelated_legacy_pid(state: Path):
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         start_new_session=True,
@@ -136,18 +180,64 @@ def test_stop_signals_live_child(state: Path):
             time.sleep(0.01)
         assert child.poll() is None
         (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        result = workers.stop_workers(state, timeout_s=0.0)
+        assert result["ok"] is True, result
+        assert result["stopped"] == []
+        assert child.poll() is None
+        assert not (state / "mode-a.pids").exists()
+    finally:
+        kill_child(child)
+
+
+def test_stop_does_not_signal_simulated_reused_pid(state: Path):
+    child = spawn_hark_worker("ambient", state)
+    try:
+        actual = worker_process.inspect_worker(child.pid)
+        assert actual is not None
+        reused = worker_process.WorkerRecord(
+            pid=actual.pid,
+            start_time="previous-process-lifetime",
+            role=actual.role,
+        )
+        worker_process.write_worker_records(state / "mode-a.pids", [reused])
+
+        result = workers.stop_workers(state, timeout_s=0.0)
+
+        assert result["ok"] is True
+        assert result["stopped"] == []
+        assert child.poll() is None
+        assert not (state / "mode-a.pids").exists()
+    finally:
+        kill_child(child)
+
+
+def test_stop_migrates_and_signals_legitimate_legacy_worker(state: Path):
+    child = spawn_hark_worker("watch", state)
+    try:
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
         result = workers.stop_workers(state, timeout_s=5.0)
         assert result["ok"] is True, result
         assert child.pid in result["stopped"]
         child.wait(timeout=5)
         assert not (state / "mode-a.pids").exists()
     finally:
-        if child.poll() is None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except OSError:
-                child.kill()
-            child.wait(timeout=2)
+        kill_child(child)
+
+
+def test_graceful_stop_preserves_busy_cleanup_and_restart_reason(state: Path):
+    child = spawn_hark_worker("ambient", state)
+    try:
+        (state / "busy.lock").write_text("recording\n", encoding="utf-8")
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        result = workers.stop_workers(state, timeout_s=5.0, reason="restart")
+        assert result["ok"] is True, result
+        child.wait(timeout=5)
+        assert not (state / "busy.lock").exists()
+        assert (state / "shutdown_reason").read_text(encoding="utf-8").strip() == (
+            "restart"
+        )
+    finally:
+        kill_child(child)
 
 
 def test_restart_stop_then_start(state: Path, monkeypatch: pytest.MonkeyPatch):
@@ -242,8 +332,12 @@ def test_cli_start_already_running(
 
     monkeypatch.setattr(daemon, "state_dir", lambda: state)
     monkeypatch.setattr(workers, "state_dir", lambda: state)
-    (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    code = cli.main(["start", "--json"])
-    assert code == OK
-    out = capsys.readouterr().out
-    assert "already_running" in out or str(os.getpid()) in out
+    child = spawn_hark_worker("ambient", state)
+    try:
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        code = cli.main(["start", "--json"])
+        assert code == OK
+        out = capsys.readouterr().out
+        assert "already_running" in out or str(child.pid) in out
+    finally:
+        kill_child(child)

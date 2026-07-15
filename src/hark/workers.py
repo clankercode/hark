@@ -15,24 +15,28 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from hark.daemon import (
     DaemonConflict,
     busy_lock_path,
     clear_pid_file,
     harkd_pid_path,
-    live_pids_from_file,
     mode_a_pids_path,
-    pid_alive,
     probe_harkd,
     probe_mode_a,
     spawn_mode_a_workers,
-    write_pid_file,
 )
 from hark.exitcodes import ERROR, OK, USAGE
 from hark.lifecycle import set_shutdown_reason
 from hark.paths import state_dir
+from hark.worker_process import (
+    WorkerRecord,
+    collect_worker_records,
+    record_matches_process,
+    signal_worker_records,
+    write_worker_records,
+)
 
 # Default grace after SIGTERM before SIGKILL (seconds). Matches run-mode-a.sh;
 # overridable via HARK_STOP_GRACE_S or --timeout.
@@ -66,9 +70,9 @@ def parse_pids_text(text: str) -> list[int]:
 
 
 def collect_worker_pids(root: Path | None = None) -> list[int]:
-    """Live PIDs recorded in mode-a.pids (dead entries ignored)."""
+    """Validated worker PIDs (unsafe legacy entries are migrated or removed)."""
     root = root or state_dir()
-    return live_pids_from_file(mode_a_pids_path(root))
+    return [record.pid for record in collect_worker_records(mode_a_pids_path(root))]
 
 
 def assert_no_live_harkd(root: Path | None = None) -> None:
@@ -89,23 +93,8 @@ def assert_no_live_harkd(root: Path | None = None) -> None:
         clear_pid_file(path)
 
 
-def signal_pids(pids: Sequence[int], sig: int) -> list[int]:
-    """Send *sig* to each pid; return those we successfully signalled (or already gone)."""
-    sent: list[int] = []
-    for pid in pids:
-        if not pid_alive(pid):
-            continue
-        try:
-            os.kill(pid, sig)
-            sent.append(pid)
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            # Record attempt; caller may surface via still-running list.
-            sent.append(pid)
-        except OSError:
-            continue
-    return sent
+def _still_same_workers(records: list[WorkerRecord]) -> list[WorkerRecord]:
+    return [record for record in records if record_matches_process(record)]
 
 
 def stop_workers(
@@ -127,8 +116,9 @@ def stop_workers(
         timeout_s = min(float(timeout_s), 0.5)
 
     path = mode_a_pids_path(root)
-    live = collect_worker_pids(root)
-    if not live:
+    records = collect_worker_records(path)
+    live = [record.pid for record in records]
+    if not records:
         clear_pid_file(path)
         return {
             "ok": True,
@@ -139,12 +129,13 @@ def stop_workers(
         }
 
     set_shutdown_reason(reason)
-    signal_pids(live, signal.SIGTERM)
+    signal_worker_records(records, signal.SIGTERM)
 
     deadline = time.monotonic() + max(0.0, float(timeout_s))
     while time.monotonic() < deadline:
-        still = [p for p in live if pid_alive(p)]
-        if not still:
+        still_records = _still_same_workers(records)
+        still = [record.pid for record in still_records]
+        if not still_records:
             clear_pid_file(path)
             busy = busy_lock_path(root)
             try:
@@ -159,27 +150,30 @@ def stop_workers(
                 "pids": [],
             }
         # Keep pidfile honest while waiting
-        write_pid_file(path, still)
+        write_worker_records(path, still_records)
         # Prefer waiting out an active recording when busy.lock is present
         # (same intent as run-mode-a.sh --stop).
         time.sleep(0.1 if busy_lock_path(root).is_file() else 0.05)
 
-    still = [p for p in live if pid_alive(p)]
+    still_records = _still_same_workers(records)
+    still = [record.pid for record in still_records]
     killed: list[int] = []
-    if still:
-        signal_pids(still, signal.SIGKILL)
-        killed = list(still)
+    if still_records:
+        killed_records = signal_worker_records(still_records, signal.SIGKILL)
+        killed = [record.pid for record in killed_records]
         # brief wait for reaping
         kill_deadline = time.monotonic() + 2.0
         while time.monotonic() < kill_deadline:
-            still = [p for p in killed if pid_alive(p)]
-            if not still:
+            still_records = _still_same_workers(still_records)
+            still = [record.pid for record in still_records]
+            if not still_records:
                 break
             time.sleep(0.05)
-        still = [p for p in killed if pid_alive(p)]
+        still_records = _still_same_workers(still_records)
+        still = [record.pid for record in still_records]
 
     if still:
-        write_pid_file(path, still)
+        write_worker_records(path, still_records)
         return {
             "ok": False,
             "stopped": [p for p in live if p not in still],
@@ -258,11 +252,6 @@ def start_workers(
 
     # Prefer live scan of what we wrote; drop children that died immediately.
     live = collect_worker_pids(root)
-    if not live and started:
-        # spawn wrote pids that may have exited; re-filter
-        live = [p for p in started if pid_alive(p)]
-        write_pid_file(mode_a_pids_path(root), live)
-
     if not live:
         clear_pid_file(mode_a_pids_path(root))
         return {

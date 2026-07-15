@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -12,6 +13,43 @@ import pytest
 
 import hark.daemon as daemon
 from hark.exitcodes import ERROR, OK
+from hark.worker_process import WorkerRecord, inspect_worker
+
+
+def spawn_hark_worker(role: str, directory: Path) -> subprocess.Popen[bytes]:
+    launcher = directory / "hark"
+    launcher.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal\n"
+        "import time\n"
+        "def stop(*_args):\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    child = subprocess.Popen(
+        [str(launcher), role],
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if inspect_worker(child.pid, expected_role=role) is not None:
+            return child
+        time.sleep(0.01)
+    kill_child(child)
+    raise AssertionError(f"worker argv did not become ready for role {role}")
+
+
+def kill_child(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is None:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            child.kill()
+    child.wait(timeout=2)
 
 
 class FakeWorker:
@@ -45,6 +83,13 @@ class FakeWorker:
 @pytest.fixture
 def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(daemon, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        daemon,
+        "capture_worker_identity",
+        lambda pid, *, role: WorkerRecord(
+            pid=pid, start_time=f"start-{pid}", role=role
+        ),
+    )
     return tmp_path
 
 
@@ -64,6 +109,31 @@ def test_spawn_workers_reports_first_role_failure_and_closes_log(
 
     assert len(streams) == 1
     assert streams[0].closed
+    assert not (state / "mode-a.pids").exists()
+
+
+def test_spawn_workers_rolls_back_when_identity_capture_fails(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    watch = FakeWorker(101)
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *_args, **_kwargs: watch)
+    monkeypatch.setattr(daemon, "capture_worker_identity", lambda _pid, *, role: None)
+
+    def killpg(pid: int, sig: int) -> None:
+        assert (pid, sig) == (watch.pid, signal.SIGTERM)
+        watch.returncode = -sig
+
+    monkeypatch.setattr(daemon.os, "killpg", killpg)
+
+    with pytest.raises(
+        daemon.WorkerSpawnError,
+        match="watch startup failed.*could not capture watch worker process identity",
+    ):
+        daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+
+    assert watch.returncode == -signal.SIGTERM
+    assert watch.wait_calls == 1
     assert not (state / "mode-a.pids").exists()
 
 
@@ -202,7 +272,10 @@ def test_spawn_workers_records_and_reports_child_that_survives_rollback(
     assert "surviving workers still running: watch=101" in message
     assert watch.poll() is None
     assert watch.wait_calls == 2
-    assert set(daemon.read_pids_file(pidfile)) == {101, 777}
+    assert daemon.read_pids_file(pidfile) == [777]
+    assert [(record.pid, record.role) for record in daemon.read_worker_records(pidfile)] == [
+        (101, "watch")
+    ]
 
 
 def test_spawn_workers_rolls_back_and_reports_early_child_exit(
@@ -240,7 +313,7 @@ def test_spawn_workers_restores_pidfile_when_write_fails(
     def spawn(*_args, **_kwargs):
         return workers.pop(0)
 
-    def fail_write(path: Path, _pids) -> None:
+    def fail_write(path: Path, _records) -> None:
         path.write_bytes(b"partial")
         raise OSError("disk full")
 
@@ -250,7 +323,7 @@ def test_spawn_workers_restores_pidfile_when_write_fails(
         proc.returncode = -sig
 
     monkeypatch.setattr(daemon.subprocess, "Popen", spawn)
-    monkeypatch.setattr(daemon, "write_pid_file", fail_write)
+    monkeypatch.setattr(daemon, "write_worker_records", fail_write)
     monkeypatch.setattr(daemon.os, "killpg", killpg)
 
     with pytest.raises(daemon.WorkerSpawnError, match="pidfile startup failed.*disk full"):
@@ -275,8 +348,6 @@ def test_spawn_workers_successfully_starts_both_roles_and_closes_logs(
         return fake_workers[len(spawned) - 1]
 
     monkeypatch.setattr(daemon.subprocess, "Popen", spawn)
-    monkeypatch.setattr(daemon, "pid_alive", lambda pid: pid in {101, 102})
-
     children = daemon.spawn_mode_a_workers(root=state, session="lab")
 
     assert children == fake_workers
@@ -289,7 +360,11 @@ def test_spawn_workers_successfully_starts_both_roles_and_closes_logs(
         "blocked,done",
     ]
     assert spawned[1][-1] == "ambient"
-    assert (state / "mode-a.pids").read_text(encoding="utf-8") == "101\n102\n"
+    records = daemon.read_worker_records(state / "mode-a.pids")
+    assert [(record.pid, record.role) for record in records] == [
+        (101, "watch"),
+        (102, "ambient"),
+    ]
     assert all(stream.closed for stream in streams)
 
 
@@ -316,6 +391,66 @@ def test_run_foreground_reports_transactional_worker_failure(
     assert not (state / "harkd.pid").exists()
 
 
+@pytest.mark.parametrize("initial_state", ["missing", "corrupt"])
+def test_run_foreground_rebuilds_worker_identity_state(
+    state: Path, monkeypatch: pytest.MonkeyPatch, initial_state: str
+):
+    watch = FakeWorker(101)
+    ambient = FakeWorker(102)
+    pidfile = state / "mode-a.pids"
+    observed: list[list[tuple[int, str]]] = []
+
+    def fake_spawn(**_kwargs):
+        if initial_state == "corrupt":
+            pidfile.write_text("corrupt\n", encoding="utf-8")
+        else:
+            pidfile.unlink(missing_ok=True)
+        return [watch, ambient]
+
+    def finish_after_refresh(_seconds: float) -> None:
+        observed.append(
+            [
+                (record.pid, record.role)
+                for record in daemon.read_worker_records(pidfile)
+            ]
+        )
+        watch.returncode = 0
+        ambient.returncode = 0
+
+    monkeypatch.setattr(daemon, "spawn_mode_a_workers", fake_spawn)
+    monkeypatch.setattr(daemon.time, "sleep", finish_after_refresh)
+
+    assert daemon.run_foreground(root=state, workers=True, idle_sleep_s=0) == OK
+    assert observed == [[(101, "watch"), (102, "ambient")]]
+
+
+def test_run_foreground_refresh_failure_terminates_workers_and_returns_error(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    watch = FakeWorker(101)
+    ambient = FakeWorker(102)
+    terminated: list[FakeWorker] = []
+
+    monkeypatch.setattr(
+        daemon,
+        "spawn_mode_a_workers",
+        lambda **_kwargs: [watch, ambient],
+    )
+    monkeypatch.setattr(
+        daemon,
+        "_refresh_owned_worker_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+    monkeypatch.setattr(
+        daemon,
+        "terminate_children",
+        lambda children, **_kwargs: terminated.extend(children),
+    )
+
+    assert daemon.run_foreground(root=state, workers=True, idle_sleep_s=0) == ERROR
+    assert terminated == [watch, ambient]
+
+
 def test_pid_alive_self():
     assert daemon.pid_alive(os.getpid()) is True
     assert daemon.pid_alive(0) is False
@@ -330,6 +465,33 @@ def test_read_and_write_pids_file(state: Path):
     assert live == [os.getpid()]
     daemon.clear_pid_file(path)
     assert not path.exists()
+
+
+def test_spawn_mode_a_workers_persists_role_and_identity(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    next_pid = iter([41001, 41002])
+
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.pid = next(next_pid)
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", FakeProcess)
+    children = daemon.spawn_mode_a_workers(root=state, log_dir=state)
+    assert [child.pid for child in children] == [41001, 41002]
+    stored = [
+        json.loads(line)
+        for line in (state / "mode-a.pids").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(record["pid"], record["role"]) for record in stored] == [
+        (41001, "watch"),
+        (41002, "ambient"),
+    ]
+    assert all(record["start_time"].startswith("start-") for record in stored)
 
 
 def test_assert_can_start_clean(state: Path):
@@ -348,9 +510,13 @@ def test_assert_can_start_allows_own_pid(state: Path):
 
 
 def test_assert_can_start_refuses_mode_a(state: Path):
-    (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
-        daemon.assert_can_start(state)
+    child = spawn_hark_worker("watch", state)
+    try:
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
+            daemon.assert_can_start(state)
+    finally:
+        kill_child(child)
 
 
 def test_assert_can_start_ignores_stale_mode_a_pid(state: Path):
@@ -497,9 +663,13 @@ def test_run_foreground_idle_and_sigterm(state: Path):
 
 def test_refuse_start_when_mode_a_pids_live(state: Path):
     """Integration-style: mode-a.pids with our pid blocks acquire."""
-    (state / "mode-a.pids").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
-        daemon.acquire_harkd_pidfile(state, pid=os.getpid())
+    child = spawn_hark_worker("ambient", state)
+    try:
+        (state / "mode-a.pids").write_text(f"{child.pid}\n", encoding="utf-8")
+        with pytest.raises(daemon.DaemonConflict, match="Hark workers"):
+            daemon.acquire_harkd_pidfile(state, pid=os.getpid())
+    finally:
+        kill_child(child)
 
 
 def test_cli_daemon_status_via_main(state: Path, monkeypatch: pytest.MonkeyPatch):
