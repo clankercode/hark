@@ -406,11 +406,20 @@ def static_root(request, tmp_path, monkeypatch) -> Path:
 
 
 def _get_static(server, path: str) -> tuple[int, bytes]:
+    status, body, _ = _get_static_with_headers(server, path)
+    return status, body
+
+
+def _get_static_with_headers(
+    server, path: str
+) -> tuple[int, bytes, dict[str, str]]:
     c = _conn(server)
     try:
         c.request("GET", path)
         response = c.getresponse()
-        return response.status, response.read()
+        body = response.read()
+        headers = {name.lower(): value for name, value in response.getheaders()}
+        return response.status, body, headers
     finally:
         c.close()
 
@@ -438,6 +447,33 @@ def test_static_contained_missing_path_uses_spa_fallback(
             HTTPStatus.OK,
             b"<h1>dashboard</h1>",
         )
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("path", ("/", "/index.html", "/settings/profile"))
+def test_static_in_root_symlink_index_preserves_logical_metadata(
+    state, tmp_path, static_root, path
+):
+    current = static_root / "current-dashboard"
+    (static_root / "index.html").replace(current)
+    (static_root / "index.html").symlink_to(current.name)
+    server = _server(tmp_path)
+    try:
+        status, body, headers = _get_static_with_headers(server, path)
+        assert (status, body) == (HTTPStatus.OK, b"<h1>dashboard</h1>")
+        assert headers["content-type"] == "text/html"
+        assert headers["cache-control"] == "no-cache"
+    finally:
+        server.shutdown()
+
+
+def test_static_rejects_percent_encoded_null_byte(state, tmp_path, static_root):
+    server = _server(tmp_path)
+    try:
+        status, body = _get_static(server, "/%00")
+        assert status == HTTPStatus.NOT_FOUND
+        assert b"not_found" in body
     finally:
         server.shutdown()
 

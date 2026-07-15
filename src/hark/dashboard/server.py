@@ -617,8 +617,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             root = root.resolve()
             rel = unquote(path.lstrip("/")) or "index.html"
-            target = (root / rel).resolve()
-        except (OSError, RuntimeError):
+            logical_target = root / rel
+            target = logical_target.resolve()
+        except (OSError, RuntimeError, ValueError):
             self._err(HTTPStatus.NOT_FOUND, "not_found", path)
             return
 
@@ -632,23 +633,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not target.is_file():
             # SPA fallback is allowed only to a regular file that also remains
             # inside the resolved root (index.html itself may be a symlink).
+            logical_target = root / "index.html"
             try:
-                fallback = (root / "index.html").resolve()
-            except (OSError, RuntimeError):
+                fallback = logical_target.resolve()
+            except (OSError, RuntimeError, ValueError):
                 self._err(HTTPStatus.NOT_FOUND, "not_found", path)
                 return
             if not fallback.is_relative_to(root) or not fallback.is_file():
                 self._err(HTTPStatus.NOT_FOUND, "not_found", path)
                 return
             target = fallback
-        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        ctype = mimetypes.guess_type(str(logical_target))[0] or "application/octet-stream"
         data = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        if target.name == "index.html" or target.suffix == ".webmanifest":
+        if (
+            logical_target.name == "index.html"
+            or logical_target.suffix == ".webmanifest"
+        ):
             self.send_header("Cache-Control", "no-cache")
-        elif target.name == "sw.js":
+        elif logical_target.name == "sw.js":
             # Service worker must revalidate so a post-build update is not stuck
             self.send_header("Cache-Control", "no-cache")
         else:
