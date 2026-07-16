@@ -31,8 +31,6 @@ _CONFIRM_APOSTROPHE_TRANSLATION = str.maketrans(
     {variant: "'" for variant in _SUPPORTED_APOSTROPHE_SEPARATORS}
 )
 _DECOMPOSED_SPACING_ACUTE = " \u0301"
-_MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS = 7
-_DISTINCTIVE_NORMALIZED_ALPHABETIC_BRIDGES = frozenset({"TM"})
 # This limits one canonical ordering/composition segment, not transcript length.
 # Human speech text should never need hundreds of marks on one starter; bounding
 # the segment avoids the quadratic worst case in CPython's Unicode normalizer.
@@ -104,6 +102,20 @@ _CONTRACTION_SEPARATOR_PATTERNS = tuple(
 class _RawProjection:
     text: str
     raw_indices: tuple[int, ...]
+    compatibility_sources: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class _ProjectionFacts:
+    """Constant-time boundary and raw-provenance queries for one projection."""
+
+    word_base_before: tuple[bool, ...]
+    word_base_at_or_after: tuple[bool, ...]
+    raw_source_is_whitespace: tuple[bool, ...]
+    raw_compatibility_prefix: tuple[int, ...]
+    whitespace_prefix: tuple[int, ...]
+    significant_prefix: tuple[int, ...]
+    nonalphabetic_significant_prefix: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -134,16 +146,20 @@ def _build_raw_projection(text: str) -> _RawProjection | None:
     """Return a raw-preserving NFKD view, or ``None`` for an oversized segment.
 
     Per-codepoint NFKD exposes compatibility expansions without allowing them to
-    erase the raw character that produced them. The same pass bounds canonical
-    ordering/composition segments before the classifier performs whole-input
-    NFKC. All normalization calls here receive one or two input code points.
+    erase the raw character that produced them. Comparing it with per-codepoint
+    NFD detects recursive compatibility ancestry, including sources whose direct
+    decomposition is canonical. The same pass bounds canonical ordering and
+    composition segments before the classifier performs whole-input NFKC. All
+    normalization calls here receive one or two input code points.
     """
     segment_size = 0
     composition_tail = ""
     output: list[str] = []
     raw_indices: list[int] = []
+    compatibility_sources: list[bool] = []
     for raw_index, char in enumerate(text):
         decomposition = unicodedata.normalize("NFKD", char)
+        canonical_decomposition = unicodedata.normalize("NFD", char)
         first = decomposition[0] if decomposition else ""
         continues_composition = bool(
             composition_tail
@@ -161,10 +177,13 @@ def _build_raw_projection(text: str) -> _RawProjection | None:
             return None
         output.append(decomposition)
         raw_indices.extend([raw_index] * len(decomposition))
+        compatibility_sources.append(decomposition != canonical_decomposition)
         composition_tail = _advance_direct_composition_tail(
             composition_tail, decomposition
         )
-    return _RawProjection("".join(output), tuple(raw_indices))
+    return _RawProjection(
+        "".join(output), tuple(raw_indices), tuple(compatibility_sources)
+    )
 
 
 def _canonical_input_with_replacements(
@@ -196,16 +215,69 @@ def _is_boundary_transparent(char: str) -> bool:
     return category[0] == "M" or category == "Cf"
 
 
-def _neighboring_word_base(text: str, index: int, step: int) -> bool:
-    while 0 <= index < len(text) and _is_boundary_transparent(text[index]):
-        index += step
-    return 0 <= index < len(text) and _is_confirmation_word_base(text[index])
+def _build_projection_facts(raw: str, projection: _RawProjection) -> _ProjectionFacts:
+    """Precompute facts that bridge scanning otherwise has to rediscover.
 
+    Transparent M/Cf runs can be attacker-sized. Carrying the nearest opaque
+    category in both directions makes every candidate boundary check O(1).
+    The raw prefix table similarly attributes every source character in a
+    projection span without rescanning overlapping candidates. Per-projection
+    raw-whitespace flags distinguish a literal prose boundary from whitespace
+    emitted by an effective compatibility source, including sources such as
+    non-breaking space that are themselves classified as whitespace.
+    """
+    projection_text = projection.text
+    word_base_before = [False] * (len(projection_text) + 1)
+    previous_opaque_is_word_base = False
+    for index, char in enumerate(projection_text):
+        word_base_before[index] = previous_opaque_is_word_base
+        if not _is_boundary_transparent(char):
+            previous_opaque_is_word_base = _is_confirmation_word_base(char)
+    word_base_before[-1] = previous_opaque_is_word_base
 
-def _is_complete_confirmation_span(text: str, start: int, end: int) -> bool:
-    return not _neighboring_word_base(text, start - 1, -1) and not (
-        _neighboring_word_base(text, end, 1)
+    word_base_at_or_after = [False] * (len(projection_text) + 1)
+    next_opaque_is_word_base = False
+    for index in range(len(projection_text) - 1, -1, -1):
+        char = projection_text[index]
+        if not _is_boundary_transparent(char):
+            next_opaque_is_word_base = _is_confirmation_word_base(char)
+        word_base_at_or_after[index] = next_opaque_is_word_base
+
+    raw_compatibility_prefix = [0]
+    for is_compatibility_source in projection.compatibility_sources:
+        raw_compatibility_prefix.append(
+            raw_compatibility_prefix[-1] + is_compatibility_source
+        )
+    raw_source_is_whitespace = tuple(
+        raw[raw_index].isspace() and not projection.compatibility_sources[raw_index]
+        for raw_index in projection.raw_indices
     )
+    whitespace_prefix = [0]
+    significant_prefix = [0]
+    nonalphabetic_significant_prefix = [0]
+    for char in projection_text:
+        whitespace_prefix.append(whitespace_prefix[-1] + char.isspace())
+        is_significant = not _is_boundary_transparent(char)
+        significant_prefix.append(significant_prefix[-1] + is_significant)
+        nonalphabetic_significant_prefix.append(
+            nonalphabetic_significant_prefix[-1]
+            + (is_significant and not char.isalpha())
+        )
+    return _ProjectionFacts(
+        tuple(word_base_before),
+        tuple(word_base_at_or_after),
+        raw_source_is_whitespace,
+        tuple(raw_compatibility_prefix),
+        tuple(whitespace_prefix),
+        tuple(significant_prefix),
+        tuple(nonalphabetic_significant_prefix),
+    )
+
+
+def _is_complete_confirmation_span(
+    facts: _ProjectionFacts, start: int, end: int
+) -> bool:
+    return not facts.word_base_before[start] and not facts.word_base_at_or_after[end]
 
 
 def _ascii_literal_at(text: str, start: int, literal: str) -> bool:
@@ -224,69 +296,94 @@ def _raw_material_for_projection_span(
     return raw_start, raw_end, raw[raw_start:raw_end]
 
 
-def _is_compatibility_bridge_material(raw_material: str) -> bool:
-    """Return whether an attached bridge has a compatibility-source shape.
+def _has_observable_normalized_bridge_evidence(
+    facts: _ProjectionFacts, start: int, end: int
+) -> bool:
+    """Recognize bridge evidence that survives external normalization.
 
-    A raw compatibility code point is always attributable. Already-normalized
-    material has lost that provenance, so only a compact, whitespace-free
-    nonalphabetic shape or a named exact reproduction is fail-closed. This
-    preserves forms such as ``TM``, ``a/c``, ``C/kg``, and ``(1)`` without
-    treating ordinary words such as ``candlelight`` or ``donut`` as malformed.
+    Fully collapsed alphabetic compatibility material is indistinguishable from
+    literal alphabetic input and must classify identically. Marks, Format code
+    points, and nonalphabetic expansion material remain observable. Raw source
+    provenance is checked separately before this fallback.
     """
-    if not raw_material or any(char.isspace() for char in raw_material):
+    if facts.whitespace_prefix[end] != facts.whitespace_prefix[start]:
         return False
-    if len(raw_material) == 1 and unicodedata.decomposition(raw_material).startswith(
-        "<"
-    ):
+    significant_start = facts.significant_prefix[start]
+    significant_end = facts.significant_prefix[end]
+    significant_length = significant_end - significant_start
+    if not significant_length:
+        return False
+    if significant_length != end - start:
         return True
-    if len(raw_material) > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS:
-        return False
-    if raw_material.isalpha():
-        return raw_material in _DISTINCTIVE_NORMALIZED_ALPHABETIC_BRIDGES
-    return True
+    nonalphabetic_prefix = facts.nonalphabetic_significant_prefix
+    return nonalphabetic_prefix[end] != nonalphabetic_prefix[start]
+
+
+def _projection_span_has_compatibility_source(
+    projection: _RawProjection,
+    facts: _ProjectionFacts,
+    start: int,
+    end: int,
+) -> bool:
+    raw_start = projection.raw_indices[start]
+    raw_end = projection.raw_indices[end - 1] + 1
+    prefix = facts.raw_compatibility_prefix
+    return prefix[raw_end] != prefix[raw_start]
 
 
 def _iter_compatibility_bridge_spans(
-    raw: str, projection: _RawProjection
+    projection: _RawProjection, facts: _ProjectionFacts
 ) -> Iterator[tuple[int, int]]:
-    """Yield only attached bridges with a bounded compatibility-source shape."""
+    """Yield compatibility-origin bridges attached within one raw prose token.
+
+    Keep the earliest unresolved start until a real raw-whitespace boundary so
+    a later same-left candidate cannot shadow prior compatibility provenance.
+    The latest start is retained separately for observable normalized-evidence
+    checks.
+    """
     text = projection.text
     for left, right in _CONTRACTION_PARTS:
+        earliest_left: tuple[int, int] | None = None
         latest_left: tuple[int, int] | None = None
         for index in range(len(text)):
+            if facts.raw_source_is_whitespace[index]:
+                earliest_left = None
+                latest_left = None
             left_end = index + len(left)
             if (
                 _ascii_literal_at(text, index, left)
                 and left_end < len(text)
-                and not text[left_end].isspace()
-                and not _neighboring_word_base(text, index - 1, -1)
+                and not facts.raw_source_is_whitespace[left_end]
+                and not facts.word_base_before[index]
             ):
                 latest_left = (index, left_end)
-            if latest_left is None or index <= latest_left[1]:
+                if earliest_left is None:
+                    earliest_left = latest_left
+            if earliest_left is None or latest_left is None or index <= latest_left[1]:
                 continue
             right_end = index + len(right)
             if not (
                 _ascii_literal_at(text, index, right)
-                and not text[index - 1].isspace()
-                and _is_complete_confirmation_span(text, latest_left[0], right_end)
+                and not facts.raw_source_is_whitespace[index - 1]
+                and _is_complete_confirmation_span(facts, latest_left[0], right_end)
             ):
                 continue
-            separator_span = (latest_left[1], index)
-            first_source = projection.raw_indices[separator_span[0]]
-            last_source = projection.raw_indices[separator_span[1] - 1]
-            one_raw_source = first_source == last_source
-            if not one_raw_source and (
-                separator_span[1] - separator_span[0]
-                > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS
-                or last_source - first_source + 1
-                > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS
+            earliest_separator_span = (earliest_left[1], index)
+            if _projection_span_has_compatibility_source(
+                projection, facts, *earliest_separator_span
             ):
+                yield earliest_separator_span
                 continue
-            _, _, raw_material = _raw_material_for_projection_span(
-                raw, projection, *separator_span
-            )
-            if _is_compatibility_bridge_material(raw_material):
-                yield separator_span
+            latest_separator_span = (latest_left[1], index)
+            if _has_observable_normalized_bridge_evidence(
+                facts, *earliest_separator_span
+            ) or (
+                latest_separator_span != earliest_separator_span
+                and _has_observable_normalized_bridge_evidence(
+                    facts, *latest_separator_span
+                )
+            ):
+                yield earliest_separator_span
 
 
 def _analyze_contraction_provenance(text: str) -> _ContractionProvenance:
@@ -301,6 +398,7 @@ def _analyze_contraction_provenance(text: str) -> _ContractionProvenance:
     projection = _build_raw_projection(text)
     if projection is None:
         return _ContractionProvenance(False, text, normalization_rejected=True)
+    facts = _build_projection_facts(text, projection)
     has_unsupported_separator = False
     replacements: dict[int, int] = {}
 
@@ -318,15 +416,12 @@ def _analyze_contraction_provenance(text: str) -> _ContractionProvenance:
 
     for pattern in _CONTRACTION_SEPARATOR_PATTERNS:
         for match in pattern.finditer(projection.text):
-            if _is_complete_confirmation_span(
-                projection.text, match.start(), match.end()
-            ):
+            if _is_complete_confirmation_span(facts, match.start(), match.end()):
                 validate_material(*match.span("separator"))
 
-    for separator_start, separator_end in _iter_compatibility_bridge_spans(
-        text, projection
-    ):
-        validate_material(separator_start, separator_end)
+    for _ in _iter_compatibility_bridge_spans(projection, facts):
+        has_unsupported_separator = True
+        break
     canonical_input = _canonical_input_with_replacements(text, replacements)
     return _ContractionProvenance(has_unsupported_separator, canonical_input)
 
@@ -339,7 +434,13 @@ def _normalize_confirmation_for_match(text: str) -> str:
 
 
 def classify_confirm_reply(text: str) -> str:
-    """Return 'yes' | 'no' | 'unclear'."""
+    """Classify a raw STT transcript as ``yes``, ``no``, or ``unclear``.
+
+    Callers must pass the provider transcript before compatibility
+    normalization. Once NFKC/NFKD collapses compatibility characters to literal
+    alphabetic text, source provenance is unrecoverable and the two inputs must
+    classify identically unless observable marks/Format/separators remain.
+    """
     # Capture raw structure before compatibility normalization can erase it.
     raw = text or ""
     provenance = _analyze_contraction_provenance(raw)

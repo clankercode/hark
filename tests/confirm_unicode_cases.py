@@ -17,6 +17,7 @@ APOSTROPHE_VARIANTS = (
     "\u02b9",
 )
 NORMALIZATION_FORMS = (None, "NFC", "NFD", "NFKC", "NFKD")
+PROVENANCE_PRESERVING_NORMALIZATION_FORMS = (None, "NFC", "NFD")
 UNSUPPORTED_IN_WORD_FRAGMENTS = (
     "\u00a8",
     "\u2033",
@@ -43,17 +44,32 @@ ORDINARY_UNICODE_AFFIRMATIONS = (
     "yes résumé",
     "yes Ελληνικά",
 )
+COMPATIBILITY_PROSE_AFFIRMATIONS = (
+    "yes I can\u2122 make it",
+    "yes I can\u2122 recommend it",
+    "yes I can\u2122 certainly do it",
+    "yes I can\u2122 help with that",
+    "yes I can\u2122 send it",
+    "yes I can\u2122 and will do it",
+    "yes I can\u2122 take part",
+    "yes I can\u2122 make a draft",
+)
 BENIGN_PROSE_AFFIRMATIONS = (
     "yes candlelight",
     "yes canonical text",
     "yes Canada is great",
     "yes wonderful thought",
     "yes donate it",
+    "yes donut",
+    "yes wonderment",
+    *COMPATIBILITY_PROSE_AFFIRMATIONS,
     "YES CANDLELIGHT",
     "YES CANONICAL TEXT",
     "YES CANADA IS GREAT",
     "YES WONDERFUL THOUGHT",
     "YES DONATE IT",
+    "YES DONUT",
+    "YES WONDERMENT",
 )
 WORD_BASE_BOUNDARY_CONTROLS = (
     "écan__t",
@@ -77,6 +93,27 @@ COMPATIBILITY_EXPANSION_REPRODUCTIONS = (
     "\u2100",  # ACCOUNT OF -> a/c
     "\u33c6",  # C OVER KG -> C/kg
     "\u2474",  # PARENTHESIZED DIGIT ONE -> (1)
+)
+MULTISOURCE_COMPATIBILITY_REPRODUCTIONS = (
+    "\u1d43\u1d47",  # modifier small a + modifier small b -> ab
+    "\u1d2c\u1d2e",  # modifier capital A + modifier capital B -> AB
+    "\u02b0\u02b0",  # two modifier small h sources -> hh
+    "\u2122" + "\u200b" * 6,  # compatibility source plus Format padding
+    "\u2122" + "\u200b" * 257,  # attacker-sized Format padding
+    "\u2122" * 4,  # repeated multi-character alphabetic expansion
+    "\u33a8" * 2,  # repeated mixed letter/symbol/digit expansion
+    "\u00a8" * 2,  # two sources that each project compatibility whitespace
+)
+ALPHABETIC_TRIPLE_COMPATIBILITY_REPRODUCTIONS = (
+    "\u1d43\u1d47\u02b0",  # modifier small a + b + h -> abh
+    "\u1d2c\u1d2e\u1d34",  # modifier capital A + B + H -> ABH
+    "\u02b0\u02b2\u02b7",  # modifier small h + j + w -> hjw
+)
+COMPATIBILITY_WHITESPACE_ALPHA_REPRODUCTIONS = (
+    "\u00a8a",  # compatibility SPACE + mark before literal alpha
+    "\u00a0a",  # compatibility whitespace source before literal alpha
+    "a\u2002",  # literal alpha before compatibility whitespace source
+    "\u1fee\u3396\U0001d569",  # recursive whitespace + square ml + math x
 )
 CONTRACTION_PARTS = tuple(
     phrase.split("'", 1)
@@ -132,6 +169,19 @@ FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS = (
 )
 
 
+def has_effective_compatibility_provenance(character: str) -> bool:
+    """Whether recursive compatibility normalization changes this source."""
+    return unicodedata.normalize("NFKD", character) != unicodedata.normalize(
+        "NFD", character
+    )
+
+
+def is_fully_collapsed_alphabetic_material(material: str) -> bool:
+    """Whether normalized material has no observable nonalphabetic evidence."""
+    projection = unicodedata.normalize("NFKD", material)
+    return bool(projection) and all(character.isalpha() for character in projection)
+
+
 @cache
 def alphanumeric_compatibility_expansions() -> tuple[str, ...]:
     """All Unicode code points whose compatibility expansion contains a word base."""
@@ -139,9 +189,105 @@ def alphanumeric_compatibility_expansions() -> tuple[str, ...]:
         char
         for codepoint in range(sys.maxunicode + 1)
         for char in (chr(codepoint),)
-        if unicodedata.decomposition(char).startswith("<")
+        if has_effective_compatibility_provenance(char)
         and any(part.isalnum() for part in unicodedata.normalize("NFKD", char))
     )
+
+
+@cache
+def repeated_symbol_compatibility_bridges() -> tuple[str, ...]:
+    """Two-source bridges from every whitespace-free alphanumeric symbol expansion.
+
+    Selection is derived from Unicode provenance and output semantics rather
+    than mirroring any production bridge length or alphabetic-shape heuristic.
+    """
+    return tuple(
+        char * 2
+        for codepoint in range(sys.maxunicode + 1)
+        for char in (chr(codepoint),)
+        for expansion in (unicodedata.normalize("NFKD", char),)
+        if has_effective_compatibility_provenance(char)
+        and unicodedata.category(char)[0] in {"P", "S", "M"}
+        and expansion
+        and not any(part.isspace() for part in expansion)
+        and any(part.isalnum() for part in expansion)
+    )
+
+
+@cache
+def recursive_alphanumeric_compatibility_sources() -> tuple[str, ...]:
+    """Effective compatibility sources missed by direct decomposition tags."""
+    return tuple(
+        character
+        for character in alphanumeric_compatibility_expansions()
+        if not unicodedata.decomposition(character).startswith("<")
+    )
+
+
+@cache
+def single_alphabetic_compatibility_sources() -> tuple[str, ...]:
+    """Effective sources that normalize to one alphabetic code point."""
+    return tuple(
+        character
+        for character in alphanumeric_compatibility_expansions()
+        if len(unicodedata.normalize("NFKD", character)) == 1
+        and unicodedata.normalize("NFKD", character).isalpha()
+    )
+
+
+@cache
+def alphabetic_compatibility_triples() -> tuple[str, ...]:
+    """Overlapping triples that cover every single-alphabetic source."""
+    sources = single_alphabetic_compatibility_sources()
+    return tuple(
+        sources[index]
+        + sources[(index + 1) % len(sources)]
+        + sources[(index + 2) % len(sources)]
+        for index in range(len(sources))
+    )
+
+
+@cache
+def leading_compatibility_whitespace_sources() -> tuple[str, ...]:
+    """Effective sources whose compatibility expansion starts with whitespace."""
+    return tuple(
+        character
+        for character in map(chr, range(sys.maxunicode + 1))
+        if has_effective_compatibility_provenance(character)
+        and unicodedata.normalize("NFKD", character).startswith(" ")
+    )
+
+
+@cache
+def trailing_compatibility_whitespace_sources() -> tuple[str, ...]:
+    """Effective sources whose compatibility expansion ends with whitespace."""
+    return tuple(
+        character
+        for character in map(chr, range(sys.maxunicode + 1))
+        if has_effective_compatibility_provenance(character)
+        and unicodedata.normalize("NFKD", character).endswith(" ")
+    )
+
+
+@cache
+def boundary_ending_compatibility_expansions() -> tuple[str, ...]:
+    """Compatibility sources whose expansion can introduce another token start."""
+    sources = []
+    for character in alphanumeric_compatibility_expansions():
+        expansion = unicodedata.normalize("NFKD", character)
+        opaque = tuple(
+            char
+            for char in expansion
+            if not unicodedata.category(char).startswith("M")
+            and unicodedata.category(char) != "Cf"
+        )
+        if not opaque:
+            continue
+        final_category = unicodedata.category(opaque[-1])
+        final_is_word_base = final_category[0] in {"L", "N"} or final_category == "Pc"
+        if not final_is_word_base:
+            sources.append(character)
+    return tuple(sources)
 
 
 @cache

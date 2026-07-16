@@ -10,18 +10,25 @@ import pytest
 
 import hark.confirm_lexicon as confirm_lexicon
 from confirm_unicode_cases import (
+    ALPHABETIC_TRIPLE_COMPATIBILITY_REPRODUCTIONS,
     APOSTROPHE_VARIANTS,
     BENIGN_PROSE_AFFIRMATIONS,
+    COMPATIBILITY_PROSE_AFFIRMATIONS,
     COMPATIBILITY_EXPANSION_REPRODUCTIONS,
+    COMPATIBILITY_WHITESPACE_ALPHA_REPRODUCTIONS,
     COMPOSITE_CONTRACTION_SEPARATORS,
+    CONTRACTION_PARTS,
     EDGE_MATERIAL_REPRODUCTIONS,
     FULLWIDTH_CONTRACTION_CASES,
     FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS,
+    MULTISOURCE_COMPATIBILITY_REPRODUCTIONS,
     NORMALIZATION_FORMS,
     ORDINARY_UNICODE_AFFIRMATIONS,
+    PROVENANCE_PRESERVING_NORMALIZATION_FORMS,
     SUPPORTED_FULLWIDTH_CONTRACTION_CASES,
     UNSUPPORTED_IN_WORD_FRAGMENTS,
     WORD_BASE_BOUNDARY_CONTROLS,
+    is_fully_collapsed_alphabetic_material,
 )
 from hark.config import HarkConfig
 from hark.speech import ListenResult, run_ask, speak_and_listen
@@ -265,6 +272,33 @@ def _run_ask_with_confirmation(monkeypatch, confirm_reply):
     return run_ask(cfg, "Deploy now?", risk_hint="R2")
 
 
+@pytest.mark.parametrize(
+    "raw_confirm_reply",
+    (
+        "yes I can\u1e9bt approve this",
+        "yes I can\u1d43\u1d47\u02b0t approve this",
+    ),
+)
+def test_run_ask_passes_raw_confirm_transcript_to_classifier(
+    monkeypatch, raw_confirm_reply
+):
+    classified = []
+
+    def capture_raw_transcript(text):
+        classified.append(text)
+        return "yes"
+
+    monkeypatch.setattr(
+        "hark.speak_then_listen.ask.classify_confirm_reply",
+        capture_raw_transcript,
+    )
+
+    out = _run_ask_with_confirmation(monkeypatch, raw_confirm_reply)
+
+    assert out["ok"] is True
+    assert classified == [raw_confirm_reply]
+
+
 def test_run_ask_rejects_long_combining_segment_before_whole_normalization(
     monkeypatch,
 ):
@@ -284,14 +318,14 @@ def test_run_ask_rejects_long_combining_segment_before_whole_normalization(
     assert out["cancelled"] is True
     assert out["confirm_reply"] == confirm_reply
     assert len(normalized_lengths) == (
-        confirm_lexicon._MAX_NORMALIZATION_SEGMENT_CHARS + 1
+        2 * (confirm_lexicon._MAX_NORMALIZATION_SEGMENT_CHARS + 1)
     )
     assert max(normalized_lengths) == 1
 
 
 @pytest.mark.parametrize("character", COMPATIBILITY_EXPANSION_REPRODUCTIONS)
 @pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
-def test_run_ask_rejects_alphanumeric_compatibility_expansion(
+def test_run_ask_applies_observable_alphanumeric_compatibility_policy(
     monkeypatch, character, normalization
 ):
     material = (
@@ -300,6 +334,126 @@ def test_run_ask_rejects_alphanumeric_compatibility_expansion(
         else unicodedata.normalize(normalization, character)
     )
     confirm_reply = f"yes I can{material}t approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    expected_ok = (
+        normalization not in PROVENANCE_PRESERVING_NORMALIZATION_FORMS
+        and is_fully_collapsed_alphabetic_material(material)
+    )
+    assert out["ok"] is expected_ok
+    if expected_ok:
+        assert out.get("cancelled") is not True
+        assert "confirm_reply" not in out
+    else:
+        assert out["cancelled"] is True
+        assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("bridge", MULTISOURCE_COMPATIBILITY_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_applies_observable_multisource_compatibility_policy(
+    monkeypatch, bridge, normalization, parts
+):
+    left, right = parts
+    material = (
+        bridge
+        if normalization is None
+        else unicodedata.normalize(normalization, bridge)
+    )
+    confirm_reply = f"yes I {left}{material}{right} approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    expected_ok = (
+        normalization not in PROVENANCE_PRESERVING_NORMALIZATION_FORMS
+        and is_fully_collapsed_alphabetic_material(material)
+    )
+    assert out["ok"] is expected_ok
+    if expected_ok:
+        assert out.get("cancelled") is not True
+        assert "confirm_reply" not in out
+    else:
+        assert out["cancelled"] is True
+        assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("bridge", ALPHABETIC_TRIPLE_COMPATIBILITY_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_applies_observable_alphabetic_triple_policy(
+    monkeypatch, bridge, normalization, parts
+):
+    left, right = parts
+    material = (
+        bridge
+        if normalization is None
+        else unicodedata.normalize(normalization, bridge)
+    )
+    confirm_reply = f"yes I {left}{material}{right} approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    expected_ok = normalization not in PROVENANCE_PRESERVING_NORMALIZATION_FORMS
+    if expected_ok:
+        assert is_fully_collapsed_alphabetic_material(material)
+    assert out["ok"] is expected_ok
+    if expected_ok:
+        assert out.get("cancelled") is not True
+        assert "confirm_reply" not in out
+    else:
+        assert out["cancelled"] is True
+        assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("bridge", COMPATIBILITY_WHITESPACE_ALPHA_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", PROVENANCE_PRESERVING_NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_rejects_compatibility_whitespace_with_alphabetic_material(
+    monkeypatch, bridge, normalization, parts
+):
+    left, right = parts
+    material = (
+        bridge
+        if normalization is None
+        else unicodedata.normalize(normalization, bridge)
+    )
+    confirm_reply = f"yes I {left}{material}{right} approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_rejects_recursive_compatibility_source(
+    monkeypatch, normalization, parts
+):
+    left, right = parts
+    confirm_reply = f"yes I {left}\u1e9b{right} approve this"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_rejects_shadowed_same_left_compatibility_source(
+    monkeypatch, normalization, parts
+):
+    left, right = parts
+    confirm_reply = f"yes I {left}\u2474{left}x{right} approve this"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
 
     out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
 
@@ -379,6 +533,20 @@ def test_run_ask_confirm_accepts_ordinary_unicode_words(monkeypatch, confirm_rep
 def test_run_ask_accepts_contraction_prefixes_in_benign_prose(
     monkeypatch, confirm_reply
 ):
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("confirm_reply", COMPATIBILITY_PROSE_AFFIRMATIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+def test_run_ask_accepts_compatibility_prefix_before_raw_whitespace_prose(
+    monkeypatch, confirm_reply, normalization
+):
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
     out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
 
     assert out["ok"] is True
