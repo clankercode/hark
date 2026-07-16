@@ -9,7 +9,20 @@ from contextlib import contextmanager
 import pytest
 
 import hark.confirm_lexicon as confirm_lexicon
-from hark.confirm_lexicon import NEGATE
+from confirm_unicode_cases import (
+    APOSTROPHE_VARIANTS,
+    BENIGN_PROSE_AFFIRMATIONS,
+    COMPATIBILITY_EXPANSION_REPRODUCTIONS,
+    COMPOSITE_CONTRACTION_SEPARATORS,
+    EDGE_MATERIAL_REPRODUCTIONS,
+    FULLWIDTH_CONTRACTION_CASES,
+    FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS,
+    NORMALIZATION_FORMS,
+    ORDINARY_UNICODE_AFFIRMATIONS,
+    SUPPORTED_FULLWIDTH_CONTRACTION_CASES,
+    UNSUPPORTED_IN_WORD_FRAGMENTS,
+    WORD_BASE_BOUNDARY_CONTROLS,
+)
 from hark.config import HarkConfig
 from hark.speech import ListenResult, run_ask, speak_and_listen
 from hark.speak_then_listen import HandoffState, attach_tts_info
@@ -220,99 +233,6 @@ def test_run_ask_confirm_cancel_on_no(monkeypatch, confirm_reply):
     assert out.get("confirm_reply") == confirm_reply
 
 
-_CONFIRM_APOSTROPHE_VARIANTS = (
-    "\u2018",
-    "\u02bc",
-    "\u00b4",
-    "\uff40",
-    "\u1fef",
-    "\u201b",
-    "\u2032",
-    "\u02b9",
-)
-_CONFIRM_NORMALIZATION_FORMS = (None, "NFC", "NFD", "NFKC", "NFKD")
-_CONFIRM_UNSUPPORTED_IN_WORD_FRAGMENTS = (
-    "\u00a8",
-    "\u2033",
-    "\uff3f",
-    "\u0301",
-    "\u02bb",
-    "''",
-    "\u2032\u2032",
-)
-_CONFIRM_COMPOSITE_CONTRACTION_SEPARATORS = (
-    " \u2019",
-    "\u2019 ",
-    " _",
-    "_ ",
-    " \u02bb",
-    "\u02bb ",
-    " \u2033",
-    "\u2033 ",
-    "\u2019\u02bb",
-)
-_CONFIRM_ORDINARY_UNICODE_AFFIRMATIONS = (
-    "yes I approve naïvely",
-    "yes mañana",
-    "yes résumé",
-    "yes Ελληνικά",
-)
-_CONFIRM_UNICODE_TOKEN_CONTINUATION_CONTROLS = (
-    "écan__t",
-    "_can__t",
-    "\u0301can__t",
-    "1can__t",
-    "can__té",
-    "can__t_",
-    "can__t\u0301",
-    "can__t1",
-)
-_CONFIRM_UNSUPPORTED_FULLWIDTH_SEPARATORS = (
-    "__",
-    "\u02bb",
-    "\u2033",
-    "\u2032\u2032",
-    "\u2019\u02bb",
-)
-
-
-def _fullwidth_confirm_ascii(text: str) -> str:
-    return "".join(
-        chr(ord(char) + 0xFEE0) if "!" <= char <= "~" else char for char in text
-    )
-
-
-_CONFIRM_FULLWIDTH_CONTRACTION_CASES = tuple(
-    left_variant + separator + right_variant
-    for contraction in sorted(phrase for phrase in NEGATE if "'" in phrase)
-    for left, right in (contraction.split("'", 1),)
-    for left_variant, right_variant in (
-        (_fullwidth_confirm_ascii(left), _fullwidth_confirm_ascii(right)),
-        (_fullwidth_confirm_ascii(left), right),
-        (left, _fullwidth_confirm_ascii(right)),
-    )
-    for separator in _CONFIRM_UNSUPPORTED_FULLWIDTH_SEPARATORS
-)
-_CONFIRM_SUPPORTED_FULLWIDTH_CONTRACTION_CASES = tuple(
-    left_variant + apostrophe + right_variant
-    for contraction in sorted(phrase for phrase in NEGATE if "'" in phrase)
-    for left, right in (contraction.split("'", 1),)
-    for left_variant, right_variant in (
-        (_fullwidth_confirm_ascii(left), _fullwidth_confirm_ascii(right)),
-        (_fullwidth_confirm_ascii(left), right),
-        (left, _fullwidth_confirm_ascii(right)),
-    )
-    for apostrophe in _CONFIRM_APOSTROPHE_VARIANTS
-)
-_CONFIRM_FULLWIDTH_UNICODE_TOKEN_CONTINUATION_CONTROLS = (
-    "éｃａｎ__ｔ",
-    "_ｃａｎ__ｔ",
-    "ｃａｎ__ｔé",
-    "ｃａｎ__ｔ_",
-    "ｃａｎ__ｔ\u0301",
-)
-
-
 def _run_ask_with_confirmation(monkeypatch, confirm_reply):
     cfg = HarkConfig()
     cfg.confirm.mode = "always"
@@ -369,8 +289,41 @@ def test_run_ask_rejects_long_combining_segment_before_whole_normalization(
     assert max(normalized_lengths) == 1
 
 
-@pytest.mark.parametrize("normalization", _CONFIRM_NORMALIZATION_FORMS)
-@pytest.mark.parametrize("apostrophe", _CONFIRM_APOSTROPHE_VARIANTS)
+@pytest.mark.parametrize("character", COMPATIBILITY_EXPANSION_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+def test_run_ask_rejects_alphanumeric_compatibility_expansion(
+    monkeypatch, character, normalization
+):
+    material = (
+        character
+        if normalization is None
+        else unicodedata.normalize(normalization, character)
+    )
+    confirm_reply = f"yes I can{material}t approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("confirm_reply", EDGE_MATERIAL_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+def test_run_ask_rejects_transparent_edge_material(
+    monkeypatch, confirm_reply, normalization
+):
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("apostrophe", APOSTROPHE_VARIANTS)
 def test_run_ask_confirm_cancels_normalization_closed_apostrophe_negation(
     monkeypatch, apostrophe, normalization
 ):
@@ -385,8 +338,8 @@ def test_run_ask_confirm_cancels_normalization_closed_apostrophe_negation(
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize("normalization", _CONFIRM_NORMALIZATION_FORMS)
-@pytest.mark.parametrize("fragment", _CONFIRM_UNSUPPORTED_IN_WORD_FRAGMENTS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("fragment", UNSUPPORTED_IN_WORD_FRAGMENTS)
 def test_run_ask_confirm_cancels_lossy_or_repeated_in_word_material(
     monkeypatch, fragment, normalization
 ):
@@ -401,7 +354,7 @@ def test_run_ask_confirm_cancels_lossy_or_repeated_in_word_material(
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize("separator", _CONFIRM_COMPOSITE_CONTRACTION_SEPARATORS)
+@pytest.mark.parametrize("separator", COMPOSITE_CONTRACTION_SEPARATORS)
 def test_run_ask_confirm_cancels_composite_contraction_separator(
     monkeypatch, separator
 ):
@@ -414,7 +367,7 @@ def test_run_ask_confirm_cancels_composite_contraction_separator(
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize("confirm_reply", _CONFIRM_ORDINARY_UNICODE_AFFIRMATIONS)
+@pytest.mark.parametrize("confirm_reply", ORDINARY_UNICODE_AFFIRMATIONS)
 def test_run_ask_confirm_accepts_ordinary_unicode_words(monkeypatch, confirm_reply):
     out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
 
@@ -422,7 +375,17 @@ def test_run_ask_confirm_accepts_ordinary_unicode_words(monkeypatch, confirm_rep
     assert out.get("cancelled") is not True
 
 
-@pytest.mark.parametrize("token", _CONFIRM_UNICODE_TOKEN_CONTINUATION_CONTROLS)
+@pytest.mark.parametrize("confirm_reply", BENIGN_PROSE_AFFIRMATIONS)
+def test_run_ask_accepts_contraction_prefixes_in_benign_prose(
+    monkeypatch, confirm_reply
+):
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("token", WORD_BASE_BOUNDARY_CONTROLS)
 def test_run_ask_confirm_accepts_malformed_contraction_inside_unicode_token(
     monkeypatch, token
 ):
@@ -442,7 +405,7 @@ def test_run_ask_confirm_cancels_standalone_malformed_contraction(monkeypatch):
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize("token", _CONFIRM_FULLWIDTH_CONTRACTION_CASES)
+@pytest.mark.parametrize("token", FULLWIDTH_CONTRACTION_CASES)
 def test_run_ask_confirm_cancels_fullwidth_or_mixed_contraction_skeleton(
     monkeypatch, token
 ):
@@ -455,7 +418,7 @@ def test_run_ask_confirm_cancels_fullwidth_or_mixed_contraction_skeleton(
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize("token", _CONFIRM_SUPPORTED_FULLWIDTH_CONTRACTION_CASES)
+@pytest.mark.parametrize("token", SUPPORTED_FULLWIDTH_CONTRACTION_CASES)
 def test_run_ask_confirm_cancels_supported_fullwidth_or_mixed_contraction(
     monkeypatch, token
 ):
@@ -468,9 +431,7 @@ def test_run_ask_confirm_cancels_supported_fullwidth_or_mixed_contraction(
     assert out["confirm_reply"] == confirm_reply
 
 
-@pytest.mark.parametrize(
-    "token", _CONFIRM_FULLWIDTH_UNICODE_TOKEN_CONTINUATION_CONTROLS
-)
+@pytest.mark.parametrize("token", FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS)
 def test_run_ask_confirm_accepts_fullwidth_malformed_inside_unicode_token(
     monkeypatch, token
 ):

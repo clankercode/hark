@@ -3,19 +3,36 @@
 from __future__ import annotations
 
 import re
-import sys
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass
-from functools import cache
-
-from hark.listen_end import APOSTROPHE_EQUIVALENTS, normalize_for_match
 
 _PUNCTUATION = re.compile(r"[^\w\s']+", re.UNICODE)
 _ADJOINING_PUNCTUATION_SEPARATOR = re.compile(r"^[^\w\s']+", re.UNICODE)
+_CONFIRM_WHITESPACE = re.compile(r"\s+")
 _PUNCTUATED_DEFER_CUES = ("but", "wait", "if", "unless")
 _AFFIRMATIVE_IDIOMS = frozenset({"yes why not"})
-_SUPPORTED_APOSTROPHE_SEPARATORS = APOSTROPHE_EQUIVALENTS | {"'"}
+_SUPPORTED_APOSTROPHE_SEPARATORS = frozenset(
+    {
+        "'",
+        "`",  # grave accent / common STT substitution
+        "\u00b4",  # acute accent
+        "\u02b9",  # modifier letter prime
+        "\u02bc",  # modifier letter apostrophe
+        "\u1fef",  # Greek varia (canonically equivalent to grave)
+        "\u2018",  # left single quotation mark
+        "\u2019",  # right single quotation mark
+        "\u201b",  # single high-reversed-9 quotation mark
+        "\u2032",  # prime
+        "\uff40",  # fullwidth grave accent
+    }
+)
+_CONFIRM_APOSTROPHE_TRANSLATION = str.maketrans(
+    {variant: "'" for variant in _SUPPORTED_APOSTROPHE_SEPARATORS}
+)
 _DECOMPOSED_SPACING_ACUTE = " \u0301"
+_MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS = 7
+_DISTINCTIVE_NORMALIZED_ALPHABETIC_BRIDGES = frozenset({"TM"})
 # This limits one canonical ordering/composition segment, not transcript length.
 # Human speech text should never need hundreds of marks on one starter; bounding
 # the segment avoids the quadratic worst case in CPython's Unicode normalizer.
@@ -84,15 +101,9 @@ _CONTRACTION_SEPARATOR_PATTERNS = tuple(
 
 
 @dataclass(frozen=True)
-class _SourceSpan:
-    start: int
-    end: int
-
-
-@dataclass(frozen=True)
-class _NormalizedView:
+class _RawProjection:
     text: str
-    source_spans: tuple[_SourceSpan, ...]
+    raw_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -103,7 +114,7 @@ class _ContractionProvenance:
 
 
 def _direct_composition_result(first: str, second: str) -> str:
-    """Resolve one bounded canonical composition without whole-input NFKC."""
+    """Resolve one bounded composition without normalizing attacker-sized text."""
     pair = first + second
     normalized = unicodedata.normalize("NFC", pair)
     return normalized if len(normalized) == 1 and normalized != pair else ""
@@ -119,11 +130,19 @@ def _advance_direct_composition_tail(tail: str, decomposition: str) -> str:
     return tail
 
 
-def _normalization_segments_are_bounded(text: str) -> bool:
-    """Check NFKC segment sizes using only constant-size normalization calls."""
+def _build_raw_projection(text: str) -> _RawProjection | None:
+    """Return a raw-preserving NFKD view, or ``None`` for an oversized segment.
+
+    Per-codepoint NFKD exposes compatibility expansions without allowing them to
+    erase the raw character that produced them. The same pass bounds canonical
+    ordering/composition segments before the classifier performs whole-input
+    NFKC. All normalization calls here receive one or two input code points.
+    """
     segment_size = 0
     composition_tail = ""
-    for char in text:
+    output: list[str] = []
+    raw_indices: list[int] = []
+    for raw_index, char in enumerate(text):
         decomposition = unicodedata.normalize("NFKD", char)
         first = decomposition[0] if decomposition else ""
         continues_composition = bool(
@@ -139,149 +158,13 @@ def _normalization_segments_are_bounded(text: str) -> bool:
             composition_tail = ""
         segment_size += 1
         if segment_size > _MAX_NORMALIZATION_SEGMENT_CHARS:
-            return False
+            return None
+        output.append(decomposition)
+        raw_indices.extend([raw_index] * len(decomposition))
         composition_tail = _advance_direct_composition_tail(
             composition_tail, decomposition
         )
-    return True
-
-
-def _normalize_with_provenance(
-    text: str,
-    form: str,
-    source_spans: tuple[_SourceSpan, ...] | None = None,
-) -> _NormalizedView:
-    """Normalize in linear normalization-safe segments with raw provenance.
-
-    A segment starts at a normalization starter and owns characters that can
-    reorder or canonically compose with its tail (including algorithmic Hangul).
-    Normalizing each disjoint segment once is equivalent to whole-string
-    normalization while keeping provenance as one shared raw interval per segment.
-    The caller first bounds every segment, making this O(input + normalized output)
-    despite the normalizer's quadratic behavior on an unbounded mark sequence.
-    """
-    if form not in {"NFKC", "NFD"}:
-        raise ValueError(f"unsupported provenance normalization form: {form}")
-    input_spans = source_spans or tuple(_SourceSpan(i, i + 1) for i in range(len(text)))
-    decomposition_form = "NFKD" if form == "NFKC" else "NFD"
-    output_parts: list[str] = []
-    output_spans: list[_SourceSpan] = []
-    segment_chars: list[str] = []
-    segment_start = 0
-    segment_end = 0
-    composition_tail = ""
-
-    def flush_segment() -> None:
-        if not segment_chars:
-            return
-        normalized_segment = unicodedata.normalize(form, "".join(segment_chars))
-        span = _SourceSpan(segment_start, segment_end)
-        output_parts.append(normalized_segment)
-        output_spans.extend([span] * len(normalized_segment))
-
-    for char, char_span in zip(text, input_spans, strict=True):
-        decomposition = unicodedata.normalize(decomposition_form, char)
-        first = decomposition[0] if decomposition else ""
-        continues_composition = bool(
-            form == "NFKC"
-            and composition_tail
-            and first
-            and _composition_result(composition_tail, first)
-        )
-        joins_segment = bool(segment_chars) and (
-            not first or unicodedata.combining(first) != 0 or continues_composition
-        )
-        if segment_chars and not joins_segment:
-            flush_segment()
-            segment_chars.clear()
-            composition_tail = ""
-        segment_chars.append(char)
-        if len(segment_chars) == 1:
-            segment_start = char_span.start
-            segment_end = char_span.end
-        else:
-            segment_start = min(segment_start, char_span.start)
-            segment_end = max(segment_end, char_span.end)
-        if form == "NFKC":
-            composition_tail = _advance_composition_tail(
-                composition_tail, decomposition
-            )
-    flush_segment()
-    return _NormalizedView("".join(output_parts), tuple(output_spans))
-
-
-@cache
-def _canonical_composition_map() -> dict[tuple[str, str], str]:
-    """Derive every non-algorithmic canonical composition from Unicode data."""
-    compositions: dict[tuple[str, str], str] = {}
-    for codepoint in range(sys.maxunicode + 1):
-        composite = chr(codepoint)
-        decomposition = unicodedata.decomposition(composite)
-        if not decomposition or decomposition.startswith("<"):
-            continue
-        parts = decomposition.split()
-        if len(parts) != 2:
-            continue
-        first, second = (chr(int(part, 16)) for part in parts)
-        if unicodedata.normalize("NFC", first + second) == composite:
-            compositions[(first, second)] = composite
-    return compositions
-
-
-def _hangul_composition(first: str, second: str) -> str:
-    first_codepoint = ord(first)
-    second_codepoint = ord(second)
-    if 0x1100 <= first_codepoint <= 0x1112 and 0x1161 <= second_codepoint <= 0x1175:
-        l_index = first_codepoint - 0x1100
-        v_index = second_codepoint - 0x1161
-        return chr(0xAC00 + (l_index * 21 + v_index) * 28)
-    if (
-        0xAC00 <= first_codepoint <= 0xD7A3
-        and (first_codepoint - 0xAC00) % 28 == 0
-        and 0x11A8 <= second_codepoint <= 0x11C2
-    ):
-        return chr(first_codepoint + second_codepoint - 0x11A7)
-    return ""
-
-
-def _composition_result(first: str, second: str) -> str:
-    return _hangul_composition(first, second) or _canonical_composition_map().get(
-        (first, second), ""
-    )
-
-
-def _advance_composition_tail(tail: str, decomposition: str) -> str:
-    for char in decomposition:
-        if unicodedata.combining(char) != 0:
-            tail = ""
-        else:
-            composite = _composition_result(tail, char) if tail else ""
-            tail = composite or char
-    return tail
-
-
-def _compatibility_views(text: str) -> tuple[_NormalizedView, _NormalizedView]:
-    compatibility = _normalize_with_provenance(text, "NFKC")
-    decomposed = _normalize_with_provenance(
-        compatibility.text,
-        "NFD",
-        compatibility.source_spans,
-    )
-    return compatibility, decomposed
-
-
-def _raw_span_for_output(
-    raw: str,
-    view: _NormalizedView,
-    start: int,
-    end: int,
-) -> tuple[int, int, str]:
-    indices: set[int] = set()
-    for span in view.source_spans[start:end]:
-        indices.update((span.start, span.end))
-    raw_start = min(indices)
-    raw_end = max(indices)
-    return raw_start, raw_end, raw[raw_start:raw_end]
+    return _RawProjection("".join(output), tuple(raw_indices))
 
 
 def _canonical_input_with_replacements(
@@ -303,96 +186,166 @@ def _canonical_input_with_replacements(
     return "".join(parts)
 
 
-def _is_unicode_word_continuation(char: str) -> bool:
+def _is_confirmation_word_base(char: str) -> bool:
     category = unicodedata.category(char)
-    return category[0] in {"L", "N", "M"} or category == "Pc"
+    return category[0] in {"L", "N"} or category == "Pc"
 
 
-def _is_complete_unicode_token(text: str, match: re.Match[str]) -> bool:
-    if match.start() > 0 and _is_unicode_word_continuation(text[match.start() - 1]):
+def _is_boundary_transparent(char: str) -> bool:
+    category = unicodedata.category(char)
+    return category[0] == "M" or category == "Cf"
+
+
+def _neighboring_word_base(text: str, index: int, step: int) -> bool:
+    while 0 <= index < len(text) and _is_boundary_transparent(text[index]):
+        index += step
+    return 0 <= index < len(text) and _is_confirmation_word_base(text[index])
+
+
+def _is_complete_confirmation_span(text: str, start: int, end: int) -> bool:
+    return not _neighboring_word_base(text, start - 1, -1) and not (
+        _neighboring_word_base(text, end, 1)
+    )
+
+
+def _ascii_literal_at(text: str, start: int, literal: str) -> bool:
+    end = start + len(literal)
+    return end <= len(text) and text[start:end].lower() == literal
+
+
+def _raw_material_for_projection_span(
+    raw: str,
+    projection: _RawProjection,
+    start: int,
+    end: int,
+) -> tuple[int, int, str]:
+    raw_start = projection.raw_indices[start]
+    raw_end = projection.raw_indices[end - 1] + 1
+    return raw_start, raw_end, raw[raw_start:raw_end]
+
+
+def _is_compatibility_bridge_material(raw_material: str) -> bool:
+    """Return whether an attached bridge has a compatibility-source shape.
+
+    A raw compatibility code point is always attributable. Already-normalized
+    material has lost that provenance, so only a compact, whitespace-free
+    nonalphabetic shape or a named exact reproduction is fail-closed. This
+    preserves forms such as ``TM``, ``a/c``, ``C/kg``, and ``(1)`` without
+    treating ordinary words such as ``candlelight`` or ``donut`` as malformed.
+    """
+    if not raw_material or any(char.isspace() for char in raw_material):
         return False
-    return not (
-        match.end() < len(text) and _is_unicode_word_continuation(text[match.end()])
-    )
+    if len(raw_material) == 1 and unicodedata.decomposition(raw_material).startswith(
+        "<"
+    ):
+        return True
+    if len(raw_material) > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS:
+        return False
+    if raw_material.isalpha():
+        return raw_material in _DISTINCTIVE_NORMALIZED_ALPHABETIC_BRIDGES
+    return True
 
 
-def _has_complete_contraction_candidate(text: str) -> bool:
-    return any(
-        _is_complete_unicode_token(text, match)
-        for pattern in _CONTRACTION_SEPARATOR_PATTERNS
-        for match in pattern.finditer(text)
-    )
+def _iter_compatibility_bridge_spans(
+    raw: str, projection: _RawProjection
+) -> Iterator[tuple[int, int]]:
+    """Yield only attached bridges with a bounded compatibility-source shape."""
+    text = projection.text
+    for left, right in _CONTRACTION_PARTS:
+        latest_left: tuple[int, int] | None = None
+        for index in range(len(text)):
+            left_end = index + len(left)
+            if (
+                _ascii_literal_at(text, index, left)
+                and left_end < len(text)
+                and not text[left_end].isspace()
+                and not _neighboring_word_base(text, index - 1, -1)
+            ):
+                latest_left = (index, left_end)
+            if latest_left is None or index <= latest_left[1]:
+                continue
+            right_end = index + len(right)
+            if not (
+                _ascii_literal_at(text, index, right)
+                and not text[index - 1].isspace()
+                and _is_complete_confirmation_span(text, latest_left[0], right_end)
+            ):
+                continue
+            separator_span = (latest_left[1], index)
+            first_source = projection.raw_indices[separator_span[0]]
+            last_source = projection.raw_indices[separator_span[1] - 1]
+            one_raw_source = first_source == last_source
+            if not one_raw_source and (
+                separator_span[1] - separator_span[0]
+                > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS
+                or last_source - first_source + 1
+                > _MAX_NORMALIZED_COMPATIBILITY_BRIDGE_CHARS
+            ):
+                continue
+            _, _, raw_material = _raw_material_for_projection_span(
+                raw, projection, *separator_span
+            )
+            if _is_compatibility_bridge_material(raw_material):
+                yield separator_span
 
 
 def _analyze_contraction_provenance(text: str) -> _ContractionProvenance:
-    """Validate raw separators behind compatibility-normalized contractions.
+    """Validate raw material inside compatibility-expanded contractions.
 
-    The whole candidate separator must be one declared apostrophe equivalent,
-    or the exact SPACE+COMBINING ACUTE compatibility expansion of U+00B4.
-    Candidate skeletons are found in the same NFKC space used by classification.
-    Every normalized output character retains its raw source indices, so the
-    separator decision uses original code points rather than lossy output.
-
-    A linear constant-input normalization scan rejects canonical segments over
-    the conservative bound before whole-string NFKC. For bounded segments,
-    provenance construction is O(input + normalized output): it normalizes each
-    disjoint starter/combining or composition segment once and retains one shared
-    raw interval per segment. Replies beyond the segment bound fail closed.
+    The raw-preserving NFKD projection exposes compatibility characters before
+    they can erase a refusal skeleton. Candidate material must be one declared
+    apostrophe equivalent or the exact SPACE+COMBINING ACUTE normalized form of
+    U+00B4. Projection and scanning are O(input + projected output); an oversized
+    canonical segment fails closed before whole-input normalization.
     """
-    if not _normalization_segments_are_bounded(text):
+    projection = _build_raw_projection(text)
+    if projection is None:
         return _ContractionProvenance(False, text, normalization_rejected=True)
-    compatibility_text = unicodedata.normalize("NFKC", text)
-    decomposed_text = unicodedata.normalize("NFD", compatibility_text)
-    if not (
-        _has_complete_contraction_candidate(compatibility_text)
-        or _has_complete_contraction_candidate(decomposed_text)
-    ):
-        return _ContractionProvenance(False, text)
-
-    compatibility, decomposed = _compatibility_views(text)
     has_unsupported_separator = False
     replacements: dict[int, int] = {}
-    for view in (compatibility, decomposed):
-        for pattern in _CONTRACTION_SEPARATOR_PATTERNS:
-            for match in pattern.finditer(view.text):
-                if not _is_complete_unicode_token(view.text, match):
-                    continue
-                _, _, raw_separator = _raw_span_for_output(
-                    text,
-                    view,
-                    *match.span("separator"),
-                )
-                if raw_separator == _DECOMPOSED_SPACING_ACUTE:
-                    continue
-                if (
-                    len(raw_separator) == 1
-                    and raw_separator in _SUPPORTED_APOSTROPHE_SEPARATORS
-                ):
-                    continue
-                has_unsupported_separator = True
+
+    def validate_material(separator_start: int, separator_end: int) -> None:
+        nonlocal has_unsupported_separator
+        raw_start, raw_end, raw_material = _raw_material_for_projection_span(
+            text, projection, separator_start, separator_end
+        )
+        if raw_material == _DECOMPOSED_SPACING_ACUTE:
+            replacements[raw_start] = raw_end
+            return
+        if len(raw_material) == 1 and raw_material in _SUPPORTED_APOSTROPHE_SEPARATORS:
+            return
+        has_unsupported_separator = True
 
     for pattern in _CONTRACTION_SEPARATOR_PATTERNS:
-        for match in pattern.finditer(compatibility.text):
-            if not _is_complete_unicode_token(compatibility.text, match):
-                continue
-            raw_start, raw_end, raw_separator = _raw_span_for_output(
-                text, compatibility, *match.span("separator")
-            )
-            if raw_separator == _DECOMPOSED_SPACING_ACUTE:
-                replacements[raw_start] = raw_end
+        for match in pattern.finditer(projection.text):
+            if _is_complete_confirmation_span(
+                projection.text, match.start(), match.end()
+            ):
+                validate_material(*match.span("separator"))
+
+    for separator_start, separator_end in _iter_compatibility_bridge_spans(
+        text, projection
+    ):
+        validate_material(separator_start, separator_end)
     canonical_input = _canonical_input_with_replacements(text, replacements)
     return _ContractionProvenance(has_unsupported_separator, canonical_input)
 
 
+def _normalize_confirmation_for_match(text: str) -> str:
+    text = text.translate(_CONFIRM_APOSTROPHE_TRANSLATION)
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(_CONFIRM_APOSTROPHE_TRANSLATION)
+    return _CONFIRM_WHITESPACE.sub(" ", text.lower().strip())
+
+
 def classify_confirm_reply(text: str) -> str:
     """Return 'yes' | 'no' | 'unclear'."""
-    # Capture provenance before shared NFKC can erase or transform it. The
-    # scanner's NFD view also covers callers that already normalized input.
+    # Capture raw structure before compatibility normalization can erase it.
     raw = text or ""
     provenance = _analyze_contraction_provenance(raw)
     if provenance.normalization_rejected:
         return "unclear"
-    t = normalize_for_match(provenance.canonical_input)
+    t = _normalize_confirmation_for_match(provenance.canonical_input)
     # Preserve the parent classifier's fail-closed behavior for punctuated
     # deferrals/conditions. Broad unpunctuated language belongs to B148.
     for affirm in sorted(AFFIRM, key=len, reverse=True):

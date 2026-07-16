@@ -3,7 +3,26 @@ import unicodedata
 import pytest
 
 import hark.confirm_lexicon as confirm_lexicon
-from hark.confirm_lexicon import NEGATE, classify_confirm_reply
+from confirm_unicode_cases import (
+    APOSTROPHE_VARIANTS,
+    BENIGN_PROSE_AFFIRMATIONS,
+    COMPATIBILITY_EXPANSION_REPRODUCTIONS,
+    COMPOSITE_CONTRACTION_SEPARATORS,
+    CONTRACTION_PARTS,
+    EDGE_MATERIAL_REPRODUCTIONS,
+    FULLWIDTH_CONTRACTION_CASES,
+    FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS,
+    NORMALIZATION_FORMS,
+    ORDINARY_UNICODE_AFFIRMATIONS,
+    SUPPORTED_FULLWIDTH_CONTRACTION_CASES,
+    TRANSPARENT_BOUNDARY_CHARACTERS,
+    UNSUPPORTED_IN_WORD_FRAGMENTS,
+    WORD_BASE_BOUNDARY_CONTROLS,
+    alphanumeric_compatibility_expansions,
+    transparent_boundary_codepoints,
+    word_base_category_representatives,
+)
+from hark.confirm_lexicon import classify_confirm_reply
 
 
 def test_affirm():
@@ -40,101 +59,8 @@ def test_negative_phrase_wins_over_affirmative(reply):
     assert classify_confirm_reply(reply) == "no"
 
 
-_APOSTROPHE_VARIANTS = (
-    "\u2018",  # submitted: left single quotation mark
-    "\u02bc",  # submitted: modifier letter apostrophe
-    "\u00b4",  # submitted: acute accent
-    "\uff40",  # fullwidth grave accent
-    "\u1fef",  # Greek varia
-    "\u201b",  # single high-reversed-9 quotation mark
-    "\u2032",  # prime
-    "\u02b9",  # modifier letter prime
-)
-_NORMALIZATION_FORMS = (None, "NFC", "NFD", "NFKC", "NFKD")
-_UNSUPPORTED_IN_WORD_FRAGMENTS = (
-    "\u00a8",  # compatibility spacing diaeresis
-    "\u2033",  # compatibility double prime
-    "\uff3f",  # compatibility fullwidth low line
-    "\u0301",  # combining acute, which NFC composes into a letter
-    "\u02bb",  # unsupported modifier letter that Python treats as alphanumeric
-    "''",  # repeated supported ASCII marks
-    "\u2032\u2032",  # repeated supported Unicode marks
-)
-_COMPOSITE_CONTRACTION_SEPARATORS = (
-    " \u2019",
-    "\u2019 ",
-    " _",
-    "_ ",
-    " \u02bb",
-    "\u02bb ",
-    " \u2033",
-    "\u2033 ",
-    "\u2019\u02bb",
-)
-_ORDINARY_UNICODE_AFFIRMATIONS = (
-    "yes I approve naïvely",
-    "yes mañana",
-    "yes résumé",
-    "yes Ελληνικά",
-)
-_UNICODE_TOKEN_CONTINUATION_CONTROLS = (
-    "écan__t",
-    "_can__t",
-    "\u0301can__t",
-    "1can__t",
-    "can__té",
-    "can__t_",
-    "can__t\u0301",
-    "can__t1",
-)
-_UNSUPPORTED_FULLWIDTH_SEPARATORS = (
-    "__",
-    "\u02bb",
-    "\u2033",
-    "\u2032\u2032",
-    "\u2019\u02bb",
-)
-
-
-def _fullwidth_ascii(text: str) -> str:
-    return "".join(
-        chr(ord(char) + 0xFEE0) if "!" <= char <= "~" else char for char in text
-    )
-
-
-_FULLWIDTH_CONTRACTION_CASES = tuple(
-    left_variant + separator + right_variant
-    for contraction in sorted(phrase for phrase in NEGATE if "'" in phrase)
-    for left, right in (contraction.split("'", 1),)
-    for left_variant, right_variant in (
-        (_fullwidth_ascii(left), _fullwidth_ascii(right)),
-        (_fullwidth_ascii(left), right),
-        (left, _fullwidth_ascii(right)),
-    )
-    for separator in _UNSUPPORTED_FULLWIDTH_SEPARATORS
-)
-_SUPPORTED_FULLWIDTH_CONTRACTION_CASES = tuple(
-    left_variant + apostrophe + right_variant
-    for contraction in sorted(phrase for phrase in NEGATE if "'" in phrase)
-    for left, right in (contraction.split("'", 1),)
-    for left_variant, right_variant in (
-        (_fullwidth_ascii(left), _fullwidth_ascii(right)),
-        (_fullwidth_ascii(left), right),
-        (left, _fullwidth_ascii(right)),
-    )
-    for apostrophe in _APOSTROPHE_VARIANTS
-)
-_FULLWIDTH_UNICODE_TOKEN_CONTINUATION_CONTROLS = (
-    "éｃａｎ__ｔ",
-    "_ｃａｎ__ｔ",
-    "ｃａｎ__ｔé",
-    "ｃａｎ__ｔ_",
-    "ｃａｎ__ｔ\u0301",
-)
-
-
-@pytest.mark.parametrize("normalization", _NORMALIZATION_FORMS)
-@pytest.mark.parametrize("apostrophe", _APOSTROPHE_VARIANTS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("apostrophe", APOSTROPHE_VARIANTS)
 def test_negative_contractions_accept_normalization_closed_apostrophe_family(
     apostrophe, normalization
 ):
@@ -148,7 +74,7 @@ def test_negative_contractions_accept_normalization_closed_apostrophe_family(
     "reply",
     [
         "yes, I scant approve",
-        *(f"yes, can{apostrophe}tastic" for apostrophe in _APOSTROPHE_VARIANTS),
+        *(f"yes, can{apostrophe}tastic" for apostrophe in APOSTROPHE_VARIANTS),
     ],
 )
 def test_negative_contractions_preserve_whole_token_boundaries(reply):
@@ -159,8 +85,8 @@ def test_unknown_in_word_punctuation_cannot_become_approval():
     assert classify_confirm_reply("yes I can\u055at approve this") == "unclear"
 
 
-@pytest.mark.parametrize("normalization", _NORMALIZATION_FORMS)
-@pytest.mark.parametrize("fragment", _UNSUPPORTED_IN_WORD_FRAGMENTS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("fragment", UNSUPPORTED_IN_WORD_FRAGMENTS)
 def test_lossy_or_repeated_in_word_material_cannot_become_approval(
     fragment, normalization
 ):
@@ -170,17 +96,22 @@ def test_lossy_or_repeated_in_word_material_cannot_become_approval(
     assert classify_confirm_reply(reply) == "unclear"
 
 
-@pytest.mark.parametrize("separator", _COMPOSITE_CONTRACTION_SEPARATORS)
+@pytest.mark.parametrize("separator", COMPOSITE_CONTRACTION_SEPARATORS)
 def test_composite_contraction_separator_cannot_become_approval(separator):
     assert classify_confirm_reply(f"yes I can{separator}t approve this") == "unclear"
 
 
-@pytest.mark.parametrize("reply", _ORDINARY_UNICODE_AFFIRMATIONS)
+@pytest.mark.parametrize("reply", ORDINARY_UNICODE_AFFIRMATIONS)
 def test_ordinary_unicode_words_do_not_block_affirmation(reply):
     assert classify_confirm_reply(reply) == "yes"
 
 
-@pytest.mark.parametrize("token", _UNICODE_TOKEN_CONTINUATION_CONTROLS)
+@pytest.mark.parametrize("reply", BENIGN_PROSE_AFFIRMATIONS)
+def test_contraction_prefixes_in_benign_prose_do_not_block_affirmation(reply):
+    assert classify_confirm_reply(reply) == "yes"
+
+
+@pytest.mark.parametrize("token", WORD_BASE_BOUNDARY_CONTROLS)
 def test_malformed_contraction_inside_unicode_token_does_not_block_affirmation(token):
     assert classify_confirm_reply(f"yes {token}") == "yes"
 
@@ -189,42 +120,109 @@ def test_standalone_malformed_contraction_still_blocks_affirmation():
     assert classify_confirm_reply("yes can__t") == "unclear"
 
 
-@pytest.mark.parametrize("token", _FULLWIDTH_CONTRACTION_CASES)
+@pytest.mark.parametrize("token", FULLWIDTH_CONTRACTION_CASES)
 def test_fullwidth_or_mixed_contraction_skeleton_preserves_separator_provenance(token):
     assert classify_confirm_reply(f"yes {token}") == "unclear"
 
 
-@pytest.mark.parametrize("token", _SUPPORTED_FULLWIDTH_CONTRACTION_CASES)
+@pytest.mark.parametrize("token", SUPPORTED_FULLWIDTH_CONTRACTION_CASES)
 def test_fullwidth_or_mixed_contraction_accepts_supported_apostrophe(token):
     assert classify_confirm_reply(f"yes {token}") == "no"
 
 
-@pytest.mark.parametrize("token", _FULLWIDTH_UNICODE_TOKEN_CONTINUATION_CONTROLS)
+@pytest.mark.parametrize("token", FULLWIDTH_WORD_BASE_BOUNDARY_CONTROLS)
 def test_fullwidth_malformed_contraction_inside_unicode_token_does_not_block(token):
     assert classify_confirm_reply(f"yes {token}") == "yes"
 
 
-def test_compatibility_provenance_maps_expanding_character_to_raw_source():
-    compatibility, decomposed = confirm_lexicon._compatibility_views("\u2033")
-
-    assert compatibility.text == "\u2032\u2032"
-    assert compatibility.source_spans == (
-        confirm_lexicon._SourceSpan(0, 1),
-        confirm_lexicon._SourceSpan(0, 1),
+@pytest.mark.parametrize("character", COMPATIBILITY_EXPANSION_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+def test_alphanumeric_compatibility_expansion_cannot_erase_refusal(
+    character, normalization
+):
+    material = (
+        character
+        if normalization is None
+        else unicodedata.normalize(normalization, character)
     )
-    assert compatibility.source_spans[0] is compatibility.source_spans[1]
-    assert decomposed == compatibility
+
+    assert classify_confirm_reply(f"yes I can{material}t approve this") != "yes"
 
 
-def test_compatibility_provenance_conservatively_maps_reordered_combining_marks():
-    compatibility, decomposed = confirm_lexicon._compatibility_views("a\u0315\u0300")
+def test_all_attributable_alphanumeric_compatibility_expansions_fail_closed():
+    failures = []
+    expansions = alphanumeric_compatibility_expansions()
+    audited = 0
 
-    assert compatibility.text == "à\u0315"
-    assert decomposed.text == "a\u0300\u0315"
-    assert all(
-        span == confirm_lexicon._SourceSpan(0, 3) for span in decomposed.source_spans
-    )
-    assert len({id(span) for span in decomposed.source_spans}) == 1
+    for character in expansions:
+        for normalization in NORMALIZATION_FORMS:
+            material = (
+                character
+                if normalization is None
+                else unicodedata.normalize(normalization, character)
+            )
+            provenance_preserved = normalization in {None, "NFC", "NFD"}
+            distinctive_normalized_shape = (
+                not any(char.isspace() for char in material)
+                and len(material) <= 7
+                and (not material.isalpha() or material == "TM")
+            )
+            if not provenance_preserved and not distinctive_normalized_shape:
+                continue
+            for left, right in CONTRACTION_PARTS:
+                audited += 1
+                reply = f"yes I {left}{material}{right} approve this"
+                if classify_confirm_reply(reply) == "yes":
+                    failures.append(
+                        (f"U+{ord(character):04X}", normalization, left, right)
+                    )
+                    if len(failures) == 20:
+                        break
+            if len(failures) == 20:
+                break
+        if len(failures) == 20:
+            break
+
+    assert len(expansions) >= 3000
+    assert audited >= 30_000
+    assert failures == []
+
+
+@pytest.mark.parametrize("reply", EDGE_MATERIAL_REPRODUCTIONS)
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+def test_transparent_edge_material_cannot_hide_malformed_contraction(
+    reply, normalization
+):
+    if normalization is not None:
+        reply = unicodedata.normalize(normalization, reply)
+    assert classify_confirm_reply(reply) == "unclear"
+
+
+@pytest.mark.parametrize("edge", TRANSPARENT_BOUNDARY_CHARACTERS)
+def test_extend_format_and_variation_boundaries_remain_fail_closed(edge):
+    assert classify_confirm_reply(f"yes I {edge}can__t approve") == "unclear"
+    assert classify_confirm_reply(f"yes I can__t{edge} approve") == "unclear"
+
+
+def test_all_unicode_extend_and_format_edges_remain_fail_closed():
+    failures = []
+    edges = transparent_boundary_codepoints()
+
+    for edge in edges:
+        replies = (f"yes I {edge}can__t", f"yes I can__t{edge}")
+        if any(classify_confirm_reply(reply) == "yes" for reply in replies):
+            failures.append(f"U+{ord(edge):04X}")
+            if len(failures) == 20:
+                break
+
+    assert len(edges) >= 2000
+    assert failures == []
+
+
+def test_every_word_base_category_still_blocks_embedded_candidate():
+    for base in word_base_category_representatives():
+        assert classify_confirm_reply(f"yes {base}can__t") == "yes"
+        assert classify_confirm_reply(f"yes can__t{base}") == "yes"
 
 
 def _alternating_out_of_order_marks(length):
@@ -241,19 +239,27 @@ def _alternating_out_of_order_marks(length):
         "\u00b4",  # compatibility SPACE + COMBINING ACUTE expansion
     ],
 )
-def test_normalization_segment_guard_accepts_limit_and_rejects_next_char(prefix):
+def test_normalization_segment_guard_accepts_limit_and_rejects_next_char(
+    monkeypatch, prefix
+):
     limit = confirm_lexicon._MAX_NORMALIZATION_SEGMENT_CHARS
     at_limit = prefix + _alternating_out_of_order_marks(limit - len(prefix))
     over_limit = at_limit + "\u0315"
+    real_normalize = confirm_lexicon.unicodedata.normalize
+    calls = []
 
-    assert confirm_lexicon._normalization_segments_are_bounded(at_limit)
-    assert not confirm_lexicon._analyze_contraction_provenance(
-        at_limit
-    ).normalization_rejected
-    assert not confirm_lexicon._normalization_segments_are_bounded(over_limit)
-    assert confirm_lexicon._analyze_contraction_provenance(
-        over_limit
-    ).normalization_rejected
+    def counted_normalize(form, text):
+        calls.append((form, len(text)))
+        return real_normalize(form, text)
+
+    monkeypatch.setattr(confirm_lexicon.unicodedata, "normalize", counted_normalize)
+
+    assert classify_confirm_reply(at_limit) == "unclear"
+    assert any(form == "NFKC" and length == len(at_limit) for form, length in calls)
+
+    calls.clear()
+    assert classify_confirm_reply(over_limit) == "unclear"
+    assert all(length <= 2 for _, length in calls)
 
 
 def test_long_pathological_combining_segment_fails_before_whole_normalization(
@@ -283,98 +289,9 @@ def test_segment_guard_does_not_cap_ordinary_text_or_decomposed_spacing_acute():
     assert classify_confirm_reply("yes I can \u0301t approve this") == "no"
 
 
-_NON_HANGUL_CCC_ZERO_CANONICAL_COMPOSITIONS = tuple(
-    pair
-    for pair in confirm_lexicon._canonical_composition_map()
-    if unicodedata.combining(pair[1]) == 0
-    and not confirm_lexicon._hangul_composition(*pair)
-)
-
-
-def test_unicode_data_includes_all_baseline_ccc_zero_canonical_compositions():
-    # Unicode 15.1 has 41 such pairs. Later Unicode releases may add more.
-    assert len(_NON_HANGUL_CCC_ZERO_CANONICAL_COMPOSITIONS) >= 41
-
-
-@pytest.mark.parametrize(
-    ("first", "second"), _NON_HANGUL_CCC_ZERO_CANONICAL_COMPOSITIONS
-)
-def test_segmented_provenance_covers_ccc_zero_canonical_composition(first, second):
-    raw = first + second
-    compatibility, decomposed = confirm_lexicon._compatibility_views(raw)
-
-    assert compatibility.text == unicodedata.normalize("NFKC", raw)
-    assert decomposed.text == unicodedata.normalize("NFD", compatibility.text)
-    assert all(
-        span == confirm_lexicon._SourceSpan(0, 2) for span in compatibility.source_spans
-    )
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "\u1100\u1161\u11a8",  # Hangul L/V/T Jamo composition
-        "가\u11a8",  # precomposed LV syllable plus trailing T Jamo
-        "a\u0315\u0300",  # canonical combining-mark reordering
-        "\u00b4",  # compatibility expansion
-        "\u2033",  # one-to-many compatibility expansion
-        "ｃａｎ__ｔ",  # compatibility-width contraction skeleton
-    ],
-)
-def test_segmented_provenance_matches_whole_string_normalization(raw):
-    compatibility, decomposed = confirm_lexicon._compatibility_views(raw)
-
-    assert compatibility.text == unicodedata.normalize("NFKC", raw)
-    assert decomposed.text == unicodedata.normalize("NFD", compatibility.text)
-    assert len(compatibility.source_spans) == len(compatibility.text)
-    assert len(decomposed.source_spans) == len(decomposed.text)
-
-
-def test_provenance_normalization_work_is_output_sensitive(monkeypatch):
-    confirm_lexicon._canonical_composition_map()
-    real_normalize = confirm_lexicon.unicodedata.normalize
-    work = {"calls": 0, "characters": 0}
-
-    def counted_normalize(form, text):
-        work["calls"] += 1
-        work["characters"] += len(text)
-        return real_normalize(form, text)
-
-    monkeypatch.setattr(confirm_lexicon.unicodedata, "normalize", counted_normalize)
-    raw = ("a\u0315\u0300" * 2667)[:8000]
-
-    compatibility, decomposed = confirm_lexicon._compatibility_views(raw)
-    output_bound = 2 * (len(raw) + len(compatibility.text))
-    assert compatibility.text == unicodedata.normalize("NFKC", raw)
-    assert decomposed.text == unicodedata.normalize("NFD", compatibility.text)
-    assert work["calls"] <= output_bound + 2
-    assert work["characters"] <= output_bound + len(raw) + len(compatibility.text)
-
-
-@pytest.mark.parametrize(("raw", "expected_calls"), [("\u2033", 6), ("\ufdfa", 38)])
-def test_expansion_provenance_work_tracks_normalized_output(
-    monkeypatch, raw, expected_calls
-):
-    confirm_lexicon._canonical_composition_map()
-    real_normalize = confirm_lexicon.unicodedata.normalize
-    calls = 0
-
-    def counted_normalize(form, text):
-        nonlocal calls
-        calls += 1
-        return real_normalize(form, text)
-
-    monkeypatch.setattr(confirm_lexicon.unicodedata, "normalize", counted_normalize)
-    compatibility, _ = confirm_lexicon._compatibility_views(raw)
-
-    assert calls <= expected_calls
-    assert len({id(span) for span in compatibility.source_spans}) == 1
-
-
 def test_classifier_reconstructs_many_decomposed_apostrophes_in_linear_work(
     monkeypatch,
 ):
-    confirm_lexicon._canonical_composition_map()
     real_normalize = confirm_lexicon.unicodedata.normalize
     real_rebuild = confirm_lexicon._canonical_input_with_replacements
     normalization_work = 0
