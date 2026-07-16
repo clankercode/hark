@@ -38,41 +38,8 @@ FORCE=0
 SESSION="${HARK_SESSION:-default}"
 # Max wait for an in-flight recording (seconds)
 STOP_GRACE="${HARK_STOP_GRACE_S:-120}"
-PIDFILE_LOCK_DEPTH=0
-PIDFILE_LOCK_FD=""
 START_LOCK_FD=""
 START_LOCK_CONTENDED=0
-
-# Shell starts hold this lock across their final recheck, spawn, and ownership
-# publication. Python helpers inherit the descriptor and validate it before
-# treating their own pidfile lock acquisition as reentrant.
-acquire_pidfile_lock() {
-  if ((PIDFILE_LOCK_DEPTH > 0)); then
-    PIDFILE_LOCK_DEPTH=$((PIDFILE_LOCK_DEPTH + 1))
-    return 0
-  fi
-  exec {PIDFILE_LOCK_FD}>"${PIDFILE}.lock" || return $?
-  if ! flock -x "$PIDFILE_LOCK_FD"; then
-    exec {PIDFILE_LOCK_FD}>&-
-    PIDFILE_LOCK_FD=""
-    return 1
-  fi
-  PIDFILE_LOCK_DEPTH=1
-  export HARK_WORKER_PIDFILE_LOCK_PATH="$PIDFILE"
-  export HARK_WORKER_PIDFILE_LOCK_FD="$PIDFILE_LOCK_FD"
-}
-
-release_pidfile_lock() {
-  ((PIDFILE_LOCK_DEPTH > 0)) || return 0
-  PIDFILE_LOCK_DEPTH=$((PIDFILE_LOCK_DEPTH - 1))
-  ((PIDFILE_LOCK_DEPTH == 0)) || return 0
-  unset HARK_WORKER_PIDFILE_LOCK_PATH HARK_WORKER_PIDFILE_LOCK_FD
-  local status=0
-  flock -u "$PIDFILE_LOCK_FD" || status=$?
-  exec {PIDFILE_LOCK_FD}>&-
-  PIDFILE_LOCK_FD=""
-  return "$status"
-}
 
 # Serializes shell start lifecycles without forcing graceful-stop waits to hold
 # the pidfile lock needed by independently launched status/stop commands.
@@ -106,17 +73,6 @@ stage_shutdown_reason() {
 # Keeping the shell as an adapter prevents its stop path from drifting from
 # `hark stop` while preserving orphan discovery.
 worker_identity() {
-  if ((PIDFILE_LOCK_DEPTH > 0)); then
-    # uv closes non-standard descriptors. Mirror the exact locked open file
-    # description onto stdin, which uv and Python preserve, so the helper can
-    # verify reentrancy directly rather than infer it from external contention.
-    (
-      cd "$ROOT"
-      HARK_WORKER_PIDFILE_LOCK_FD=0 \
-        uv run python -m hark.worker_process "$@" 0<&"$PIDFILE_LOCK_FD"
-    )
-    return $?
-  fi
   (cd "$ROOT" && uv run python -m hark.worker_process "$@")
 }
 
@@ -147,7 +103,7 @@ workers_match_request() {
   worker_identity "${request[@]}" >/dev/null
 }
 
-signal_pids() {
+signal_verified_workers() {
   local sig="$1"
   worker_identity signal "$PIDFILE" "$sig" --discover >/dev/null
 }
@@ -169,7 +125,7 @@ graceful_stop() {
   fi
 
   echo "sending SIGTERM (graceful, reason=$reason) to: ${pids[*]}"
-  if ! signal_pids TERM "${pids[@]}"; then
+  if ! signal_verified_workers TERM; then
     echo "error: failed to signal verified Hark workers; retaining pidfile" >&2
     return 1
   fi
@@ -206,7 +162,7 @@ graceful_stop() {
   if [[ "$force" -eq 1 ]]; then
     if ((${#still[@]} > 0)); then
       echo "force-killing remaining processes: ${still[*]}"
-      if ! signal_pids KILL "${still[@]}"; then
+      if ! signal_verified_workers KILL; then
         echo "error: failed to signal verified Hark workers; retaining pidfile" >&2
         return 1
       fi
@@ -347,7 +303,6 @@ if [[ "$skip_start" -eq 0 ]]; then
   fi
   [[ "$DO_AMBIENT" -eq 1 ]] || start_args+=(--no-ambient)
   start_output="$(
-    unset HARK_WORKER_PIDFILE_LOCK_PATH HARK_WORKER_PIDFILE_LOCK_FD
     exec {START_LOCK_FD}>&-
     "${HARK[@]}" "${start_args[@]}"
   )" || {

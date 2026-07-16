@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import dis
 import os
 import signal
 import subprocess
@@ -123,6 +124,8 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             role=role,
             pidfile=str((tmp_path / "mode-a.pids").resolve()),
             provisional=True,
+            boot_id=worker_process._current_boot_id(),
+            spawn_token=_kwargs.get("spawn_token") or "fixture-token",
         ),
     )
     monkeypatch.setattr(daemon, "wait_for_worker_role", lambda *_a, **_k: True)
@@ -302,6 +305,43 @@ def test_spawn_workers_rolls_back_then_preserves_base_exception(
     assert not (state / "mode-a.pids").exists()
 
 
+def test_rollback_interruption_preserves_primary_and_reaches_terminal_signal(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    watch = FakeWorker(101)
+    calls = 0
+
+    def fail_second(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return watch
+        raise OSError("ambient fork refused")
+
+    real_signal = daemon.signal_process_handle
+    interrupted = False
+
+    def interrupt_term(pidfd: int, sig: int) -> None:
+        nonlocal interrupted
+        if sig == signal.SIGTERM and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt("during rollback SIGTERM")
+        real_signal(pidfd, sig)
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", fail_second)
+    monkeypatch.setattr(daemon, "signal_process_handle", interrupt_term)
+
+    with pytest.raises(daemon.WorkerSpawnError) as caught:
+        daemon.spawn_mode_a_workers(root=state)
+
+    assert isinstance(caught.value.cause, OSError)
+    assert str(caught.value.cause) == "ambient fork refused"
+    assert "during rollback SIGTERM" in str(caught.value)
+    assert interrupted
+    assert watch.returncode == -signal.SIGKILL
+    assert not (state / "mode-a.pids").exists()
+
+
 def test_real_child_is_preclaimed_before_initializer_keyboard_interrupt(
     state: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -379,6 +419,84 @@ def test_real_child_is_preclaimed_before_initializer_keyboard_interrupt(
         for proc in claimed:
             if proc.poll() is None:
                 proc.terminate()
+                proc.wait(timeout=2)
+
+
+def test_real_child_is_recovered_before_popen_pid_store(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A BaseException in CPython's return-to-STORE_ATTR gap cannot orphan."""
+    fake_hark = state / "hark"
+    fake_hark.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, lambda *_args: exit(0))\n"
+        "while True: time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    fake_hark.chmod(0o755)
+    monkeypatch.setenv("HARK_TEST_WORKER_EXECUTABLE", str(fake_hark))
+    monkeypatch.setattr(
+        daemon, "open_process_handle", worker_process.open_process_handle
+    )
+    monkeypatch.setattr(
+        daemon, "signal_process_handle", worker_process.signal_process_handle
+    )
+    monkeypatch.setattr(
+        daemon, "capture_worker_identity", worker_process.capture_worker_identity
+    )
+    monkeypatch.setattr(
+        daemon, "record_matches_lifetime", worker_process.record_matches_lifetime
+    )
+    monkeypatch.setattr(
+        daemon, "recover_worker_spawn_claim", worker_process.recover_worker_spawn_claim
+    )
+    execute = subprocess.Popen._execute_child.__code__
+    instructions = {item.offset: item for item in dis.get_instructions(execute)}
+    claimed: list[subprocess.Popen] = []
+    interrupted = False
+
+    def audited_spawn(*args, _claim, **kwargs):
+        def record_claim(proc: subprocess.Popen) -> None:
+            claimed.append(proc)
+            _claim(proc)
+
+        return REAL_SPAWN_OWNED_POPEN(*args, _claim=record_claim, **kwargs)
+
+    def interrupt_before_pid_store(frame, event, _arg):
+        nonlocal interrupted
+        if frame.f_code is execute:
+            frame.f_trace_opcodes = True
+            if event == "opcode":
+                instruction = instructions.get(frame.f_lasti)
+                if (
+                    instruction is not None
+                    and instruction.opname == "STORE_ATTR"
+                    and instruction.argval == "pid"
+                    and not interrupted
+                ):
+                    interrupted = True
+                    assert getattr(frame.f_locals["self"], "pid", None) is None
+                    raise KeyboardInterrupt("before Popen.pid publication")
+        return interrupt_before_pid_store
+
+    monkeypatch.setattr(daemon, "_spawn_owned_popen", audited_spawn)
+    try:
+        sys.settrace(interrupt_before_pid_store)
+        try:
+            with pytest.raises(KeyboardInterrupt, match="before Popen.pid publication"):
+                daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+        finally:
+            sys.settrace(None)
+        assert interrupted
+        assert len(claimed) == 1
+        assert isinstance(claimed[0].pid, int)
+        assert claimed[0].poll() is not None
+        assert not (state / "mode-a.pids").exists()
+    finally:
+        for proc in claimed:
+            if getattr(proc, "pid", None) and proc.poll() is None:
+                proc.kill()
                 proc.wait(timeout=2)
 
 
@@ -507,7 +625,7 @@ def test_rollback_recaptures_survivor_when_initial_identity_capture_failed(
     ]
 
 
-def test_rollback_retains_pidfd_when_survivor_identity_cannot_be_recaptured(
+def test_rollback_publishes_claim_instead_of_leaking_pidfd_when_recapture_fails(
     state: Path, monkeypatch: pytest.MonkeyPatch
 ):
     watch = FakeWorker(101)
@@ -518,20 +636,17 @@ def test_rollback_retains_pidfd_when_survivor_identity_cannot_be_recaptured(
         daemon, "capture_worker_identity", lambda *_args, **_kwargs: None
     )
 
-    retained_fd: int | None = None
-    try:
-        with pytest.raises(daemon.WorkerSpawnError) as caught:
-            daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+    with pytest.raises(daemon.WorkerSpawnError) as caught:
+        daemon.spawn_mode_a_workers(root=state, do_ambient=False)
 
-        retained_fd = daemon._RETAINED_ROLLBACK_PIDFDS.pop(watch.pid)
-        os.fstat(retained_fd)
-        assert f"retained pidfd {retained_fd} for untracked surviving watch" in str(
-            caught.value
-        )
-        assert daemon.read_worker_records(state / "mode-a.pids") == []
-    finally:
-        if retained_fd is not None:
-            os.close(retained_fd)
+    assert "surviving workers still running: watch=101" in str(caught.value)
+    retained = daemon.read_worker_records(state / "mode-a.pids")
+    assert [(record.pid, record.role, record.provisional) for record in retained] == [
+        (101, "watch", True)
+    ]
+    assert retained[0].boot_id
+    assert retained[0].spawn_token
+    assert not hasattr(daemon, "_RETAINED_ROLLBACK_PIDFDS")
 
 
 @pytest.mark.parametrize("direct_fails", [False, True])
@@ -567,24 +682,16 @@ def test_rollback_falls_back_or_retains_pidfd_when_survivor_publish_fails(
     else:
         monkeypatch.setattr(daemon, "write_worker_pidfile_bytes_direct", real_direct)
 
-    retained_fd: int | None = None
-    try:
-        with pytest.raises(daemon.WorkerSpawnError) as caught:
-            daemon.spawn_mode_a_workers(root=state)
+    with pytest.raises(daemon.WorkerSpawnError) as caught:
+        daemon.spawn_mode_a_workers(root=state)
 
-        if direct_fails:
-            retained_fd = daemon._RETAINED_ROLLBACK_PIDFDS.pop(watch.pid)
-            os.fstat(retained_fd)
-            assert f"retained pidfd {retained_fd}" in str(caught.value)
-        else:
-            assert "used direct fallback" in str(caught.value)
-            retained = daemon.read_worker_records(pidfile)
-            assert [(record.pid, record.provisional) for record in retained] == [
-                (101, True)
-            ]
-    finally:
-        if retained_fd is not None:
-            os.close(retained_fd)
+    if direct_fails:
+        assert "published structured survivor ownership fallback" in str(caught.value)
+    else:
+        assert "used direct fallback" in str(caught.value)
+    retained = daemon.read_worker_records(pidfile)
+    assert [(record.pid, record.provisional) for record in retained] == [(101, True)]
+    assert not hasattr(daemon, "_RETAINED_ROLLBACK_PIDFDS")
 
 
 def test_spawn_workers_rolls_back_and_reports_early_child_exit(
@@ -671,6 +778,115 @@ def test_spawn_workers_successfully_starts_both_roles_and_closes_logs(
         (102, "ambient"),
     ]
     assert all(stream.closed for stream in streams)
+
+
+def test_pidfd_close_attempts_every_descriptor_after_base_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    claim = daemon.create_worker_spawn_claim(
+        role="watch", pidfile=tmp_path / "mode-a.pids"
+    )
+    read_one, write_one = os.pipe()
+    read_two, write_two = os.pipe()
+    os.close(write_one)
+    os.close(write_two)
+    owners = [
+        daemon._OwnedWorker(
+            role="watch", process=FakeWorker(101), claim=claim, pidfd=read_one
+        ),
+        daemon._OwnedWorker(
+            role="ambient",
+            process=FakeWorker(102),
+            claim=daemon.create_worker_spawn_claim(
+                role="ambient", pidfile=tmp_path / "mode-a.pids"
+            ),
+            pidfd=read_two,
+        ),
+    ]
+    real_close = os.close
+    interrupted = False
+
+    def interrupt_first(descriptor: int) -> None:
+        nonlocal interrupted
+        if descriptor == read_one and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt("close interrupted")
+        real_close(descriptor)
+
+    monkeypatch.setattr(daemon.os, "close", interrupt_first)
+
+    failures = daemon._close_owned_pidfds(owners)
+    assert len(failures) == 1
+    assert "close interrupted" in failures[0]
+    assert interrupted
+    assert all(owner.pidfd is None for owner in owners)
+    os.fstat(read_one)
+    with pytest.raises(OSError):
+        os.fstat(read_two)
+    real_close(read_one)
+
+
+def test_pidfd_close_never_retries_reused_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    owner = daemon._OwnedWorker(
+        role="watch",
+        process=FakeWorker(101),
+        claim=daemon.create_worker_spawn_claim(
+            role="watch", pidfile=tmp_path / "mode-a.pids"
+        ),
+        pidfd=read_fd,
+    )
+    real_close = os.close
+    replacement: list[int] = []
+
+    def close_then_reuse_then_interrupt(descriptor: int) -> None:
+        real_close(descriptor)
+        replacement_fd = os.open("/dev/null", os.O_RDONLY)
+        assert replacement_fd == descriptor
+        replacement.append(replacement_fd)
+        raise KeyboardInterrupt("delivered after close")
+
+    monkeypatch.setattr(daemon.os, "close", close_then_reuse_then_interrupt)
+
+    failures = daemon._close_owned_pidfds([owner])
+
+    assert len(failures) == 1
+    assert owner.pidfd is None
+    assert replacement == [read_fd]
+    os.fstat(replacement[0])
+    real_close(replacement[0])
+
+
+def test_persistent_success_close_failure_rolls_back_committed_workers(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workers = [FakeWorker(101), FakeWorker(102)]
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *_a, **_k: workers.pop(0))
+    real_close_owned = daemon._close_owned_pidfds
+    close_calls = 0
+
+    def fail_success_close(owned) -> list[str]:
+        nonlocal close_calls
+        close_calls += 1
+        if close_calls == 1:
+            return ["watch pidfd close failed"]
+        return real_close_owned(owned)
+
+    monkeypatch.setattr(daemon, "_close_owned_pidfds", fail_success_close)
+
+    with pytest.raises(daemon.WorkerSpawnError, match="pidfd startup failed"):
+        daemon.spawn_mode_a_workers(root=state)
+
+    assert close_calls >= 2
+    assert all(
+        worker.returncode == -signal.SIGTERM
+        for worker in FakeWorker.registry.values()
+        if worker.pid in {101, 102}
+    )
+    assert not (state / "mode-a.pids").exists()
 
 
 def test_spawn_workers_rechecks_existing_ownership_inside_transaction(

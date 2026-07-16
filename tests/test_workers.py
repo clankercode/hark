@@ -127,6 +127,48 @@ def test_start_when_already_running(state: Path):
         kill_child(child)
 
 
+def test_concurrent_compatible_start_reclassifies_lock_winner_as_already_running(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import hark.daemon as daemon
+
+    record = worker_process.WorkerRecord(
+        pid=4321,
+        start_time="winner",
+        role="ambient",
+        pidfile=str((state / "mode-a.pids").resolve()),
+        config=str(worker_process._config_path_from_environ(dict(os.environ))),
+        boot_id=worker_process._current_boot_id(),
+    )
+    collections = iter([[], [record]])
+    monkeypatch.setattr(
+        workers, "collect_worker_records", lambda _path: next(collections)
+    )
+    monkeypatch.setattr(
+        workers,
+        "worker_records_match_request",
+        lambda records, **_kwargs: records == [record],
+    )
+    monkeypatch.setattr(
+        workers,
+        "spawn_mode_a_workers",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            daemon.WorkerSpawnError(
+                "pidfile", daemon.DaemonConflict("winner owns pidfile")
+            )
+        ),
+    )
+
+    result = workers.start_workers(state, do_watch=False, settle_s=0)
+
+    assert result == {
+        "ok": True,
+        "already_running": True,
+        "pids": [4321],
+        "message": "workers already running (pids 4321)",
+    }
+
+
 def test_start_refuses_live_harkd(state: Path):
     (state / "harkd.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
     result = workers.start_workers(state, settle_s=0)

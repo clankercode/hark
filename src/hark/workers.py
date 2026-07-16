@@ -32,6 +32,7 @@ from hark.lifecycle import set_shutdown_reason
 from hark.paths import state_dir
 from hark.worker_process import (
     WorkerRecord,
+    WorkerStateUnavailableError,
     collect_worker_records,
     record_matches_lifetime,
     record_matches_process,
@@ -125,7 +126,15 @@ def stop_workers(
         timeout_s = min(float(timeout_s), 0.5)
 
     path = mode_a_pids_path(root)
-    records = collect_worker_records(path)
+    try:
+        records = collect_worker_records(path)
+    except WorkerStateUnavailableError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "pids": [],
+            "message": "worker identity unavailable; retaining ownership state",
+        }
     live = [record.pid for record in records]
     if not records:
         return {
@@ -233,7 +242,10 @@ def start_workers(
         return {"ok": False, "error": str(exc), "pids": collect_worker_pids(root)}
 
     path = mode_a_pids_path(root)
-    existing_records = collect_worker_records(path)
+    try:
+        existing_records = collect_worker_records(path)
+    except WorkerStateUnavailableError as exc:
+        return {"ok": False, "error": str(exc), "pids": []}
     existing = [record.pid for record in existing_records]
     if existing_records and worker_records_match_request(
         existing_records,
@@ -270,6 +282,29 @@ def start_workers(
             log_dir=root,
         )
     except OSError as exc:
+        # Another compatible starter may have won while this caller waited for
+        # the same pidfile transaction lock. Reclassify that lock winner as the
+        # idempotent already-running outcome, never a spurious start failure.
+        try:
+            winner = collect_worker_records(path)
+        except WorkerStateUnavailableError:
+            winner = []
+        if winner and worker_records_match_request(
+            winner,
+            watch=do_watch,
+            ambient=do_ambient,
+            session=session,
+        ):
+            pids = [record.pid for record in winner]
+            return {
+                "ok": True,
+                "already_running": True,
+                "pids": pids,
+                "message": (
+                    "workers already running "
+                    f"(pids {', '.join(str(pid) for pid in pids)})"
+                ),
+            }
         return {"ok": False, "error": f"failed to spawn workers: {exc}", "pids": []}
 
     started = [c.pid for c in children if c.pid]

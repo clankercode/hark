@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import errno
 import fcntl
 import json
 import math
@@ -21,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -30,6 +32,15 @@ WORKER_ROLES = frozenset({"ambient", "watch"})
 RECORD_VERSION = 1
 WORKER_PIDFILE_ENV = "HARK_WORKER_PIDFILE"
 WORKER_ROLE_ENV = "HARK_WORKER_ROLE"
+WORKER_SPAWN_TOKEN_ENV = "HARK_WORKER_SPAWN_TOKEN"
+
+
+class WorkerStateUnavailableError(RuntimeError):
+    """The kernel could not prove whether recorded ownership is still live."""
+
+
+class _ProcfsUnavailableError(OSError):
+    """A process may exist, but its identity could not be inspected safely."""
 
 
 @dataclass(frozen=True, order=True)
@@ -43,6 +54,9 @@ class WorkerRecord:
     pidfile: str | None = None
     config: str | None = None
     provisional: bool = False
+    boot_id: str | None = None
+    spawn_token: str | None = None
+    legacy: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
@@ -69,8 +83,65 @@ class PidfdUnavailableError(RuntimeError):
 
 
 _WORKER_LOCKS = threading.local()
-_INHERITED_LOCK_PATH_ENV = "HARK_WORKER_PIDFILE_LOCK_PATH"
-_INHERITED_LOCK_FD_ENV = "HARK_WORKER_PIDFILE_LOCK_FD"
+
+
+@dataclass(frozen=True)
+class WorkerSpawnClaim:
+    """Authority selected before a fork and independently recoverable afterward."""
+
+    role: str
+    pidfile: str
+    config: str
+    boot_id: str
+    parent_pid: int
+    parent_start_time: str
+    token: str
+
+
+def _current_boot_id() -> str | None:
+    try:
+        value = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        )
+    except OSError:
+        return None
+    return value or None
+
+
+def create_worker_spawn_claim(*, role: str, pidfile: Path) -> WorkerSpawnClaim:
+    """Preclaim one future child without depending on ``Popen.pid`` publication."""
+    if role not in WORKER_ROLES:
+        raise ValueError(f"invalid worker role: {role}")
+    boot_id = _current_boot_id()
+    parent_stat = _proc_stat(os.getpid())
+    config = _config_path_from_environ(dict(os.environ))
+    if boot_id is None or parent_stat is None or config is None:
+        raise WorkerStateUnavailableError("cannot establish worker spawn provenance")
+    return WorkerSpawnClaim(
+        role=role,
+        pidfile=str(pidfile.resolve(strict=False)),
+        config=str(config),
+        boot_id=boot_id,
+        parent_pid=os.getpid(),
+        parent_start_time=parent_stat[1],
+        token=uuid.uuid4().hex,
+    )
+
+
+def provisional_record_from_claim(claim: WorkerSpawnClaim, *, pid: int) -> WorkerRecord:
+    """Materialize durable token authority when procfs identity is unavailable."""
+    if pid <= 0:
+        raise ValueError("worker PID must be positive")
+    return WorkerRecord(
+        pid=pid,
+        start_time=f"claim:{claim.token}",
+        role=claim.role,
+        pidfile=claim.pidfile,
+        config=claim.config,
+        provisional=True,
+        boot_id=claim.boot_id,
+        spawn_token=claim.token,
+    )
 
 
 def _load_libc_pidfd_functions():
@@ -101,33 +172,18 @@ def _lock_key(path: Path) -> Path:
     return path.resolve(strict=False)
 
 
-def _has_inherited_exclusive_lock(key: Path) -> bool:
-    """Validate an inherited descriptor by acquiring its own open description."""
-    raw_path = os.environ.get(_INHERITED_LOCK_PATH_ENV)
-    raw_fd = os.environ.get(_INHERITED_LOCK_FD_ENV)
-    if not raw_path or not raw_fd:
-        return False
+def _preserve_primary_cleanup_error(
+    primary: BaseException, stage: str, cleanup: BaseException
+) -> None:
+    """Attach a cleanup failure without replacing the operation's primary."""
     try:
-        if _lock_key(Path(raw_path)) != key:
-            return False
-        fd = int(raw_fd)
-        if fd < 0:
-            return False
-        lock_path = key.with_name(f"{key.name}.lock")
-        lock_stat = lock_path.stat()
-        descriptor = os.fstat(fd)
-        if (descriptor.st_dev, descriptor.st_ino) != (
-            lock_stat.st_dev,
-            lock_stat.st_ino,
-        ):
-            return False
-        # This succeeds only when the descriptor itself owns (or can safely
-        # acquire) exclusivity. Contention on an unrelated open description is
-        # never evidence of inherited ownership.
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except (BlockingIOError, OSError, TypeError, ValueError):
-        return False
+        detail = str(cleanup)
+    except BaseException:
+        detail = f"<{type(cleanup).__name__}>"
+    try:
+        primary.add_note(f"worker pidfile {stage} cleanup failed: {detail}")
+    except BaseException:
+        pass
 
 
 @contextmanager
@@ -151,34 +207,54 @@ def worker_pidfile_lock(path: Path, *, exclusive: bool = True) -> Iterator[None]
             existing.depth -= 1
         return
 
-    if _has_inherited_exclusive_lock(key):
-        yield
-        return
-
     key.parent.mkdir(parents=True, exist_ok=True)
     lock_path = key.with_name(f"{key.name}.lock")
     handle = lock_path.open("a+b")
     operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     try:
         fcntl.flock(handle.fileno(), operation)
-    except BaseException:
-        handle.close()
+    except BaseException as primary:
+        try:
+            handle.close()
+        except BaseException as cleanup:
+            _preserve_primary_cleanup_error(primary, "acquisition close", cleanup)
         raise
 
     entry = _HeldWorkerLock(handle=handle, exclusive=exclusive)
     if not hasattr(_WORKER_LOCKS, "held"):
         _WORKER_LOCKS.held = held
     held[key] = entry
+    primary: BaseException | None = None
     try:
         yield
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         entry.depth -= 1
         if entry.depth == 0:
             held.pop(key, None)
+            cleanup_errors: list[tuple[str, BaseException]] = []
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            finally:
+            except BaseException as exc:
+                cleanup_errors.append(("unlock", exc))
+            try:
                 handle.close()
+            except BaseException as exc:
+                cleanup_errors.append(("close", exc))
+            if primary is not None:
+                for stage, cleanup in cleanup_errors:
+                    _preserve_primary_cleanup_error(primary, stage, cleanup)
+            elif cleanup_errors:
+                first_stage, first = cleanup_errors[0]
+                for stage, cleanup in cleanup_errors[1:]:
+                    _preserve_primary_cleanup_error(first, stage, cleanup)
+                try:
+                    first.add_note(f"worker pidfile {first_stage} cleanup failed")
+                except BaseException:
+                    pass
+                raise first
 
 
 def _proc_stat(pid: int) -> tuple[str, str] | None:
@@ -187,8 +263,15 @@ def _proc_stat(pid: int) -> tuple[str, str] | None:
         return None
     try:
         text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
+    except OSError as exc:
+        if isinstance(exc, (FileNotFoundError, ProcessLookupError)) or exc.errno in {
+            errno.ENOENT,
+            errno.ESRCH,
+        }:
+            return None
+        raise _ProcfsUnavailableError(
+            exc.errno or errno.EIO, f"cannot inspect /proc/{pid}/stat"
+        ) from exc
     # Field 2 (comm) is parenthesised and may itself contain spaces/parens.
     rparen = text.rfind(")")
     if rparen < 0:
@@ -203,8 +286,15 @@ def _proc_stat(pid: int) -> tuple[str, str] | None:
 def _proc_argv(pid: int) -> list[str] | None:
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return None
+    except OSError as exc:
+        if isinstance(exc, (FileNotFoundError, ProcessLookupError)) or exc.errno in {
+            errno.ENOENT,
+            errno.ESRCH,
+        }:
+            return None
+        raise _ProcfsUnavailableError(
+            exc.errno or errno.EIO, f"cannot inspect /proc/{pid}/cmdline"
+        ) from exc
     if not raw:
         return None
     return [
@@ -217,8 +307,15 @@ def _proc_argv(pid: int) -> list[str] | None:
 def _proc_ppid(pid: int) -> int | None:
     try:
         status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
-    except OSError:
-        return None
+    except OSError as exc:
+        if isinstance(exc, (FileNotFoundError, ProcessLookupError)) or exc.errno in {
+            errno.ENOENT,
+            errno.ESRCH,
+        }:
+            return None
+        raise _ProcfsUnavailableError(
+            exc.errno or errno.EIO, f"cannot inspect /proc/{pid}/status"
+        ) from exc
     parent_line = next(
         (line for line in status.splitlines() if line.startswith("PPid:")), None
     )
@@ -234,8 +331,15 @@ def _proc_ppid(pid: int) -> int | None:
 def _proc_environ(pid: int) -> dict[str, str] | None:
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
-    except OSError:
-        return None
+    except OSError as exc:
+        if isinstance(exc, (FileNotFoundError, ProcessLookupError)) or exc.errno in {
+            errno.ENOENT,
+            errno.ESRCH,
+        }:
+            return None
+        raise _ProcfsUnavailableError(
+            exc.errno or errno.EIO, f"cannot inspect /proc/{pid}/environ"
+        ) from exc
     result: dict[str, str] = {}
     for item in raw.split(b"\0"):
         if not item or b"=" not in item:
@@ -304,22 +408,52 @@ def inspect_worker(
     expected_role: str | None = None,
     expected_pidfile: Path | None = None,
     expected_config: Path | None = None,
+    require_markers: bool = True,
 ) -> WorkerRecord | None:
     """Inspect the current process occupying *pid*, if it is a Hark worker."""
     stat = _proc_stat(pid)
+    if stat is None:
+        return None
     argv = _proc_argv(pid)
+    if argv is None:
+        return None
     environ = _proc_environ(pid)
-    if stat is None or argv is None or environ is None:
+    if environ is None:
         return None
     role = worker_role_from_argv(argv)
     if role is None or (expected_role is not None and role != expected_role):
         return None
-    if environ.get(WORKER_ROLE_ENV) != role:
+    marker_role = environ.get(WORKER_ROLE_ENV)
+    if require_markers and marker_role != role:
         return None
+    if marker_role is not None and marker_role != role:
+        return None
+    if not require_markers and marker_role is None:
+        executable = Path(argv[0]).name.lower()
+        module_launch = (
+            re.fullmatch(r"(?:python|pypy)(?:\d+(?:\.\d+)*)?", executable)
+            and len(argv) > 2
+            and argv[1:3] == ["-m", "hark"]
+        )
+        direct_native = executable == "hark"
+        uv_launch = (
+            executable == "uv"
+            and len(argv) > 2
+            and argv[1] == "run"
+            and Path(argv[2]).name == "hark"
+        )
+        if not (module_launch or direct_native or uv_launch):
+            return None
     raw_pidfile = environ.get(WORKER_PIDFILE_ENV)
-    if not raw_pidfile:
+    if require_markers and not raw_pidfile:
         return None
-    pidfile = str(Path(raw_pidfile).resolve(strict=False))
+    pidfile = (
+        str(Path(raw_pidfile).resolve(strict=False))
+        if raw_pidfile
+        else str(expected_pidfile.resolve(strict=False))
+        if expected_pidfile is not None
+        else None
+    )
     if expected_pidfile is not None and pidfile != str(
         expected_pidfile.resolve(strict=False)
     ):
@@ -338,6 +472,9 @@ def inspect_worker(
         role=role,
         pidfile=pidfile,
         config=config,
+        boot_id=_current_boot_id(),
+        spawn_token=environ.get(WORKER_SPAWN_TOKEN_ENV),
+        legacy=not require_markers and marker_role is None,
     )
 
 
@@ -347,6 +484,7 @@ def capture_worker_identity(
     role: str,
     expected_parent_pid: int | None = None,
     pidfile: Path | None = None,
+    spawn_token: str | None = None,
 ) -> WorkerRecord | None:
     """Capture a newly spawned, caller-owned worker before later validation."""
     if role not in WORKER_ROLES:
@@ -356,6 +494,9 @@ def capture_worker_identity(
         return None
     scope = str(pidfile.resolve(strict=False)) if pidfile is not None else None
     config_path = _config_path_from_environ(dict(os.environ))
+    boot_id = _current_boot_id()
+    if boot_id is None:
+        return None
     record = WorkerRecord(
         pid=pid,
         start_time=stat[1],
@@ -363,20 +504,51 @@ def capture_worker_identity(
         pidfile=scope,
         config=str(config_path) if config_path is not None else None,
         provisional=True,
+        boot_id=boot_id,
+        spawn_token=spawn_token,
     )
     if expected_parent_pid is not None:
         if expected_parent_pid <= 0 or _proc_ppid(pid) != expected_parent_pid:
             return None
         # Close the lifetime-swap window between start-time and parent reads.
-        if not record_matches_lifetime(record):
+        if not _record_matches_kernel_lifetime(record):
             return None
     return record
 
 
-def record_matches_lifetime(record: WorkerRecord) -> bool:
-    """Return whether *record* still names the captured process lifetime."""
+def _record_matches_kernel_lifetime(record: WorkerRecord) -> bool:
+    """Match boot/start identity without assuming the child has execed yet."""
     stat = _proc_stat(record.pid)
-    return stat is not None and stat[1] == record.start_time
+    if stat is None:
+        return False
+    if not record.start_time.startswith("claim:") and stat[1] != record.start_time:
+        return False
+    if record.boot_id is not None and _current_boot_id() != record.boot_id:
+        return False
+    return True
+
+
+def record_matches_lifetime(record: WorkerRecord) -> bool:
+    """Return whether *record* still names its provenance-proven lifetime."""
+    if not _record_matches_kernel_lifetime(record):
+        return False
+    if record.provisional:
+        if not record.boot_id or not record.spawn_token:
+            return False
+        environ = _proc_environ(record.pid)
+        if environ is None:
+            return False
+        if environ.get(WORKER_SPAWN_TOKEN_ENV) != record.spawn_token:
+            return False
+        if environ.get(WORKER_ROLE_ENV) != record.role:
+            return False
+        if record.pidfile is None or environ.get(WORKER_PIDFILE_ENV) is None:
+            return False
+        if str(Path(environ[WORKER_PIDFILE_ENV]).resolve(strict=False)) != str(
+            Path(record.pidfile).resolve(strict=False)
+        ):
+            return False
+    return True
 
 
 def record_matches_process(record: WorkerRecord) -> bool:
@@ -391,9 +563,63 @@ def record_matches_process(record: WorkerRecord) -> bool:
             expected_role=record.role,
             expected_pidfile=expected_pidfile,
             expected_config=expected_config,
+            require_markers=not record.legacy,
         )
         == record
     )
+
+
+def recover_worker_spawn_claim(
+    claim: WorkerSpawnClaim,
+    *,
+    timeout_s: float = 2.0,
+    poll_interval_s: float = 0.01,
+) -> WorkerRecord | None:
+    """Recover the exact child for a pre-fork claim after lost ``Popen.pid``.
+
+    The token is selected before entering CPython's fork/exec machinery and is
+    visible only after that child has execed with the claimed environment. This
+    closes the Python bytecode gap between ``_fork_exec`` returning a PID and
+    ``Popen`` publishing it on the object.
+    """
+    if _current_boot_id() != claim.boot_id:
+        return None
+    parent_stat = _proc_stat(claim.parent_pid)
+    if parent_stat is None or parent_stat[1] != claim.parent_start_time:
+        return None
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError as exc:
+            raise WorkerStateUnavailableError("cannot enumerate /proc") from exc
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            try:
+                if _proc_ppid(pid) != claim.parent_pid:
+                    continue
+                environ = _proc_environ(pid)
+            except _ProcfsUnavailableError:
+                continue
+            if environ is None or environ.get(WORKER_SPAWN_TOKEN_ENV) != claim.token:
+                continue
+            if environ.get(WORKER_ROLE_ENV) != claim.role:
+                continue
+            record = capture_worker_identity(
+                pid,
+                role=claim.role,
+                expected_parent_pid=claim.parent_pid,
+                pidfile=Path(claim.pidfile),
+                spawn_token=claim.token,
+            )
+            if record is not None and record.config == claim.config:
+                return record
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(poll_interval_s, remaining))
 
 
 def wait_for_worker_role(
@@ -407,7 +633,7 @@ def wait_for_worker_role(
         return False
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
-        if not record_matches_lifetime(record):
+        if not _record_matches_kernel_lifetime(record):
             return False
         ready = replace(record, provisional=False)
         if record_matches_process(ready):
@@ -491,11 +717,24 @@ def _parse_stored_record(line: str) -> WorkerRecord | None:
     pidfile = value.get("pidfile")
     config = value.get("config")
     provisional = value.get("provisional", False)
+    boot_id = value.get("boot_id")
+    spawn_token = value.get("spawn_token")
+    legacy = value.get("legacy", False)
     if pidfile is not None and (not isinstance(pidfile, str) or not pidfile):
         return None
     if config is not None and (not isinstance(config, str) or not config):
         return None
     if not isinstance(provisional, bool):
+        return None
+    if boot_id is not None and (not isinstance(boot_id, str) or not boot_id):
+        return None
+    if spawn_token is not None and (
+        not isinstance(spawn_token, str) or not spawn_token
+    ):
+        return None
+    if provisional and (boot_id is None or spawn_token is None):
+        return None
+    if not isinstance(legacy, bool) or (provisional and legacy):
         return None
     return WorkerRecord(
         pid=pid,
@@ -505,6 +744,9 @@ def _parse_stored_record(line: str) -> WorkerRecord | None:
         pidfile=pidfile,
         config=config,
         provisional=provisional,
+        boot_id=boot_id,
+        spawn_token=spawn_token,
+        legacy=legacy,
     )
 
 
@@ -687,11 +929,16 @@ def _discover_workers(path: Path, config_path: Path) -> list[WorkerRecord]:
     for entry in proc_entries:
         if not entry.name.isdigit():
             continue
-        record = inspect_worker(
-            int(entry.name),
-            expected_pidfile=path,
-            expected_config=config_path,
-        )
+        try:
+            record = inspect_worker(
+                int(entry.name),
+                expected_pidfile=path,
+                expected_config=config_path,
+            )
+        except _ProcfsUnavailableError:
+            # Unreadable unrelated /proc entries do not constrain this
+            # pidfile. Recorded entries are handled fail-closed above.
+            continue
         if record is not None:
             records.append(record)
 
@@ -753,7 +1000,6 @@ def _collect_worker_records_unlocked(
     expected_config_path = _config_path_from_environ(dict(os.environ))
     if expected_config_path is None:
         return []
-    expected_config = str(expected_config_path)
     try:
         original = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -779,38 +1025,63 @@ def _collect_worker_records_unlocked(
                 if stored.config is not None
                 else None
             )
-            if stored_config is not None and stored_config != expected_config:
-                continue
-            if stored.provisional:
-                # Provisional records were introduced with mandatory scope.
-                # Never infer authority for an unscoped provisional lifetime.
-                if (
-                    stored_scope is not None
-                    and stored_config is not None
-                    and record_matches_lifetime(stored)
+            try:
+                if stored.provisional:
+                    # Provisional authority is valid only with boot-scoped,
+                    # child-provided spawn provenance. Never infer it.
+                    if (
+                        stored_scope is not None
+                        and stored_config is not None
+                        and stored.boot_id is not None
+                        and stored.spawn_token is not None
+                        and record_matches_lifetime(stored)
+                    ):
+                        records[stored.pid] = stored
+                elif (
+                    stored_scope is None
+                    or stored_config is None
+                    or stored.boot_id is None
                 ):
+                    # Migrate pre-B127 records from the actual historical
+                    # launch shape. Marker env vars did not exist yet.
+                    migrated = inspect_worker(
+                        stored.pid,
+                        expected_role=stored.role,
+                        expected_pidfile=path,
+                        expected_config=(
+                            Path(stored_config)
+                            if stored_config is not None
+                            else expected_config_path
+                        ),
+                        require_markers=False,
+                    )
+                    if (
+                        migrated is not None
+                        and migrated.start_time == stored.start_time
+                    ):
+                        records[migrated.pid] = migrated
+                elif record_matches_process(stored):
                     records[stored.pid] = stored
-            elif stored_scope is None or stored_config is None:
-                # Migrate pre-scope structured records only from live processes
-                # that independently prove the exact role and current pidfile.
-                migrated = inspect_worker(
-                    stored.pid,
-                    expected_role=stored.role,
-                    expected_pidfile=path,
-                    expected_config=expected_config_path,
-                )
-                if migrated is not None and migrated.start_time == stored.start_time:
-                    records[migrated.pid] = migrated
-            elif record_matches_process(stored):
-                records[stored.pid] = stored
+            except _ProcfsUnavailableError as exc:
+                raise WorkerStateUnavailableError(
+                    f"cannot verify recorded worker pid {stored.pid}; "
+                    "retaining ownership state"
+                ) from exc
             continue
         legacy_pid = _parse_legacy_pid(line)
         if legacy_pid is not None:
-            migrated = inspect_worker(
-                legacy_pid,
-                expected_pidfile=path,
-                expected_config=expected_config_path,
-            )
+            try:
+                migrated = inspect_worker(
+                    legacy_pid,
+                    expected_pidfile=path,
+                    expected_config=expected_config_path,
+                    require_markers=False,
+                )
+            except _ProcfsUnavailableError as exc:
+                raise WorkerStateUnavailableError(
+                    f"cannot verify legacy worker pid {legacy_pid}; "
+                    "retaining ownership state"
+                ) from exc
             if migrated is not None:
                 records[migrated.pid] = migrated
 
@@ -1033,7 +1304,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         writer(args.pidfile, supplied)
         return 0
 
-    records = collect_worker_records(args.pidfile, discover=args.discover)
+    try:
+        records = collect_worker_records(args.pidfile, discover=args.discover)
+    except WorkerStateUnavailableError as exc:
+        print(f"worker identity unavailable: {exc}", file=sys.stderr)
+        return 1
     if args.command == "compatible":
         return (
             0

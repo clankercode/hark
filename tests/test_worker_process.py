@@ -35,40 +35,6 @@ def test_worker_role_accepts_real_launch_shapes(argv: list[str], role: str):
     assert worker_process.worker_role_from_argv(argv) == role
 
 
-def test_forged_inherited_lock_rejects_unrelated_contention(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    pidfile = tmp_path / "mode-a.pids"
-    lock_path = tmp_path / "mode-a.pids.lock"
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    holder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import fcntl, pathlib, sys, time; "
-                "f = pathlib.Path(sys.argv[1]).open('a+b'); "
-                "fcntl.flock(f.fileno(), fcntl.LOCK_EX); "
-                "print('ready', flush=True); time.sleep(30)"
-            ),
-            str(lock_path),
-        ],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        assert holder.stdout is not None
-        assert holder.stdout.readline().strip() == "ready"
-        monkeypatch.setenv("HARK_WORKER_PIDFILE_LOCK_PATH", str(pidfile))
-        monkeypatch.setenv("HARK_WORKER_PIDFILE_LOCK_FD", str(descriptor))
-
-        assert worker_process._has_inherited_exclusive_lock(pidfile) is False
-    finally:
-        os.close(descriptor)
-        holder.kill()
-        holder.wait(timeout=2)
-
-
 def test_worker_request_compatibility_requires_exact_roles_and_watch_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -105,6 +71,61 @@ def test_worker_request_compatibility_requires_exact_roles_and_watch_session(
     )
 
 
+def test_pidfile_lock_cleanup_preserves_body_primary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    class HostileHandle:
+        def fileno(self) -> int:
+            return 123
+
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    handle = HostileHandle()
+    monkeypatch.setattr(worker_process.Path, "open", lambda *_a, **_k: handle)
+
+    def hostile_flock(_fd: int, operation: int) -> None:
+        if operation == worker_process.fcntl.LOCK_UN:
+            raise OSError("unlock failed")
+
+    monkeypatch.setattr(worker_process.fcntl, "flock", hostile_flock)
+    primary = ValueError("body failed")
+    with pytest.raises(ValueError) as caught:
+        with worker_process.worker_pidfile_lock(tmp_path / "mode-a.pids"):
+            raise primary
+
+    assert caught.value is primary
+    notes = " ".join(getattr(primary, "__notes__", []))
+    assert "unlock failed" in notes
+    assert "close failed" in notes
+
+
+def test_pidfile_lock_acquisition_close_preserves_primary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    class HostileHandle:
+        def fileno(self) -> int:
+            return 123
+
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    primary = KeyboardInterrupt("lock interrupted")
+    monkeypatch.setattr(worker_process.Path, "open", lambda *_a, **_k: HostileHandle())
+    monkeypatch.setattr(
+        worker_process.fcntl,
+        "flock",
+        lambda *_a, **_k: (_ for _ in ()).throw(primary),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        with worker_process.worker_pidfile_lock(tmp_path / "mode-a.pids"):
+            raise AssertionError("unreachable")
+
+    assert caught.value is primary
+    assert "close failed" in " ".join(getattr(primary, "__notes__", []))
+
+
 def test_direct_publication_keeps_structured_worker_identity(tmp_path: Path):
     path = tmp_path / "mode-a.pids"
     record = worker_process.WorkerRecord(
@@ -125,13 +146,40 @@ def test_capture_role_poll_rejects_pid_lifetime_change(
     lifetimes = iter([True, False])
     monkeypatch.setattr(
         worker_process,
-        "record_matches_lifetime",
+        "_record_matches_kernel_lifetime",
         lambda _record: next(lifetimes),
     )
     monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: False)
     monkeypatch.setattr(worker_process.time, "sleep", lambda _seconds: None)
 
     assert not worker_process.wait_for_worker_role(record, timeout_s=1.0)
+
+
+def test_capture_and_wait_allow_pre_exec_child_before_token_is_visible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    child_pid = 4321
+    parent_pid = os.getpid()
+    monkeypatch.setattr(worker_process, "_proc_stat", lambda _pid: ("S", "captured"))
+    monkeypatch.setattr(worker_process, "_proc_ppid", lambda _pid: parent_pid)
+    monkeypatch.setattr(worker_process, "_current_boot_id", lambda: "boot")
+    monkeypatch.setattr(worker_process, "_proc_environ", lambda _pid: {})
+    record = worker_process.capture_worker_identity(
+        child_pid,
+        role="watch",
+        expected_parent_pid=parent_pid,
+        pidfile=tmp_path / "mode-a.pids",
+        spawn_token="preclaim",
+    )
+    assert record is not None
+    assert record.provisional
+
+    ready_checks = iter([False, True])
+    monkeypatch.setattr(
+        worker_process, "record_matches_process", lambda _record: next(ready_checks)
+    )
+    monkeypatch.setattr(worker_process.time, "sleep", lambda _seconds: None)
+    assert worker_process.wait_for_worker_role(record, timeout_s=1)
 
 
 def test_capture_rejects_pid_that_is_not_the_launchers_child(
@@ -250,6 +298,8 @@ def test_live_provisional_record_is_retained_but_never_healthy(
         pidfile=str(path.resolve()),
         config=str(worker_process._config_path_from_environ(dict(os.environ))),
         provisional=True,
+        boot_id=worker_process._current_boot_id(),
+        spawn_token="preclaimed-token",
     )
     path.write_text(provisional.to_json() + "\n", encoding="utf-8")
     monkeypatch.setattr(worker_process, "record_matches_lifetime", lambda _r: True)
@@ -268,7 +318,7 @@ def test_live_provisional_record_is_retained_but_never_healthy(
 
 
 def spawn_process(
-    directory: Path, *, role: str | None = None
+    directory: Path, *, role: str | None = None, legacy: bool = False
 ) -> subprocess.Popen[bytes]:
     if role:
         launcher = directory / "hark"
@@ -285,14 +335,18 @@ def spawn_process(
         )
         launcher.chmod(0o755)
         pidfile = directory / "mode-a.pids"
+        env = dict(os.environ)
+        if not legacy:
+            env.update(
+                {
+                    worker_process.WORKER_PIDFILE_ENV: str(pidfile.resolve()),
+                    worker_process.WORKER_ROLE_ENV: role,
+                }
+            )
         child = subprocess.Popen(
             [str(launcher), role],
             start_new_session=True,
-            env={
-                **os.environ,
-                worker_process.WORKER_PIDFILE_ENV: str(pidfile.resolve()),
-                worker_process.WORKER_ROLE_ENV: role,
-            },
+            env=env,
         )
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
@@ -301,6 +355,7 @@ def spawn_process(
                     child.pid,
                     expected_role=role,
                     expected_pidfile=pidfile,
+                    require_markers=not legacy,
                 )
                 is not None
             ):
@@ -334,16 +389,131 @@ def test_legacy_worker_is_migrated_with_role_and_start_time(tmp_path: Path):
         ]
         stored = json.loads(path.read_text(encoding="utf-8"))
         assert stored == {
+            "boot_id": records[0].boot_id,
             "config": records[0].config,
+            "legacy": False,
             "pid": child.pid,
             "pidfile": str(path.resolve()),
             "provisional": False,
             "role": "ambient",
+            "spawn_token": None,
             "start_time": records[0].start_time,
             "version": 1,
         }
     finally:
         kill_child(child)
+
+
+def test_actual_pre_b127_worker_without_markers_is_migrated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    shim = tmp_path / "shim" / "hark"
+    shim.mkdir(parents=True)
+    (shim / "__init__.py").write_text("", encoding="utf-8")
+    (shim / "__main__.py").write_text(
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, lambda *_args: exit(0))\n"
+        "while True: time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PYTHONPATH": str(shim.parent)}
+    child = subprocess.Popen(
+        [sys.executable, "-m", "hark", "ambient"],
+        env=env,
+        start_new_session=True,
+    )
+    path = tmp_path / "mode-a.pids"
+    try:
+        path.write_text(f"{child.pid}\n", encoding="utf-8")
+        records = worker_process.collect_worker_records(path)
+        assert [
+            (record.pid, record.role, record.provisional) for record in records
+        ] == [(child.pid, "ambient", False)]
+        assert records[0].boot_id == worker_process._current_boot_id()
+        assert records[0].spawn_token is None
+        assert records[0].legacy is True
+        assert worker_process.collect_worker_records(path) == records
+    finally:
+        kill_child(child)
+
+
+def test_forged_provisional_record_without_provenance_never_signals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    child = spawn_process(tmp_path)
+    path = tmp_path / "mode-a.pids"
+    try:
+        stat = worker_process._proc_stat(child.pid)
+        assert stat is not None
+        forged = worker_process.WorkerRecord(
+            pid=child.pid,
+            start_time=stat[1],
+            role="ambient",
+            pidfile=str(path.resolve()),
+            config=str(worker_process._config_path_from_environ(dict(os.environ))),
+            provisional=True,
+        )
+        path.write_text(forged.to_json() + "\n", encoding="utf-8")
+        sent: list[int] = []
+        monkeypatch.setattr(
+            worker_process,
+            "_send_pidfd_signal",
+            lambda _fd, sig: sent.append(sig),
+        )
+        assert worker_process.collect_worker_records(path) == []
+        assert sent == []
+        assert child.poll() is None
+    finally:
+        kill_child(child)
+
+
+def test_procfs_unknown_retains_pidfile_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "mode-a.pids"
+    record = worker_process.WorkerRecord(
+        pid=4321,
+        start_time="known",
+        role="ambient",
+        pidfile=str(path.resolve()),
+        config=str(worker_process._config_path_from_environ(dict(os.environ))),
+        boot_id=worker_process._current_boot_id(),
+    )
+    original = record.to_json() + "\n"
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        worker_process,
+        "_proc_stat",
+        lambda _pid: (_ for _ in ()).throw(
+            worker_process._ProcfsUnavailableError(13, "denied")
+        ),
+    )
+    with pytest.raises(worker_process.WorkerStateUnavailableError):
+        worker_process.collect_worker_records(path)
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_other_config_record_is_preserved_and_verified_against_its_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "mode-a.pids"
+    config_a = tmp_path / "config-a.toml"
+    config_b = tmp_path / "config-b.toml"
+    record = worker_process.WorkerRecord(
+        pid=4321,
+        start_time="known",
+        role="ambient",
+        pidfile=str(path.resolve()),
+        config=str(config_a.resolve()),
+        boot_id=worker_process._current_boot_id(),
+    )
+    path.write_text(record.to_json() + "\n", encoding="utf-8")
+    monkeypatch.setenv("HARK_CONFIG", str(config_b))
+    monkeypatch.setattr(worker_process, "record_matches_process", lambda _r: True)
+    assert worker_process.collect_worker_records(path) == [record]
+    assert json.loads(path.read_text(encoding="utf-8"))["config"] == str(
+        config_a.resolve()
+    )
 
 
 def test_pre_scope_structured_worker_is_migrated_only_from_live_provenance(
@@ -557,6 +727,7 @@ def test_owned_writer_preserves_other_live_records(
         role="ambient",
         pidfile=scope,
         config=config,
+        boot_id=worker_process._current_boot_id(),
     )
     old_owned = worker_process.WorkerRecord(
         pid=2222,
@@ -564,6 +735,7 @@ def test_owned_writer_preserves_other_live_records(
         role="watch",
         pidfile=scope,
         config=config,
+        boot_id=worker_process._current_boot_id(),
     )
     refreshed_owned = worker_process.WorkerRecord(
         pid=2222,
@@ -571,6 +743,7 @@ def test_owned_writer_preserves_other_live_records(
         role="watch",
         pidfile=scope,
         config=config,
+        boot_id=worker_process._current_boot_id(),
     )
     worker_process.write_worker_records(path, [other, old_owned])
     monkeypatch.setattr(worker_process, "record_matches_process", lambda _record: True)
@@ -831,7 +1004,7 @@ export HARK_RUN_MODE_A_SOURCE_ONLY=1
 export XDG_STATE_HOME={tmp_path!s}
 source {script!s}
 worker_identity() {{ printf '%s\\n' "$*" >> {trace!s}; }}
-signal_pids TERM 123 456
+signal_verified_workers TERM
 """
     subprocess.run(
         ["bash", "-c", command],
@@ -1005,7 +1178,7 @@ def test_real_uv_shell_start_records_one_scoped_logical_worker(
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "other-config"))
         assert (
             worker_process.collect_worker_records(pidfile, discover=True, rewrite=False)
-            == []
+            == records
         )
     finally:
         if not records and pidfile.exists():

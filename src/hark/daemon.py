@@ -30,13 +30,18 @@ from hark.paths import state_dir
 from hark.worker_process import (
     WORKER_PIDFILE_ENV,
     WORKER_ROLE_ENV,
+    WORKER_SPAWN_TOKEN_ENV,
     WorkerRecord,
+    WorkerSpawnClaim,
     capture_worker_identity,
     collect_worker_records,
+    create_worker_spawn_claim,
     open_process_handle,
+    provisional_record_from_claim,
     read_worker_records,
     record_matches_lifetime,
     record_matches_process,
+    recover_worker_spawn_claim,
     replace_owned_worker_records,
     signal_process_handle,
     signal_worker_records,
@@ -76,10 +81,15 @@ class WorkerSpawnError(OSError):
         super().__init__(message)
 
 
-# If both durable publication paths fail, closing the only pidfd would discard
-# immutable authority over a surviving child. Retain those handles for process
-# lifetime and report their descriptors in the raised rollback diagnostics.
-_RETAINED_ROLLBACK_PIDFDS: dict[int, int] = {}
+@dataclass
+class _OwnedWorker:
+    """One startup attempt's process plus every form of lifetime authority."""
+
+    role: str
+    process: subprocess.Popen[Any]
+    claim: WorkerSpawnClaim
+    record: WorkerRecord | None = None
+    pidfd: int | None = None
 
 
 class _PreclaimedPopen(subprocess.Popen):
@@ -372,24 +382,72 @@ def _hark_argv() -> list[str]:
     return [sys.executable, "-m", "hark"]
 
 
+def _close_owned_pidfds(owned: Sequence[_OwnedWorker]) -> list[str]:
+    """Consume every descriptor exactly once and continue after failures.
+
+    An asynchronous exception can arrive after the kernel closed the fd. Never
+    retry a numeric descriptor: another thread may already have reused it.
+    """
+    failures: list[str] = []
+    for owner in owned:
+        pidfd = owner.pidfd
+        if pidfd is None:
+            continue
+        try:
+            os.close(pidfd)
+        except BaseException as exc:
+            try:
+                detail = str(exc)
+            except BaseException:
+                detail = f"<{type(exc).__name__}>"
+            failures.append(f"{owner.role} pidfd {pidfd} close failed ({detail})")
+        finally:
+            owner.pidfd = None
+    return failures
+
+
 def _rollback_worker_start(
-    owned: Sequence[tuple[str, subprocess.Popen[Any]]],
+    owned: Sequence[_OwnedWorker],
     *,
     pid_path: Path,
     original_pidfile: bytes | None,
     restore_pidfile: bool,
-    owned_records: dict[int, WorkerRecord] | None = None,
-    owned_pidfds: dict[int, int] | None = None,
     timeout_s: float = 2.0,
 ) -> list[str]:
-    """Stop/reap only workers owned by a failed startup attempt."""
-    failures: list[str] = []
-    records = owned_records or {}
-    pidfds = owned_pidfds or {}
+    """Stop/reap only workers owned by a failed startup attempt.
 
-    def signal_owned(role: str, proc: subprocess.Popen[Any], sig: int) -> bool:
-        record = records.get(proc.pid)
-        pidfd = pidfds.get(proc.pid)
+    Cleanup is deliberately a sequence of independently guarded stages. An
+    asynchronous ``BaseException`` in one stage is diagnostic data; it must not
+    prevent later signalling, durable survivor publication, or descriptor
+    closure, and it never replaces the startup exception owned by the caller.
+    """
+    failures: list[str] = []
+
+    def describe(exc: BaseException) -> str:
+        try:
+            return str(exc)
+        except BaseException:
+            return f"<{type(exc).__name__}>"
+
+    def failed(stage: str, exc: BaseException) -> None:
+        try:
+            failures.append(f"{stage} ({describe(exc)})")
+        except BaseException:
+            # Even hostile instrumentation of the diagnostics container cannot
+            # be allowed to abort ownership cleanup.
+            pass
+
+    def poll(proc: subprocess.Popen[Any], role: str) -> int | None:
+        try:
+            return proc.poll()
+        except BaseException as exc:
+            failed(f"{role} status check failed", exc)
+            return None
+
+    def signal_owned(owner: _OwnedWorker, sig: int) -> bool:
+        role = owner.role
+        record = owner.record
+        pidfd = owner.pidfd
         if pidfd is not None:
             if record is not None and not record_matches_lifetime(record):
                 return False
@@ -398,107 +456,129 @@ def _rollback_worker_start(
                 return True
             except ProcessLookupError:
                 return False
-            except (OSError, ValueError) as exc:
-                failures.append(f"{role} pidfd signal {sig} failed ({exc})")
+            except BaseException as exc:
+                failed(f"{role} pidfd signal {sig} failed", exc)
                 return False
         if record is not None:
-            outcome = signal_worker_lifetime(record, sig)
+            try:
+                outcome = signal_worker_lifetime(record, sig)
+            except BaseException as exc:
+                failed(f"{role} signal {sig} failed", exc)
+                return False
             if outcome.error is not None:
                 failures.append(f"{role} signal {sig} failed ({outcome.error})")
             return outcome.sent
-        failures.append(
-            f"{role} has no immutable lifetime handle; refusing raw PID signal"
-        )
+        failures.append(f"{role} has no immutable lifetime handle; refusing signal")
         return False
 
-    for role, proc in reversed(owned):
-        if proc.poll() is not None:
+    for owner in reversed(owned):
+        role, proc = owner.role, owner.process
+        if poll(proc, role) is not None:
             continue
-        signal_owned(role, proc, signal.SIGTERM)
+        try:
+            signal_owned(owner, signal.SIGTERM)
+        except BaseException as exc:
+            failed(f"{role} SIGTERM stage interrupted", exc)
 
-    deadline = time.monotonic() + timeout_s
-    for role, proc in reversed(owned):
-        remaining = max(0.0, deadline - time.monotonic())
+    try:
+        deadline = time.monotonic() + timeout_s
+    except BaseException as exc:
+        failed("rollback deadline initialization failed", exc)
+        deadline = 0.0
+    for owner in reversed(owned):
+        role, proc = owner.role, owner.process
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+        except BaseException as exc:
+            failed(f"{role} rollback deadline check failed", exc)
+            remaining = 0.0
         try:
             proc.wait(timeout=remaining if remaining > 0 else 0.1)
             continue
         except subprocess.TimeoutExpired:
             pass
-        except OSError as exc:
-            failures.append(f"{role} reap failed ({exc})")
-            if proc.poll() is not None:
+        except BaseException as exc:
+            failed(f"{role} reap failed", exc)
+            if poll(proc, role) is not None:
                 continue
 
-        signal_owned(role, proc, signal.SIGKILL)
+        try:
+            signal_owned(owner, signal.SIGKILL)
+        except BaseException as exc:
+            failed(f"{role} SIGKILL stage interrupted", exc)
 
         try:
             proc.wait(timeout=1.0)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            failures.append(f"{role} reap after SIGKILL failed ({exc})")
+        except BaseException as exc:
+            failed(f"{role} reap after SIGKILL failed", exc)
 
-    survivors: list[tuple[str, subprocess.Popen[Any]]] = []
-    for role, proc in owned:
-        try:
-            still_running = proc.poll() is None
-        except OSError as exc:
-            failures.append(f"{role} final status check failed ({exc})")
-            # If status cannot be established, retain durable ownership rather
-            # than risk making a live attempt-owned child undiscoverable.
-            still_running = True
+    survivors: list[_OwnedWorker] = []
+    for owner in owned:
+        role, proc = owner.role, owner.process
+        still_running = poll(proc, role) is None
         if still_running:
-            survivors.append((role, proc))
+            survivors.append(owner)
 
     if survivors:
         failures.append(
             "surviving workers still running: "
-            + ", ".join(f"{role}={proc.pid}" for role, proc in survivors)
+            + ", ".join(f"{owner.role}={owner.process.pid}" for owner in survivors)
         )
 
     # A pidfd pins each direct child, so it is safe to recover structured
     # lifetime metadata here even when the earlier capture step failed.
-    for role, proc in survivors:
-        if proc.pid in records:
+    for owner in survivors:
+        role, proc = owner.role, owner.process
+        if owner.record is not None:
             continue
-        recovered = capture_worker_identity(
-            proc.pid,
-            role=role,
-            expected_parent_pid=os.getpid(),
-            pidfile=pid_path,
-        )
+        try:
+            recovered = capture_worker_identity(
+                proc.pid,
+                role=role,
+                expected_parent_pid=os.getpid(),
+                pidfile=pid_path,
+                spawn_token=owner.claim.token,
+            )
+        except BaseException as exc:
+            failed(f"{role} survivor identity recovery failed", exc)
+            recovered = None
         if recovered is not None:
-            records[proc.pid] = recovered
+            recovered = replace(
+                recovered,
+                boot_id=owner.claim.boot_id,
+                spawn_token=owner.claim.token,
+                pidfile=owner.claim.pidfile,
+                config=owner.claim.config,
+                provisional=True,
+            )
+            owner.record = recovered
+        else:
+            # A spawn token selected before fork remains safe authority even
+            # when procfs cannot currently disclose start ticks. Collection
+            # later requires the same boot/token/role/scope before signalling.
+            owner.record = provisional_record_from_claim(owner.claim, pid=proc.pid)
 
-    retained_pidfds: set[int] = set()
-    untracked_survivors = [
-        (role, proc) for role, proc in survivors if proc.pid not in records
-    ]
-    for role, proc in untracked_survivors:
-        pidfd = pidfds.get(proc.pid)
-        if pidfd is None:
-            continue
-        _RETAINED_ROLLBACK_PIDFDS[proc.pid] = pidfd
-        retained_pidfds.add(pidfd)
-        failures.append(
-            f"retained pidfd {pidfd} for untracked surviving {role} worker {proc.pid}"
-        )
+    untracked_survivors = [owner for owner in survivors if owner.record is None]
 
     if restore_pidfile or survivors:
-        payload: bytes | None
+        payload: bytes | None = original_pidfile
         try:
             if survivors:
                 payload = original_pidfile or b""
                 if payload and not payload.endswith(b"\n"):
                     payload += b"\n"
-                untracked = [f"{role}={proc.pid}" for role, proc in untracked_survivors]
+                untracked = [
+                    f"{owner.role}={owner.process.pid}" for owner in untracked_survivors
+                ]
                 if untracked:
                     failures.append(
                         "surviving workers lack structured provisional identity: "
                         + ", ".join(untracked)
                     )
                 payload += b"".join(
-                    f"{replace(records[proc.pid], provisional=True).to_json()}\n".encode()
-                    for _, proc in survivors
-                    if proc.pid in records
+                    f"{replace(owner.record, provisional=True).to_json()}\n".encode()
+                    for owner in survivors
+                    if owner.record is not None
                 )
                 write_worker_pidfile_bytes(pid_path, payload)
             elif original_pidfile is None:
@@ -507,34 +587,40 @@ def _rollback_worker_start(
             else:
                 payload = original_pidfile
                 write_worker_pidfile_bytes(pid_path, payload)
-        except OSError as atomic_exc:
+        except BaseException as atomic_exc:
             try:
                 write_worker_pidfile_bytes_direct(pid_path, payload)
                 failures.append(
-                    f"pidfile atomic restore failed ({atomic_exc}); used direct fallback"
+                    "pidfile atomic restore failed "
+                    f"({describe(atomic_exc)}); used direct fallback"
                 )
-            except OSError as direct_exc:
+            except BaseException as direct_exc:
                 failures.append(
                     "pidfile restore failed "
-                    f"(atomic: {atomic_exc}; direct: {direct_exc})"
+                    f"(atomic: {describe(atomic_exc)}; direct: {describe(direct_exc)})"
                 )
-                for _, proc in survivors:
-                    pidfd = pidfds.get(proc.pid)
-                    if pidfd is None:
-                        continue
-                    _RETAINED_ROLLBACK_PIDFDS[proc.pid] = pidfd
-                    retained_pidfds.add(pidfd)
-                    failures.append(
-                        f"retained pidfd {pidfd} for surviving worker {proc.pid}"
-                    )
+                # The raw restore adapters and the structured ownership writer
+                # are independent publication paths. When legacy bytes cannot
+                # be restored, preserving exact survivor authority is safer
+                # than retaining a process-local pidfd that vanishes at exit.
+                survivor_records = [
+                    replace(owner.record, provisional=True)
+                    for owner in survivors
+                    if owner.record is not None
+                ]
+                if survivor_records:
+                    try:
+                        write_worker_records(pid_path, survivor_records)
+                        failures.append(
+                            "published structured survivor ownership fallback"
+                        )
+                    except BaseException as structured_exc:
+                        failed(
+                            "structured survivor ownership publication failed",
+                            structured_exc,
+                        )
 
-    for pidfd in pidfds.values():
-        if pidfd in retained_pidfds:
-            continue
-        try:
-            os.close(pidfd)
-        except OSError as exc:
-            failures.append(f"pidfd close failed ({exc})")
+    failures.extend(_close_owned_pidfds(owned))
 
     return failures
 
@@ -586,49 +672,70 @@ def _spawn_mode_a_workers_locked(
     except OSError as exc:
         raise WorkerSpawnError("pidfile", exc) from exc
 
-    owned: list[tuple[str, subprocess.Popen[Any]]] = []
-    owned_records: dict[int, WorkerRecord] = {}
-    owned_pidfds: dict[int, int] = {}
+    owned: list[_OwnedWorker] = []
     failed_role = "watch"
     pidfile_touched = False
 
     def _spawn(role: str, argv: list[str], log_name: str) -> None:
         nonlocal failed_role, pidfile_touched
         failed_role = role
+        claim_authority = create_worker_spawn_claim(role=role, pidfile=pid_path)
 
-        claimed: list[subprocess.Popen[Any]] = []
+        claimed: list[_OwnedWorker] = []
 
         def claim(proc: subprocess.Popen[Any]) -> None:
             if claimed:
                 raise RuntimeError("worker initializer attempted multiple claims")
-            claimed.append(proc)
-            owned.append((role, proc))
+            owner = _OwnedWorker(role=role, process=proc, claim=claim_authority)
+            claimed.append(owner)
+            owned.append(owner)
 
-        def establish_authority(proc: subprocess.Popen[Any]) -> WorkerRecord:
+        def establish_authority(owner: _OwnedWorker) -> WorkerRecord:
+            proc = owner.process
             pid = getattr(proc, "pid", None)
             if not isinstance(pid, int) or pid <= 0:
                 raise OSError("worker started without a process ID")
             try:
-                owned_pidfds[pid] = open_process_handle(pid)
+                owner.pidfd = open_process_handle(pid)
             except BaseException:
                 provisional = capture_worker_identity(
                     pid,
                     role=role,
                     expected_parent_pid=os.getpid(),
                     pidfile=pid_path,
+                    spawn_token=claim_authority.token,
                 )
                 if provisional is not None:
-                    owned_records[pid] = provisional
+                    owner.record = replace(
+                        provisional,
+                        boot_id=claim_authority.boot_id,
+                        spawn_token=claim_authority.token,
+                        pidfile=claim_authority.pidfile,
+                        config=claim_authority.config,
+                        provisional=True,
+                    )
                 raise
             record = capture_worker_identity(
                 pid,
                 role=role,
                 expected_parent_pid=os.getpid(),
                 pidfile=pid_path,
+                spawn_token=claim_authority.token,
             )
             if record is None:
                 raise OSError(f"could not capture {role} worker process identity")
-            owned_records[pid] = record
+            # Test adapters and older capture implementations may omit the
+            # fields selected before fork. The spawning transaction is the
+            # authority that fills them, never pidfile input.
+            record = replace(
+                record,
+                boot_id=claim_authority.boot_id,
+                spawn_token=claim_authority.token,
+                pidfile=claim_authority.pidfile,
+                config=claim_authority.config,
+                provisional=True,
+            )
+            owner.record = record
             return record
 
         # Popen duplicates the descriptor into the child, so the supervisor's
@@ -645,16 +752,19 @@ def _spawn_mode_a_workers_locked(
                         **os.environ,
                         WORKER_PIDFILE_ENV: str(pid_path.resolve(strict=False)),
                         WORKER_ROLE_ENV: role,
+                        WORKER_SPAWN_TOKEN_ENV: claim_authority.token,
                     },
                 )
-                if len(claimed) != 1 or proc is not claimed[0]:
+                if len(claimed) != 1 or proc is not claimed[0].process:
                     raise RuntimeError(
                         "worker initializer did not return its preclaimed object"
                     )
-                record = establish_authority(proc)
+                owner = claimed[0]
+                record = establish_authority(owner)
             except BaseException as spawn_exc:
                 if claimed:
-                    proc = claimed[0]
+                    owner = claimed[0]
+                    proc = owner.process
                     pid = getattr(proc, "pid", None)
                     if isinstance(pid, int) and pid > 0:
                         # Popen stores its positive child PID before flipping
@@ -662,31 +772,54 @@ def _spawn_mode_a_workers_locked(
                         # there still names our exact preclaimed child.
                         if not getattr(proc, "_child_created", False):
                             proc._child_created = True
-                        if pid not in owned_pidfds and pid not in owned_records:
+                        if owner.pidfd is None and owner.record is None:
                             try:
-                                establish_authority(proc)
+                                establish_authority(owner)
                             except BaseException as authority_exc:
                                 spawn_exc.add_note(
                                     "failed to attach immutable authority after "
                                     f"initializer error: {authority_exc}"
                                 )
                     else:
-                        owned.remove((role, proc))
+                        try:
+                            recovered = recover_worker_spawn_claim(claim_authority)
+                        except BaseException as recovery_exc:
+                            spawn_exc.add_note(
+                                "failed to recover preclaimed child after lost PID "
+                                f"publication: {recovery_exc}"
+                            )
+                            recovered = None
+                        if recovered is None:
+                            owned.remove(owner)
+                        else:
+                            proc.pid = recovered.pid
+                            proc._child_created = True
+                            owner.record = recovered
+                            try:
+                                owner.pidfd = open_process_handle(recovered.pid)
+                            except BaseException as authority_exc:
+                                spawn_exc.add_note(
+                                    "recovered child but failed to pin its lifetime: "
+                                    f"{authority_exc}"
+                                )
                 raise
         if proc.poll() is not None:
             raise OSError(f"worker exited immediately with status {proc.returncode}")
         # The intended role is provisional until the exact captured lifetime
         # execs a provenance-scoped Hark worker command.
-        owned_records[proc.pid] = record
+        owner.record = record
         # Publish ownership before waiting for exec/role readiness. If the
         # supervisor is interrupted, this exact lifetime remains recoverable.
         failed_role = "pidfile"
         pidfile_touched = True
-        write_worker_records(pid_path, owned_records.values())
+        write_worker_records(
+            pid_path,
+            [candidate.record for candidate in owned if candidate.record is not None],
+        )
         failed_role = role
-        if not wait_for_worker_role(record, timeout_s=2.0):
+        if not wait_for_worker_role(record, timeout_s=5.0):
             raise OSError(f"{role} worker did not reach its expected role")
-        owned_records[proc.pid] = replace(record, provisional=False)
+        owner.record = replace(record, provisional=False)
 
     try:
         if do_watch:
@@ -708,7 +841,8 @@ def _spawn_mode_a_workers_locked(
             _spawn("ambient", [*base, "ambient"], "ambient.jsonl")
 
         # A previously started role can exit while a later Popen is in flight.
-        for role, proc in owned:
+        for owner in owned:
+            role, proc = owner.role, owner.process
             if proc.poll() is not None:
                 failed_role = role
                 raise OSError(
@@ -717,11 +851,15 @@ def _spawn_mode_a_workers_locked(
 
         failed_role = "pidfile"
         pidfile_touched = True
-        write_worker_records(pid_path, owned_records.values())
+        write_worker_records(
+            pid_path,
+            [candidate.record for candidate in owned if candidate.record is not None],
+        )
 
         recorded = {record.pid: record for record in read_worker_records(pid_path)}
-        for role, proc in owned:
-            if recorded.get(proc.pid) != owned_records[proc.pid]:
+        for owner in owned:
+            role, proc = owner.role, owner.process
+            if owner.record is None or recorded.get(proc.pid) != owner.record:
                 failed_role = role
                 raise OSError(f"worker identity for PID {proc.pid} was not recorded")
             if proc.poll() is not None:
@@ -730,14 +868,35 @@ def _spawn_mode_a_workers_locked(
                     f"worker exited immediately with status {proc.returncode}"
                 )
     except BaseException as exc:
-        rollback_failures = _rollback_worker_start(
-            owned,
-            pid_path=pid_path,
-            original_pidfile=original_pidfile,
-            restore_pidfile=pidfile_touched,
-            owned_records=owned_records,
-            owned_pidfds=owned_pidfds,
-        )
+        try:
+            rollback_failures = _rollback_worker_start(
+                owned,
+                pid_path=pid_path,
+                original_pidfile=original_pidfile,
+                restore_pidfile=pidfile_touched,
+            )
+        except BaseException as rollback_exc:
+            # A truly asynchronous interruption can land between guarded
+            # rollback stages. Retry the idempotent transaction before
+            # propagating the original startup failure.
+            try:
+                rollback_failure = str(rollback_exc)
+            except BaseException:
+                rollback_failure = f"<{type(rollback_exc).__name__}>"
+            rollback_failures = [f"rollback interrupted ({rollback_failure})"]
+            try:
+                rollback_failures.extend(
+                    _rollback_worker_start(
+                        owned,
+                        pid_path=pid_path,
+                        original_pidfile=original_pidfile,
+                        restore_pidfile=pidfile_touched,
+                    )
+                )
+            except BaseException as retry_exc:
+                rollback_failures.append(
+                    f"rollback retry interrupted (<{type(retry_exc).__name__}>)"
+                )
         if not isinstance(exc, Exception):
             note = (
                 f"worker startup interrupted during {failed_role}; rollback completed"
@@ -748,9 +907,20 @@ def _spawn_mode_a_workers_locked(
             raise
         raise WorkerSpawnError(failed_role, exc, rollback_failures) from exc
 
-    for pidfd in owned_pidfds.values():
-        os.close(pidfd)
-    return [proc for _, proc in owned]
+    close_failures = _close_owned_pidfds(owned)
+    if close_failures:
+        rollback_failures = _rollback_worker_start(
+            owned,
+            pid_path=pid_path,
+            original_pidfile=original_pidfile,
+            restore_pidfile=True,
+        )
+        raise WorkerSpawnError(
+            "pidfd",
+            OSError("; ".join(close_failures)),
+            rollback_failures,
+        )
+    return [owner.process for owner in owned]
 
 
 def _refresh_owned_worker_records(
