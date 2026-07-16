@@ -10,6 +10,7 @@ import pytest
 
 import hark.confirm_lexicon as confirm_lexicon
 from confirm_unicode_cases import (
+    ALPHABETIC_COMPATIBILITY_WHITESPACE_SOURCES,
     ALPHABETIC_TRIPLE_COMPATIBILITY_REPRODUCTIONS,
     APOSTROPHE_VARIANTS,
     BENIGN_PROSE_AFFIRMATIONS,
@@ -24,12 +25,18 @@ from confirm_unicode_cases import (
     MULTISOURCE_COMPATIBILITY_REPRODUCTIONS,
     NORMALIZATION_FORMS,
     ORDINARY_UNICODE_AFFIRMATIONS,
+    ORDINARY_NONASCII_WORD_BASES,
+    ORDINARY_PROSE_BRIDGE_EVIDENCE,
     PROVENANCE_PRESERVING_NORMALIZATION_FORMS,
+    PROSE_TRANSPARENT_SUFFIXES,
+    RAW_WORD_BASE_COMPATIBILITY_PREFIXES,
+    SHADOWED_NORMALIZED_BRIDGE_EVIDENCE,
     SUPPORTED_FULLWIDTH_CONTRACTION_CASES,
     UNSUPPORTED_IN_WORD_FRAGMENTS,
     WORD_BASE_BOUNDARY_CONTROLS,
     compatibility_whitespace_sources,
     is_fully_collapsed_alphabetic_material,
+    right_fragment_suffix_compatibility_sources,
 )
 from hark.config import HarkConfig
 from hark.speech import ListenResult, run_ask, speak_and_listen
@@ -448,6 +455,113 @@ def test_run_ask_rejects_normalized_whitespace_with_surviving_format_evidence(
 
 @pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
 @pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+@pytest.mark.parametrize(("category", "bridge"), SHADOWED_NORMALIZED_BRIDGE_EVIDENCE)
+def test_run_ask_rejects_shadowed_normalized_bridge_evidence(
+    monkeypatch, category, bridge, normalization, parts
+):
+    left, right = parts
+    assert unicodedata.category(bridge[1]) == category
+    material = (
+        bridge
+        if normalization is None
+        else unicodedata.normalize(normalization, bridge)
+    )
+    confirm_reply = f"yes I {left}{material}{right} approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", PROVENANCE_PRESERVING_NORMALIZATION_FORMS)
+@pytest.mark.parametrize("prefix", RAW_WORD_BASE_COMPATIBILITY_PREFIXES)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+def test_run_ask_preserves_raw_word_base_compatibility_boundary(
+    monkeypatch, parts, prefix, normalization
+):
+    left, right = parts
+    assert unicodedata.category(prefix)[0] in {"L", "N"}
+    confirm_reply = f"yes {prefix}{left}__{right}"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("transparent", PROSE_TRANSPARENT_SUFFIXES)
+@pytest.mark.parametrize(
+    "template",
+    ("yes I can do i{}t", "yes I can do{} it"),
+)
+def test_run_ask_resets_bridge_at_literal_prose_whitespace(
+    monkeypatch, template, transparent, normalization
+):
+    confirm_reply = template.format(transparent)
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize(("category", "evidence"), ORDINARY_PROSE_BRIDGE_EVIDENCE)
+@pytest.mark.parametrize("word_base", ORDINARY_NONASCII_WORD_BASES)
+def test_run_ask_resets_ordinary_nonascii_word_candidate_at_prose_whitespace(
+    monkeypatch, word_base, category, evidence, normalization
+):
+    assert unicodedata.category(word_base)[0] == "L"
+    assert unicodedata.category(evidence) == category
+    confirm_reply = f"yes I can{word_base} do {evidence}at"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("word_base", ORDINARY_NONASCII_WORD_BASES)
+def test_run_ask_nonascii_prose_reset_keeps_later_standalone_candidate(
+    monkeypatch, word_base
+):
+    confirm_reply = f"yes I can{word_base} do can__t"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", ("NFKC", "NFKD"))
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
+@pytest.mark.parametrize("source", ALPHABETIC_COMPATIBILITY_WHITESPACE_SOURCES)
+def test_run_ask_rejects_alphabetic_compatibility_whitespace_expansion(
+    monkeypatch, source, parts, normalization
+):
+    left, right = parts
+    material = unicodedata.normalize(normalization, source + "\u200b\u1d43")
+    confirm_reply = f"yes I {left}{material}{right} approve this"
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("parts", CONTRACTION_PARTS)
 def test_run_ask_rejects_recursive_compatibility_source(
     monkeypatch, normalization, parts
 ):
@@ -478,6 +592,64 @@ def test_run_ask_rejects_shadowed_same_left_compatibility_source(
     assert out["ok"] is False
     assert out["cancelled"] is True
     assert out["confirm_reply"] == confirm_reply
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("suffix", ["t", "\u1d40", "\uff34", "\U0001d413"])
+def test_run_ask_accepts_boundary_invalid_first_right_fragment_suffix(
+    monkeypatch, normalization, suffix
+):
+    confirm_reply = f"yes can__t{suffix}"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+@pytest.mark.parametrize("normalization", NORMALIZATION_FORMS)
+@pytest.mark.parametrize("suffix", ["1", "é", "λ"])
+def test_run_ask_preserves_word_base_suffix_controls(
+    monkeypatch, normalization, suffix
+):
+    confirm_reply = f"yes can__t{suffix}"
+    if normalization is not None:
+        confirm_reply = unicodedata.normalize(normalization, confirm_reply)
+
+    out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+
+    assert out["ok"] is True
+    assert out.get("cancelled") is not True
+
+
+def test_run_ask_accepts_all_compatibility_word_base_right_suffixes(
+    monkeypatch,
+):
+    failures = []
+    sources = right_fragment_suffix_compatibility_sources()
+    audited = 0
+
+    for source in sources:
+        for normalization in NORMALIZATION_FORMS:
+            material = (
+                source
+                if normalization is None
+                else unicodedata.normalize(normalization, source)
+            )
+            for left, right in CONTRACTION_PARTS:
+                audited += 1
+                confirm_reply = f"yes {left}__{right}{material}"
+                out = _run_ask_with_confirmation(monkeypatch, confirm_reply)
+                if out["ok"] is not True or out.get("cancelled") is True:
+                    failures.append(
+                        (f"U+{ord(source):04X}", normalization, left, right)
+                    )
+
+    assert len(sources) == 33
+    assert audited == 495
+    assert failures == []
 
 
 @pytest.mark.parametrize("confirm_reply", EDGE_MATERIAL_REPRODUCTIONS)

@@ -31,6 +31,9 @@ _CONFIRM_APOSTROPHE_TRANSLATION = str.maketrans(
     {variant: "'" for variant in _SUPPORTED_APOSTROPHE_SEPARATORS}
 )
 _DECOMPOSED_SPACING_ACUTE = " \u0301"
+_NORMALIZED_ALPHABETIC_COMPATIBILITY_WHITESPACE = tuple(
+    unicodedata.normalize("NFKD", source) for source in ("\ufdfa", "\ufdfb")
+)
 # This limits one canonical ordering/composition segment, not transcript length.
 # Human speech text should never need hundreds of marks on one starter; bounding
 # the segment avoids the quadratic worst case in CPython's Unicode normalizer.
@@ -123,6 +126,63 @@ class _ContractionProvenance:
     has_unsupported_separator: bool
     canonical_input: str
     normalization_rejected: bool = False
+
+
+@dataclass
+class _NormalizedBridgeCandidate:
+    """Constant-space state for one normalization-closed bridge candidate."""
+
+    left: tuple[int, int] | None = None
+    last_raw_whitespace: int | None = None
+    preserve_internal_compatibility_whitespace: bool = False
+    evidence_seen: bool = False
+    alpha_before_evidence: bool = False
+    alpha_after_evidence: bool = False
+
+    def start(
+        self,
+        left: tuple[int, int] | None,
+        *,
+        raw_whitespace: int | None = None,
+        preserve_internal_compatibility_whitespace: bool = False,
+    ) -> None:
+        self.left = left
+        self.last_raw_whitespace = raw_whitespace
+        self.preserve_internal_compatibility_whitespace = (
+            preserve_internal_compatibility_whitespace
+        )
+        self.evidence_seen = False
+        self.alpha_before_evidence = False
+        self.alpha_after_evidence = False
+
+    def observe_previous(self, text: str, index: int) -> None:
+        if self.left is None or index <= self.left[1]:
+            return
+        previous = text[index - 1]
+        previous_is_evidence = _is_boundary_transparent(previous) or (
+            not previous.isalpha() and not previous.isspace()
+        )
+        if previous_is_evidence:
+            self.evidence_seen = True
+            self.alpha_after_evidence = False
+        elif previous.isalpha():
+            if self.evidence_seen:
+                self.alpha_after_evidence = True
+            else:
+                self.alpha_before_evidence = True
+
+    def cross_raw_whitespace(self, index: int) -> None:
+        if self.left is None:
+            return
+        true_prose_boundary = (
+            not self.preserve_internal_compatibility_whitespace
+            and index != self.last_raw_whitespace
+            and (not self.evidence_seen or self.alpha_before_evidence)
+        )
+        if true_prose_boundary:
+            self.start(None)
+        else:
+            self.last_raw_whitespace = index
 
 
 def _direct_composition_result(first: str, second: str) -> str:
@@ -227,20 +287,50 @@ def _build_projection_facts(raw: str, projection: _RawProjection) -> _Projection
     non-breaking space that are themselves classified as whitespace.
     """
     projection_text = projection.text
+    raw_word_base_before: list[bool] = []
+    previous_raw_opaque_is_word_base = False
+    for char in raw:
+        raw_word_base_before.append(previous_raw_opaque_is_word_base)
+        if not _is_boundary_transparent(char):
+            previous_raw_opaque_is_word_base = _is_confirmation_word_base(char)
+    raw_word_base_before.append(previous_raw_opaque_is_word_base)
+
+    raw_word_base_at_or_after = [False] * (len(raw) + 1)
+    next_raw_opaque_is_word_base = False
+    for raw_index in range(len(raw) - 1, -1, -1):
+        char = raw[raw_index]
+        if not _is_boundary_transparent(char):
+            next_raw_opaque_is_word_base = _is_confirmation_word_base(char)
+        raw_word_base_at_or_after[raw_index] = next_raw_opaque_is_word_base
+
     word_base_before = [False] * (len(projection_text) + 1)
     previous_opaque_is_word_base = False
     for index, char in enumerate(projection_text):
+        raw_index = projection.raw_indices[index]
+        if index == 0 or raw_index != projection.raw_indices[index - 1]:
+            # Compatibility decomposition may end in punctuation even though
+            # its raw source is a letter/number. At a raw-source boundary, the
+            # source category—not an emitted artifact—owns token attachment.
+            previous_opaque_is_word_base = raw_word_base_before[raw_index]
         word_base_before[index] = previous_opaque_is_word_base
         if not _is_boundary_transparent(char):
             previous_opaque_is_word_base = _is_confirmation_word_base(char)
-    word_base_before[-1] = previous_opaque_is_word_base
+    word_base_before[-1] = raw_word_base_before[-1]
 
     word_base_at_or_after = [False] * (len(projection_text) + 1)
     next_opaque_is_word_base = False
     for index in range(len(projection_text) - 1, -1, -1):
+        raw_index = projection.raw_indices[index]
+        if (
+            index == len(projection_text) - 1
+            or raw_index != projection.raw_indices[index + 1]
+        ):
+            next_opaque_is_word_base = raw_word_base_at_or_after[raw_index + 1]
         char = projection_text[index]
         if not _is_boundary_transparent(char):
             next_opaque_is_word_base = _is_confirmation_word_base(char)
+        if index == 0 or raw_index != projection.raw_indices[index - 1]:
+            next_opaque_is_word_base = raw_word_base_at_or_after[raw_index]
         word_base_at_or_after[index] = next_opaque_is_word_base
 
     raw_compatibility_prefix = [0]
@@ -283,6 +373,14 @@ def _is_complete_confirmation_span(
 def _ascii_literal_at(text: str, start: int, literal: str) -> bool:
     end = start + len(literal)
     return end <= len(text) and text[start:end].lower() == literal
+
+
+def _normalized_compatibility_whitespace_at(text: str, start: int) -> bool:
+    """Recognize the two alphabetic-first compatibility whitespace expansions."""
+    return any(
+        text.startswith(expansion, start)
+        for expansion in _NORMALIZED_ALPHABETIC_COMPATIBILITY_WHITESPACE
+    )
 
 
 def _raw_material_for_projection_span(
@@ -332,6 +430,20 @@ def _projection_span_has_compatibility_source(
     return prefix[raw_end] != prefix[raw_start]
 
 
+def _projection_span_owns_raw_source_edges(
+    projection: _RawProjection,
+    start: int,
+    end: int,
+) -> bool:
+    """Whether a projected span consumes its first and last raw sources."""
+    raw_indices = projection.raw_indices
+    starts_at_raw_source = start == 0 or raw_indices[start - 1] != raw_indices[start]
+    ends_at_raw_source = (
+        end == len(raw_indices) or raw_indices[end] != raw_indices[end - 1]
+    )
+    return starts_at_raw_source and ends_at_raw_source
+
+
 def _iter_compatibility_bridge_spans(
     projection: _RawProjection, facts: _ProjectionFacts
 ) -> Iterator[tuple[int, int]]:
@@ -346,14 +458,13 @@ def _iter_compatibility_bridge_spans(
     for left, right in _CONTRACTION_PARTS:
         earliest_left: tuple[int, int] | None = None
         latest_left: tuple[int, int] | None = None
-        normalized_left: tuple[int, int] | None = None
-        last_raw_whitespace: int | None = None
+        normalized = _NormalizedBridgeCandidate()
         for index in range(len(text)):
+            normalized.observe_previous(text, index)
             if facts.raw_source_is_whitespace[index]:
                 earliest_left = None
                 latest_left = None
-                if normalized_left is not None:
-                    last_raw_whitespace = index
+                normalized.cross_raw_whitespace(index)
             left_end = index + len(left)
             is_left_start = (
                 _ascii_literal_at(text, index, left)
@@ -363,23 +474,45 @@ def _iter_compatibility_bridge_spans(
             if is_left_start and facts.raw_source_is_whitespace[left_end]:
                 # This is not an ordinary in-token candidate. Retain it only
                 # for the normalized compatibility-whitespace fallback below.
-                normalized_left = (index, left_end)
-                last_raw_whitespace = left_end
+                normalized.start((index, left_end), raw_whitespace=left_end)
             elif is_left_start:
                 latest_left = (index, left_end)
                 if earliest_left is None:
                     earliest_left = latest_left
-                # Two effective compatibility-whitespace sources expand to a
-                # non-ASCII alphabetic prefix before their internal spaces.
-                # Retain only that externally observable shape; ordinary ASCII
-                # words such as "candle" remain hard-boundary prose.
-                normalized_left = latest_left if not text[left_end].isascii() else None
-                last_raw_whitespace = None
-            active_left = normalized_left or latest_left
+                # Exactly two effective compatibility-whitespace sources begin
+                # with alphabetic material before their internal spaces. Keep
+                # those normalization-equivalent strings fail-closed without
+                # treating every ordinary non-ASCII word as provenance.
+                has_normalized_compatibility_whitespace = (
+                    _normalized_compatibility_whitespace_at(text, left_end)
+                )
+                normalized.start(
+                    latest_left if has_normalized_compatibility_whitespace else None,
+                    preserve_internal_compatibility_whitespace=(
+                        has_normalized_compatibility_whitespace
+                    ),
+                )
+            active_left = normalized.left or latest_left
             if index <= (active_left[1] if active_left is not None else -1):
                 continue
             right_end = index + len(right)
             if not _ascii_literal_at(text, index, right):
+                continue
+            if (
+                facts.word_base_at_or_after[right_end]
+                and _projection_span_owns_raw_source_edges(projection, index, right_end)
+                and not _projection_span_has_compatibility_source(
+                    projection, facts, index, right_end
+                )
+            ):
+                # The first matching right fragment owns the candidate's raw
+                # suffix boundary.  If that boundary is still inside a word,
+                # the candidate is an embedded control; a later literal or
+                # compatibility-emitted ``t`` cannot be reselected as a new
+                # terminus for the same left side (for example ``can__tt``).
+                earliest_left = None
+                latest_left = None
+                normalized.start(None)
                 continue
             if earliest_left is not None and latest_left is not None:
                 if not facts.raw_source_is_whitespace[
@@ -404,20 +537,23 @@ def _iter_compatibility_bridge_spans(
                         continue
             # Compatibility whitespace becomes indistinguishable from literal
             # prose whitespace after NFKC/NFKD. Retain a separate fallback from
-            # the last left side, but require observable evidence *after the
-            # final raw whitespace*. This catches SPACE+M*/Cf/nonalphabetic
-            # bridges without reconnecting ordinary multi-word prose.
+            # the last left side, but inspect observable evidence across the
+            # complete candidate bridge: a later collapsed compatibility space
+            # must not discard an earlier surviving M*/Cf/nonalphabetic source.
+            # The final-segment and whole-token gates still keep ordinary prose
+            # whitespace from reconnecting unrelated words.
             if (
-                normalized_left is not None
-                and last_raw_whitespace is not None
-                and index > last_raw_whitespace + 1
+                normalized.left is not None
+                and normalized.last_raw_whitespace is not None
+                and index > normalized.last_raw_whitespace + 1
                 and not facts.raw_source_is_whitespace[index - 1]
-                and _is_complete_confirmation_span(facts, normalized_left[0], right_end)
+                and normalized.alpha_after_evidence
+                and _is_complete_confirmation_span(facts, normalized.left[0], right_end)
                 and _has_observable_normalized_bridge_evidence(
-                    facts, last_raw_whitespace + 1, index
+                    facts, normalized.left[1], index
                 )
             ):
-                yield (normalized_left[1], index)
+                yield (normalized.left[1], index)
 
 
 def _analyze_contraction_provenance(text: str) -> _ContractionProvenance:

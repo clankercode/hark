@@ -88,6 +88,7 @@ WORD_BASE_BOUNDARY_CONTROLS = (
     "can__té",
     "can__t_",
     "can__t1",
+    "can__tλ",
 )
 TRANSPARENT_BOUNDARY_CHARACTERS = (
     "\u0301",  # Mn combining acute
@@ -124,6 +125,41 @@ COMPATIBILITY_WHITESPACE_ALPHA_REPRODUCTIONS = (
     "\u00a0a",  # compatibility whitespace source before literal alpha
     "a\u2002",  # literal alpha before compatibility whitespace source
     "\u1fee\u3396\U0001d569",  # recursive whitespace + square ml + math x
+)
+SHADOWED_NORMALIZED_BRIDGE_EVIDENCE = (
+    ("Cf", "\u00a0\u200b\u00a0\u1d43"),
+    ("Mn", "\u00a0\u0301\u00a0\u1d43"),
+    ("Po", "\u00a0/\u00a0\u1d43"),
+    ("So", "\u00a0\u00a9\u00a0\u1d43"),
+    ("Nd", "\u00a01\u00a0\u1d43"),
+)
+RAW_WORD_BASE_COMPATIBILITY_PREFIXES = (
+    "\u0140",  # Ll -> l + MIDDLE DOT
+    "\u013f",  # Lu -> L + MIDDLE DOT
+    "\u037a",  # Lm -> SPACE + COMBINING GREEK YPOGEGRAMMENI
+    "\u215f",  # No -> 1 + FRACTION SLASH
+)
+PROSE_TRANSPARENT_SUFFIXES = (
+    "\u200b",  # Cf ZERO WIDTH SPACE
+    "\ufe0f",  # Mn VARIATION SELECTOR-16
+    "\u2060",  # Cf WORD JOINER
+)
+ORDINARY_NONASCII_WORD_BASES = (
+    "\u03bb",  # Ll GREEK SMALL LETTER LAMDA
+    "\u044f",  # Ll CYRILLIC SMALL LETTER YA
+    "\u4e2d",  # Lo CJK UNIFIED IDEOGRAPH-4E2D
+    "\u3042",  # Lo HIRAGANA LETTER A
+    "\u05d0",  # Lo HEBREW LETTER ALEF
+)
+ORDINARY_PROSE_BRIDGE_EVIDENCE = (
+    ("Cf", "\u200b"),
+    ("Mn", "\ufe0f"),
+    ("Po", "/"),
+    ("So", "\u00a9"),
+)
+ALPHABETIC_COMPATIBILITY_WHITESPACE_SOURCES = (
+    "\ufdfa",
+    "\ufdfb",
 )
 CONTRACTION_PARTS = tuple(phrase.split("'", 1) for phrase in NORMATIVE_CONTRACTIONS)
 EDGE_MATERIAL_REPRODUCTIONS = (
@@ -304,6 +340,25 @@ def boundary_ending_compatibility_expansions() -> tuple[str, ...]:
         final_category = unicodedata.category(opaque[-1])
         final_is_word_base = final_category[0] in {"L", "N"} or final_category == "Pc"
         if not final_is_word_base:
+            sources.append(character)
+    return tuple(sources)
+
+
+@cache
+def right_fragment_suffix_compatibility_sources() -> tuple[str, ...]:
+    """Word-base sources whose expansion can supply a later ``t`` terminus."""
+    sources = []
+    for character in alphanumeric_compatibility_expansions():
+        category = unicodedata.category(character)
+        if category[0] not in {"L", "N"} and category != "Pc":
+            continue
+        opaque = tuple(
+            part
+            for part in unicodedata.normalize("NFKD", character)
+            if not unicodedata.category(part).startswith("M")
+            and unicodedata.category(part) != "Cf"
+        )
+        if opaque and opaque[-1].lower() == "t":
             sources.append(character)
     return tuple(sources)
 
