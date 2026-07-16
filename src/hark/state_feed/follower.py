@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
-from hark.state_feed.cursor import format_cursor, parse_cursor
+from hark.state_feed.cursor import (
+    CursorPosition,
+    format_cursor,
+    parse_cursor_positions,
+)
 from hark.state_feed.record import FeedRecord
 from hark.state_feed.source import SourceFollower
 
@@ -36,7 +40,9 @@ class StateFeedFollower:
         return self.sources
 
     def composite_cursor(self) -> str:
-        return format_cursor((s.cursor_key, s.seq) for s in self.sources)
+        return format_cursor(
+            (source.cursor_key, source.cursor_position) for source in self.sources
+        )
 
     def start_live(self) -> None:
         for s in self.sources:
@@ -45,12 +51,12 @@ class StateFeedFollower:
     def start_from(self, cursor: str | None, *, default_tail: int = 0) -> None:
         """Resume from a composite cursor; unknown keys fall back to a recent
         tail of ``default_tail`` records (0 = from end)."""
-        positions = parse_cursor(cursor)
+        positions = parse_cursor_positions(cursor)
         for s in self.sources:
             if s.cursor_key in positions:
                 s.seek_to(positions[s.cursor_key])
             elif default_tail > 0:
-                s.seek_to(max(0, line_count(s.path) - default_tail))
+                s.seek_to(CursorPosition(seq=max(0, line_count(s.path) - default_tail)))
             else:
                 s.start_at_end()
 

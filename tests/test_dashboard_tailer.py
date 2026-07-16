@@ -186,10 +186,11 @@ def test_replay_cursor_advances_only_after_each_sorted_record(tmp_path):
     ]
 
     assert complete
-    assert replay == [
-        ("w1", "watch:1,ambient:0"),
-        ("a1", "watch:1,ambient:1"),
-        ("w2", "watch:2,ambient:1"),
+    assert [name for name, _ in replay] == ["w1", "a1", "w2"]
+    assert [parse_cursor(cursor) for _, cursor in replay] == [
+        {"watch": 1, "ambient": 0},
+        {"watch": 1, "ambient": 1},
+        {"watch": 2, "ambient": 1},
     ]
     assert parse_cursor(page_cursor)["watch"] == 2
     assert parse_cursor(page_cursor)["ambient"] == 1
@@ -211,10 +212,11 @@ def test_replay_order_never_reorders_nonmonotonic_cursor_key(tmp_path):
 
     # Ambient wins the cross-source head comparison, but w2 remains behind w1
     # even though its payload timestamp is earlier.
-    assert replay == [
-        ("a1", "watch:0,ambient:1"),
-        ("w1", "watch:1,ambient:1"),
-        ("w2", "watch:2,ambient:1"),
+    assert [name for name, _ in replay] == ["a1", "w1", "w2"]
+    assert [parse_cursor(cursor) for _, cursor in replay] == [
+        {"watch": 0, "ambient": 1},
+        {"watch": 1, "ambient": 1},
+        {"watch": 2, "ambient": 1},
     ]
 
 
@@ -272,3 +274,101 @@ def test_repeated_forward_pages_do_not_rescan_the_unseen_suffix(tmp_path, monkey
 
     assert seen == list(range(5))
     assert materialized == 7  # 3 + 3 + 1, never the old 5 + 3 + 1
+
+
+def test_repeated_pages_seek_from_checkpoint_instead_of_skipping_prefix(
+    tmp_path, monkeypatch
+):
+    import hark.state_feed.source as state_source
+
+    _write(
+        tmp_path / "watch.jsonl",
+        *({"kind": "agent.blocked", "n": n} for n in range(20)),
+    )
+    skipped_lines = 0
+    raw_lines = 0
+    real_skip = state_source.SourceFollower._skip_lines
+    real_read = state_source.SourceFollower._read_complete_line
+
+    def counted_skip(follower, target):
+        nonlocal skipped_lines
+        before = follower.seq
+        result = real_skip(follower, target)
+        skipped_lines += follower.seq - before
+        return result
+
+    def counted_read(follower):
+        nonlocal raw_lines
+        line = real_read(follower)
+        if line is not None:
+            raw_lines += 1
+        return line
+
+    monkeypatch.setattr(state_source.SourceFollower, "_skip_lines", counted_skip)
+    monkeypatch.setattr(
+        state_source.SourceFollower, "_read_complete_line", counted_read
+    )
+    cursor = "watch:0"
+    seen = []
+    while True:
+        records, cursor, complete = read_page(
+            tmp_path, since=cursor, sources={"watch"}, limit=2
+        )
+        seen.extend(record.payload["n"] for record in records)
+        if complete:
+            break
+
+    assert seen == list(range(20))
+    assert skipped_lines == 0  # not 0 + 2 + ... + 18 = 90
+    assert raw_lines == 29  # three per incomplete page, then the final two
+
+
+def test_checkpoint_mismatch_replays_rotated_file_from_zero(tmp_path):
+    watch = tmp_path / "watch.jsonl"
+    _write(watch, *({"kind": "agent.blocked", "n": f"old-{n}"} for n in range(4)))
+    _, cursor, complete = read_page(
+        tmp_path, since="watch:0", sources={"watch"}, limit=2
+    )
+    assert complete is False
+
+    watch.rename(tmp_path / "watch.jsonl.1")
+    _write(
+        watch,
+        *({"kind": "agent.blocked", "n": f"new-{n}"} for n in range(3)),
+        mode="w",
+    )
+    records, _, _ = read_page(tmp_path, since=cursor, sources={"watch"}, limit=2)
+    assert [record.payload["n"] for record in records] == ["new-0", "new-1"]
+
+
+def test_checkpoint_mismatch_detects_in_place_acknowledged_rewrite(tmp_path):
+    watch = tmp_path / "watch.jsonl"
+    _write(watch, *({"kind": "agent.blocked", "n": f"old-{n}"} for n in range(4)))
+    _, cursor, _ = read_page(tmp_path, since="watch:0", sources={"watch"}, limit=2)
+
+    _write(
+        watch,
+        {"kind": "agent.blocked", "n": "old-0"},
+        {"kind": "agent.blocked", "n": "new-1"},
+        {"kind": "agent.blocked", "n": "new-2"},
+        {"kind": "agent.blocked", "n": "new-3"},
+        mode="w",
+    )
+    records, _, _ = read_page(tmp_path, since=cursor, sources={"watch"}, limit=2)
+    assert [record.payload["n"] for record in records] == ["old-0", "new-1"]
+
+
+def test_filtered_complete_page_preserves_unselected_cursor_keys(tmp_path):
+    _write(tmp_path / "watch.jsonl", {"kind": "agent.blocked", "n": 1})
+    _write(tmp_path / "ambient.jsonl", {"kind": "ambient.prompt", "n": 1})
+
+    records, cursor, complete = read_page(
+        tmp_path,
+        since="watch:0,ambient:0",
+        sources={"watch"},
+        limit=100,
+    )
+
+    assert [record.source for record in records] == ["watch"]
+    assert complete is True
+    assert parse_cursor(cursor) == {"watch": 1, "ambient": 0}

@@ -1,23 +1,32 @@
-"""Hardened single-file JSONL follower (partial buffer, inode, truncation)."""
+"""Hardened single-file JSONL follower (partial buffer, rotation, checkpoints)."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from hark.state_feed.cursor import CursorPosition
 from hark.state_feed.record import FeedRecord
 
 
-class SourceFollower:
-    """Incremental reader for one JSONL file with seq tracking.
+_PREFIX_IDENTITY_BYTES = 4096
+_CHECKPOINT_SEED = hashlib.blake2s(
+    b"hark-state-feed-checkpoint-v1", digest_size=16
+).digest()
+_TRUSTED_CHECKPOINT_LIMIT = 8192
+_TrustedKey = tuple[str, str, int, str, int]
+_TrustedStat = tuple[int, int, int]
+_trusted_checkpoints: OrderedDict[_TrustedKey, _TrustedStat] = OrderedDict()
+_trusted_lock = threading.Lock()
 
-    - Partial trailing lines are buffered, never dropped (a line is consumed
-      only once its ``\\n`` arrives).
-    - Rotation is detected by inode/device change as well as truncation.
-    - Every record gets a per-source ``seq`` (1-based line index in the current
-      file incarnation).
-    """
+
+class SourceFollower:
+    """Incremental reader for one append-oriented JSONL source."""
 
     def __init__(
         self,
@@ -32,118 +41,298 @@ class SourceFollower:
         self.cursor_key = cursor_key or source
         self.transform = transform
         self._fh = None
-        self._ident: tuple[int, int] | None = None  # (st_dev, st_ino)
-        self._buf = ""
+        self._ident: tuple[int, int] | None = None
+        self._prefix_identity: str | None = None
+        self._checkpoint = _CHECKPOINT_SEED
+        self._buf = b""
         self._size_seen = 0
-        self.seq = 0  # last emitted seq (line number in current incarnation)
+        self._mtime_ns = 0
+        self._ctime_ns = 0
+        self._byte_offset = 0
+        self.seq = 0
 
-    def _stat_ident(self) -> tuple[int, int] | None:
+    @staticmethod
+    def _incarnation(
+        ident: tuple[int, int] | None, prefix_identity: str | None
+    ) -> str | None:
+        """Hash internal filesystem identity into an opaque client token."""
+        if ident is None or prefix_identity is None:
+            return None
+        device, inode = ident
+        internal = f"{device}\0{inode}\0{prefix_identity}".encode()
+        return hashlib.blake2s(
+            b"hark-state-feed-incarnation-v1\0" + internal,
+            digest_size=16,
+        ).hexdigest()
+
+    @staticmethod
+    def _next_checkpoint(checkpoint: bytes, line: bytes) -> bytes:
+        """Extend the raw complete-line prefix proof by one line."""
+        return hashlib.blake2s(
+            b"hark-state-feed-line-v1\0" + checkpoint + line + b"\n",
+            digest_size=16,
+        ).digest()
+
+    @staticmethod
+    def _prefix_identity_from_fd(fd: int) -> str:
+        chunks: list[bytes] = []
+        offset = 0
+        while offset <= _PREFIX_IDENTITY_BYTES:
+            chunk = os.pread(
+                fd,
+                min(64, _PREFIX_IDENTITY_BYTES + 1 - offset),
+                offset,
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+            if b"\n" in chunk:
+                break
+        prefix = b"".join(chunks)
+        newline = prefix.find(b"\n")
+        if newline >= 0:
+            identity_input = b"line\0" + prefix[: newline + 1]
+        elif len(prefix) > _PREFIX_IDENTITY_BYTES:
+            identity_input = b"bounded\0" + prefix[:_PREFIX_IDENTITY_BYTES]
+        else:
+            identity_input = b"pending"
+        return hashlib.blake2s(identity_input, digest_size=16).hexdigest()
+
+    @property
+    def cursor_position(self) -> CursorPosition:
+        incarnation = self._incarnation(self._ident, self._prefix_identity)
+        position = CursorPosition(
+            seq=self.seq,
+            incarnation=incarnation,
+            checkpoint=self._checkpoint.hex() if incarnation is not None else None,
+            byte_offset=self._byte_offset if incarnation is not None else None,
+        )
+        self._remember(position)
+        return position
+
+    def _trusted_key(self, position: CursorPosition) -> _TrustedKey | None:
+        if (
+            position.incarnation is None
+            or position.checkpoint is None
+            or position.byte_offset is None
+        ):
+            return None
+        return (
+            str(self.path.resolve()),
+            position.incarnation,
+            position.seq,
+            position.checkpoint,
+            position.byte_offset,
+        )
+
+    def _remember(self, position: CursorPosition) -> None:
+        key = self._trusted_key(position)
+        if key is None:
+            return
+        stat = (max(self._size_seen, self._byte_offset), self._mtime_ns, self._ctime_ns)
+        with _trusted_lock:
+            _trusted_checkpoints[key] = stat
+            _trusted_checkpoints.move_to_end(key)
+            while len(_trusted_checkpoints) > _TRUSTED_CHECKPOINT_LIMIT:
+                _trusted_checkpoints.popitem(last=False)
+
+    def _path_snapshot(
+        self,
+    ) -> tuple[tuple[int, int], int, int, int, str] | None:
         try:
-            st = self.path.stat()
-            return (st.st_dev, st.st_ino)
+            with self.path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                return (
+                    (stat.st_dev, stat.st_ino),
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                    self._prefix_identity_from_fd(handle.fileno()),
+                )
         except OSError:
             return None
 
+    def _reset(self) -> None:
+        self._ident = None
+        self._prefix_identity = None
+        self._checkpoint = _CHECKPOINT_SEED
+        self._buf = b""
+        self._size_seen = 0
+        self._mtime_ns = 0
+        self._ctime_ns = 0
+        self._byte_offset = 0
+        self.seq = 0
+
     def _reopen(self, *, from_start: bool) -> None:
         self.close()
+        self._reset()
         try:
-            self._fh = self.path.open("r", encoding="utf-8", errors="replace")
+            self._fh = self.path.open("rb")
+            stat = os.fstat(self._fh.fileno())
+            self._ident = (stat.st_dev, stat.st_ino)
+            self._size_seen = stat.st_size
+            self._mtime_ns = stat.st_mtime_ns
+            self._ctime_ns = stat.st_ctime_ns
+            self._prefix_identity = self._prefix_identity_from_fd(self._fh.fileno())
         except OSError:
-            self._fh = None
+            self.close()
             return
-        self._ident = self._stat_ident()
-        self._buf = ""
-        self.seq = 0
-        try:
-            self._size_seen = self.path.stat().st_size
-        except OSError:
-            self._size_seen = 0
         if not from_start:
             self._skip_lines(None)
 
+    def _consume_line(self, line: bytes) -> None:
+        self._checkpoint = self._next_checkpoint(self._checkpoint, line)
+        self._byte_offset += len(line) + 1
+        self.seq += 1
+
     def _skip_lines(self, target: int | None) -> None:
-        """Advance past ``target`` complete lines (all when None), keeping any
-        trailing partial line in the buffer so no record is ever split."""
+        """Advance through complete raw lines, retaining a trailing partial."""
         assert self._fh is not None
+        if target is not None and self.seq >= target:
+            return
         while True:
-            chunk = self._fh.read(65536)
-            if not chunk:
+            line = self._read_complete_line()
+            if line is None:
                 return
+            self._consume_line(line)
+            if target is not None and self.seq >= target:
+                return
+
+    def _read_complete_line(self) -> bytes | None:
+        """Read at most one raw line, retaining an incomplete EOF suffix."""
+        assert self._fh is not None
+        chunk = self._fh.readline()
+        if chunk:
             self._buf += chunk
-            while True:
-                if target is not None and self.seq >= target:
-                    return
-                nl = self._buf.find("\n")
-                if nl < 0:
-                    break
-                self._buf = self._buf[nl + 1 :]
-                self.seq += 1
+        if not self._buf.endswith(b"\n"):
+            return None
+        line = self._buf[:-1]
+        self._buf = b""
+        return line
 
-    def seek_to(self, seq: int) -> None:
-        """Position so the next emitted record is ``seq + 1`` (best effort).
+    def _seek_trusted(self, position: CursorPosition) -> bool:
+        key = self._trusted_key(position)
+        if key is None or self._fh is None:
+            return False
+        with _trusted_lock:
+            trusted = _trusted_checkpoints.get(key)
+        current_incarnation = self._incarnation(self._ident, self._prefix_identity)
+        if trusted is None or current_incarnation != position.incarnation:
+            return False
+        size, mtime_ns, ctime_ns = trusted
+        if (
+            self._size_seen < (position.byte_offset or 0)
+            or self._size_seen != size
+            or self._mtime_ns != mtime_ns
+            or self._ctime_ns != ctime_ns
+        ):
+            return False
+        try:
+            if (
+                position.byte_offset
+                and os.pread(self._fh.fileno(), 1, position.byte_offset - 1) != b"\n"
+            ):
+                return False
+            self._fh.seek(position.byte_offset or 0)
+            self._checkpoint = bytes.fromhex(position.checkpoint or "")
+        except (OSError, ValueError):
+            return False
+        self._buf = b""
+        self._byte_offset = position.byte_offset or 0
+        self.seq = position.seq
+        return True
 
-        Unknown/rotated positions fall back to the file start (gap beats a
-        dead stream — DASHBOARD.md cursor semantics).
-        """
+    def seek_to(self, position: CursorPosition | int) -> None:
+        """Resume from a proved position, replaying safely on any mismatch."""
+        if not isinstance(position, CursorPosition):
+            position = CursorPosition(seq=position)
         self._reopen(from_start=True)
         if self._fh is None:
             return
-        self._skip_lines(seq)
+        has_proof = position.incarnation is not None and position.checkpoint is not None
+        if not has_proof:
+            # Legacy sequence-only cursor: preserve historical behavior.
+            self._skip_lines(position.seq)
+            return
+        if position.byte_offset is not None and self._seek_trusted(position):
+            return
+        self._skip_lines(position.seq)
+        actual = CursorPosition(
+            seq=self.seq,
+            incarnation=self._incarnation(self._ident, self._prefix_identity),
+            checkpoint=self._checkpoint.hex(),
+            byte_offset=self._byte_offset,
+        )
+        if (
+            actual.seq != position.seq
+            or actual.incarnation != position.incarnation
+            or actual.checkpoint != position.checkpoint
+            or (
+                position.byte_offset is not None
+                and actual.byte_offset != position.byte_offset
+            )
+        ):
+            self._reopen(from_start=True)
+            return
+        self._remember(actual)
 
     def start_at_end(self) -> None:
         self._reopen(from_start=False)
 
     def poll(self) -> Iterator[FeedRecord]:
         """Yield complete new records since the last poll."""
-        ident = self._stat_ident()
+        snapshot = self._path_snapshot()
         if self._fh is None:
-            if ident is None:
+            if snapshot is None:
                 return
             self._reopen(from_start=True)
             if self._fh is None:
                 return
-        elif ident is not None and ident != self._ident:
-            # rotated/replaced: drain nothing further from the old handle,
-            # start the new incarnation from the top
+        elif snapshot is not None and (
+            snapshot[0] != self._ident or snapshot[4] != self._prefix_identity
+        ):
             self._reopen(from_start=True)
             if self._fh is None:
                 return
         else:
-            try:
-                size = self.path.stat().st_size
-            except OSError:
+            if snapshot is None:
                 return
+            size = snapshot[1]
             if size < self._size_seen:
-                # truncated in place
                 self._reopen(from_start=True)
                 if self._fh is None:
                     return
             self._size_seen = size
+            self._mtime_ns = snapshot[2]
+            self._ctime_ns = snapshot[3]
 
         while True:
-            # drain complete lines already buffered (e.g. after seek_to)
-            while True:
-                nl = self._buf.find("\n")
-                if nl < 0:
-                    break
-                line, self._buf = self._buf[:nl], self._buf[nl + 1 :]
-                self.seq += 1
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if self.transform is not None:
-                    obj = self.transform(obj)
-                yield FeedRecord(self.source, self.cursor_key, self.seq, obj)
-            chunk = self._fh.read(65536)
-            if not chunk:
+            raw_line = self._read_complete_line()
+            if raw_line is None:
                 return
-            self._buf += chunk
+            self._consume_line(raw_line)
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if self.transform is not None:
+                obj = self.transform(obj)
+            position = self.cursor_position
+            yield FeedRecord(
+                self.source,
+                self.cursor_key,
+                self.seq,
+                obj,
+                incarnation=position.incarnation,
+                checkpoint=position.checkpoint,
+                byte_offset=position.byte_offset,
+            )
 
     def close(self) -> None:
         if self._fh is not None:

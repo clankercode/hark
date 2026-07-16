@@ -331,6 +331,69 @@ def test_serve_publish_cannot_snapshot_unpublished_durable_cursor(state):
         assert not pump.is_alive()
 
 
+def test_fresh_hello_snapshot_is_atomic_with_subscription(state, tmp_path):
+    server = _server(tmp_path)
+    subscribed = threading.Event()
+    release_subscribe = threading.Event()
+    publish_attempted = threading.Event()
+    real_subscribe = server.hub.subscribe
+    real_publish_record = server.pump._publish_record
+    result = {}
+
+    def paused_subscribe():
+        subscriber = real_subscribe()
+        subscribed.set()
+        assert release_subscribe.wait(5)
+        return subscriber
+
+    def observed_publish(record):
+        publish_attempted.set()
+        real_publish_record(record)
+
+    def connect():
+        result["stream"] = _open_stream(server, "/api/v1/stream?sources=watch")
+
+    server.hub.subscribe = paused_subscribe
+    server.pump._publish_record = observed_publish
+    connector = threading.Thread(target=connect, daemon=True)
+    connection = None
+    resumed = None
+    try:
+        connector.start()
+        assert subscribed.wait(5)
+        _write_jsonl(
+            state / "watch.jsonl",
+            {**HEP_BLOCKED, "event_id": "fresh-race", "n": 1},
+        )
+        assert publish_attempted.wait(5)
+        release_subscribe.set()
+        connector.join(timeout=5)
+        assert not connector.is_alive()
+        connection, response = result["stream"]
+        hello_cursor, hello = _read_sse_event(response)
+        assert hello["type"] == "hello"
+        assert parse_cursor(hello_cursor)["watch"] == 0
+        connection.close()
+        connection = None
+
+        resumed, response = _open_stream(
+            server,
+            "/api/v1/stream?sources=watch",
+            headers={"Last-Event-ID": hello_cursor},
+        )
+        assert _read_sse_event(response)[0] == hello_cursor
+        event_cursor, event = _read_sse_event(response)
+        assert event["payload"]["event_id"] == "fresh-race"
+        assert parse_cursor(event_cursor)["watch"] == 1
+    finally:
+        release_subscribe.set()
+        if connection is not None:
+            connection.close()
+        if resumed is not None:
+            resumed.close()
+        server.shutdown()
+
+
 def test_stream_reconnect_after_hello_and_each_replay_frame_is_lossless(
     state, tmp_path
 ):
@@ -565,6 +628,56 @@ def test_rest_to_stream_handoff_captures_concurrent_append_and_live_reconnect(
         server.shutdown()
 
 
+def test_initial_replay_drops_covered_live_queue_duplicate(
+    state, tmp_path, monkeypatch
+):
+    import hark.dashboard.server as dashboard_server
+
+    server = _server(tmp_path)
+    replay_entered = threading.Event()
+    release_replay = threading.Event()
+    real_replay = dashboard_server.DashboardHandler._sse_replay
+
+    def paused_replay(handler, since, wanted):
+        replay_entered.set()
+        assert release_replay.wait(5)
+        return real_replay(handler, since, wanted)
+
+    monkeypatch.setattr(dashboard_server.DashboardHandler, "_sse_replay", paused_replay)
+    connection = None
+    try:
+        connection, response = _open_stream(
+            server, "/api/v1/stream?sources=watch&since=watch%3A0"
+        )
+        assert _read_sse_event(response)[0] == "watch:0"
+        assert replay_entered.wait(5)
+        _write_jsonl(
+            state / "watch.jsonl",
+            {**HEP_BLOCKED, "event_id": "overlap-1", "n": 1},
+        )
+        with server.hub._lock:
+            subscriber = server.hub._subs[0]
+        deadline = time.monotonic() + 5
+        while subscriber.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert subscriber.qsize() >= 1
+        release_replay.set()
+
+        _, first = _read_sse_event(response)
+        assert first["payload"]["event_id"] == "overlap-1"
+        _write_jsonl(
+            state / "watch.jsonl",
+            {**HEP_BLOCKED, "event_id": "overlap-2", "n": 2},
+        )
+        _, second = _read_sse_event(response)
+        assert second["payload"]["event_id"] == "overlap-2"
+    finally:
+        release_replay.set()
+        if connection is not None:
+            connection.close()
+        server.shutdown()
+
+
 def test_rest_to_stream_handoff_captures_rotation_after_snapshot(
     state, tmp_path, monkeypatch
 ):
@@ -763,6 +876,17 @@ def test_overflow_drain_discards_only_cursor_covered_envelopes():
         envelope("delivery", "delivery:4", {"type": "outcome"}), highwater
     )
     assert not _durable_envelope_covered(envelope("serve", "serve:1"), highwater)
+
+    incarnation_a = "a" * 32
+    incarnation_b = "b" * 32
+    checkpoint = "c" * 32
+    assert not _durable_envelope_covered(
+        envelope(
+            "watch",
+            f"watch:1@{incarnation_a}~{checkpoint}~10",
+        ),
+        f"watch:4@{incarnation_b}~{checkpoint}~40",
+    )
 
 
 def test_overflow_fence_rejects_serve_ahead_of_dropped_durable(monkeypatch):

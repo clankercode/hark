@@ -14,9 +14,14 @@ class FeedRecord:
     ``cursor_key`` may be finer-grained (e.g. ``bound`` vs ``delivery`` for
     delivery envelopes) and is what appears in the composite cursor token.
     ``seq`` is 1-based line index in the current file incarnation.
+    The remaining fields are opaque checkpoint metadata used for safe,
+    byte-offset resume; adapters should preserve them in emitted cursors.
     """
 
     source: str
     cursor_key: str
     seq: int
     payload: dict[str, Any]
+    incarnation: str | None = None
+    checkpoint: str | None = None
+    byte_offset: int | None = None

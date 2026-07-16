@@ -95,13 +95,14 @@ def present_for_monitor(event: dict[str, Any]) -> dict[str, Any]:
 
 ### Cursor token (E2.T002)
 
-**Format (dashboard-compatible):** `key:seq,key:seq,…`  
-Example: `watch:184,ambient:42,bound:12,delivery:9`
+**Format (dashboard-compatible):** legacy `key:seq` inputs remain accepted;
+emitted positions are `key:seq@incarnation~checkpoint~byte_offset`.
 
 - Keys = `cursor_key` per source (not always envelope source).
 - `parse_cursor` is lenient (skips bad parts).
-- Resume: `seek_to(seq)` so next emit is `seq+1`; unknown/rotated → gap preferred over dead stream (DASHBOARD.md).
-- SSE `id:` lines continue to use composite cursor; no format break.
+- Resume validates the opaque incarnation and rolling raw-line checkpoint,
+  then seeks to the byte offset. A mismatch replays the replacement from seq 0.
+- SSE `id:` lines continue to use the backward-compatible composite cursor.
 
 ---
 

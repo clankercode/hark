@@ -68,7 +68,7 @@ Every SSE `data:` line is one envelope (`stream.schema.json`):
 - `payload` is **source-shaped** (discriminated union, see below). Consumers
   MUST ignore unknown fields and unknown `source`/`kind` values.
 - `cursor` is the **composite cursor**: the full per-source position *after*
-  this event, `source:seq` pairs joined by commas. It is also set as the SSE
+  this event, joined by commas. It is also set as the SSE
   `id:` field, so `Last-Event-ID` on reconnect restores every source, not just
   the one that happened to emit last.
 
@@ -79,14 +79,15 @@ Every SSE `data:` line is one envelope (`stream.schema.json`):
   while the backing file is not rotated.
 - Cursors are **opaque to clients** beyond equality/passthrough. Clients MUST
   NOT construct cursors except from `hello`, event envelopes, or page results.
-- Servers validate external cursors before use.  The grammar is one or more
-  comma-separated `key:seq` pairs, where keys match
-  `[A-Za-z][A-Za-z0-9_.-]*`, sequences are unsigned decimal integers, and keys
-  are unique.  Invalid cursor input is rejected with `400 bad_cursor` before
-  any SSE frame is emitted.
-- If a server cannot honor a cursor (rotation, restart, unknown), it MUST fall
-  back to a recent tail (its default backfill window) rather than erroring.
-  Dashboards are monitoring UIs; a gap beats a dead stream.
+- Servers accept legacy `key:seq` positions and emit proved positions as
+  `key:seq@incarnation~checkpoint~byte_offset`. The proof fields are opaque
+  lowercase hexadecimal values; the offset is unsigned decimal. Keys match
+  `[A-Za-z][A-Za-z0-9_.-]*` and are unique. Invalid cursor input is rejected
+  with `400 bad_cursor` before any SSE frame is emitted.
+- The checkpoint proves the complete raw-line prefix through `seq`. It permits
+  bounded forward pagination when the source is unchanged. If the file was
+  rotated or acknowledged bytes were rewritten, the server safely replays the
+  new incarnation from its first record instead of seeking to the old offset.
 
 ### `hello`
 

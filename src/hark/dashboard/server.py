@@ -34,7 +34,11 @@ from hark.dashboard.tailer import (
 )
 from hark.events import utc_now_iso
 from hark.paths import state_dir
-from hark.state_feed import FeedRecord, canonicalize_cursor, parse_cursor
+from hark.state_feed import (
+    FeedRecord,
+    canonicalize_cursor,
+    parse_cursor_positions,
+)
 from hark.syslog import log
 
 SCHEMA = "hark.dashboard.v1"
@@ -67,13 +71,17 @@ def _durable_envelope_covered(envelope: dict[str, Any], highwater: str) -> bool:
     cursor_key = _durable_cursor_key(envelope)
     if cursor_key is None:
         return False
-    envelope_seq = parse_cursor(envelope.get("cursor")).get(cursor_key)
-    highwater_seq = parse_cursor(highwater).get(cursor_key)
-    return (
-        envelope_seq is not None
-        and highwater_seq is not None
-        and envelope_seq <= highwater_seq
-    )
+    envelope_position = parse_cursor_positions(envelope.get("cursor")).get(cursor_key)
+    highwater_position = parse_cursor_positions(highwater).get(cursor_key)
+    if envelope_position is None or highwater_position is None:
+        return False
+    if (
+        envelope_position.incarnation is not None
+        and highwater_position.incarnation is not None
+        and envelope_position.incarnation != highwater_position.incarnation
+    ):
+        return False
+    return envelope_position.seq <= highwater_position.seq
 
 
 class SubscriberQueue(queue.Queue):
@@ -178,6 +186,13 @@ class TailPump(threading.Thread):
         # frontier that has completed Hub.publish, never the raw follower.
         with self._publish_lock:
             return self._composite_cursor_locked(self._published_durable_cursor)
+
+    def subscribe_with_cursor(self) -> tuple[SubscriberQueue, str]:
+        """Atomically subscribe and snapshot the last fully published frontier."""
+        with self._publish_lock:
+            subscriber = self.hub.subscribe()
+            cursor = self._composite_cursor_locked(self._published_durable_cursor)
+        return subscriber, cursor
 
     def publish_serve(self, payload: dict[str, Any]) -> None:
         with self._publish_lock:
@@ -675,6 +690,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             bounded = deque((*carried, *retained), maxlen=SUBSCRIBER_QUEUE_SIZE)
             return stream_cursor, list(bounded)
 
+    def _drain_replay_overlap(
+        self,
+        subscriber: SubscriberQueue,
+        stream_cursor: str,
+        wanted: set[str] | None,
+    ) -> list[dict[str, Any]]:
+        """Drop queued durable records already emitted by initial replay."""
+        retained: list[dict[str, Any]] = []
+        non_durable: list[dict[str, Any]] = []
+        for _ in range(subscriber.qsize()):
+            try:
+                envelope = subscriber.get_nowait()
+            except queue.Empty:
+                break
+            source = envelope["source"]
+            if wanted is not None and source not in wanted:
+                continue
+            if _durable_cursor_key(envelope) is None:
+                non_durable.append(envelope)
+                retained.append(envelope)
+            elif not _durable_envelope_covered(envelope, stream_cursor):
+                retained.append(envelope)
+        # If publication overflowed during the drain, disk recovery will emit
+        # every durable item again.  Only the non-durable items need carrying.
+        return non_durable if subscriber.overflowed else retained
+
     def _handle_stream(self, qs: dict[str, list[str]]) -> None:
         sources_raw = (qs.get("sources") or [None])[0]
         wanted = set(sources_raw.split(",")) if sources_raw else None
@@ -685,21 +726,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._err(HTTPStatus.BAD_REQUEST, "bad_cursor", "invalid cursor")
             return
 
+        pump = self.server.pump
+        q, subscribed_cursor = pump.subscribe_with_cursor()
+
         # body ends when the connection does (SSE); no keep-alive reuse
         self.close_connection = True
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        pump = self.server.pump
-        q = self.server.hub.subscribe()
         try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
             # A hello is a transport handshake, not a delivery boundary.  On
             # resume it must repeat the client's last acknowledged position;
             # advertising the pump's current EOF here can skip unseen replay.
-            stream_cursor = since if since is not None else pump.composite_cursor()
+            stream_cursor = since if since is not None else subscribed_cursor
             self._sse_write(
                 {
                     "schema": SCHEMA,
@@ -714,11 +756,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     },
                 }
             )
+            retained: deque[dict[str, Any]] = deque(maxlen=SUBSCRIBER_QUEUE_SIZE)
             if since:
                 stream_cursor = self._sse_replay(since, wanted)
+                if not q.overflowed:
+                    retained.extend(
+                        self._drain_replay_overlap(q, stream_cursor, wanted)
+                    )
             last_ping = time.monotonic()
             last_spec_seq = 0
-            retained: deque[dict[str, Any]] = deque(maxlen=SUBSCRIBER_QUEUE_SIZE)
             # Short timeout so spectrum can refresh near 60 fps without a
             # dedicated connection (coalesced latest frame only).
             while True:

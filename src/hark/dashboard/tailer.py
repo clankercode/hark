@@ -4,7 +4,8 @@ Thin adapter over :mod:`hark.state_feed` (P1.M5). Hardened follow lives in
 the deep core; this module owns dashboard source map, envelope transforms,
 and ``read_page`` sorting/limits.
 
-Cursor format (composite): ``key:seq,key:seq,…`` — see DASHBOARD.md.
+Cursor format is a composite of per-source sequence/checkpoint positions; see
+``DASHBOARD.md``. Legacy ``key:seq`` inputs remain accepted.
 """
 
 from __future__ import annotations
@@ -15,11 +16,13 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from hark.state_feed import (
+    CursorPosition,
     FeedRecord,
     SourceFollower,
     StateFeedFollower,
     format_cursor,
     parse_cursor,
+    parse_cursor_positions,
 )
 
 # Public aliases — tests and server import these names.
@@ -124,7 +127,11 @@ def read_page(
                 break
         complete = len(materialized) <= page_limit
         records = materialized if complete else materialized[:page_limit]
-        cursor = mt.composite_cursor() if complete else _cursor_after(records, since)
+        cursor = (
+            _cursor_from_tailers(mt.tailers, since)
+            if complete
+            else _cursor_after(records, since)
+        )
         return records, cursor, complete
     finally:
         mt.close()
@@ -161,10 +168,27 @@ def records_with_cursors(
     of the page.  Advance a copy of the client's starting positions one record
     at a time instead; positions for sources not yet replayed stay unchanged.
     """
-    positions = parse_cursor(since)
+    positions = parse_cursor_positions(since)
     for record in records:
-        positions[record.cursor_key] = record.seq
+        positions[record.cursor_key] = _record_position(record)
         yield record, format_cursor(positions)
+
+
+def _record_position(record: FeedRecord) -> CursorPosition:
+    return CursorPosition(
+        seq=record.seq,
+        incarnation=record.incarnation,
+        checkpoint=record.checkpoint,
+        byte_offset=record.byte_offset,
+    )
+
+
+def _cursor_from_tailers(tailers: list[SourceFollower], since: str | None) -> str:
+    """Return tailer frontiers while preserving unselected cursor keys."""
+    positions = parse_cursor_positions(since)
+    for tailer in tailers:
+        positions[tailer.cursor_key] = tailer.cursor_position
+    return format_cursor(positions)
 
 
 def _cursor_after(records: list[FeedRecord], since: str) -> str:

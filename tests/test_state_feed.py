@@ -8,11 +8,13 @@ from pathlib import Path
 from hark.dashboard.tailer import MultiTailer, SourceTailer
 from hark.monitor_feed import compact_mode_a_event
 from hark.state_feed import (
+    CursorPosition,
     FeedRecord,
     SourceFollower,
     StateFeedFollower,
     format_cursor,
     parse_cursor,
+    parse_cursor_positions,
     present_for_monitor,
 )
 
@@ -53,6 +55,20 @@ def test_composite_cursor_format_roundtrip():
     assert parse_cursor("watch:12,bound:3") == {"watch": 12, "bound": 3}
     assert format_cursor({"watch": 12, "bound": 3}) == "watch:12,bound:3"
     assert format_cursor([("a", 1), ("b", 2)]) == "a:1,b:2"
+
+
+def test_proved_cursor_format_roundtrip_is_opaque_and_backward_compatible():
+    position = CursorPosition(
+        seq=12,
+        incarnation="a" * 32,
+        checkpoint="b" * 32,
+        byte_offset=345,
+    )
+    cursor = format_cursor({"watch": position, "ambient": 3})
+
+    assert cursor == f"watch:12@{'a' * 32}~{'b' * 32}~345,ambient:3"
+    assert parse_cursor(cursor) == {"watch": 12, "ambient": 3}
+    assert parse_cursor_positions(cursor)["watch"] == position
 
 
 def test_state_feed_follower_multi_source(tmp_path: Path):
