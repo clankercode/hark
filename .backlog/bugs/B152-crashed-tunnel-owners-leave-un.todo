@@ -1,0 +1,23 @@
+---
+complexity: medium
+created_at: "2026-07-16T01:44:28Z"
+depends_on: []
+estimate_hours: 1
+id: B152
+priority: high
+status: pending
+tags: []
+title: Crashed tunnel owners leave unreapable SSH children
+updated_at: "2026-07-16T01:44:28Z"
+---
+## Evidence
+
+The current SSH tunnel helper owns a subprocess only through the creating Python process. If that process exits abruptly after the SSH child creates its Unix socket, the child can survive while the Popen handle is lost. The B126 lifecycle redesign adds an owner JSON marker and allows later processes to borrow the exact socket, but the marker contains only PID/start-time identity and no adoption/reap protocol. A temporary-XDG probe with a harmless AF_UNIX child and matching live owner record showed a later final borrower releasing its lease while the child, socket, and owner marker all remained; every future process can repeat that borrow without anyone becoming cleanup owner. A crash before owner-state publication is unidentifiable and worse.
+
+## Expected
+
+A Hark-started SSH tunnel has a crash-safe lifetime: either the child is guaranteed to die with its owner, or a later process can verify the exact child incarnation, adopt cleanup ownership, and terminate/reap it when the final lease ends. Foreign or unverifiable processes must never be signalled.
+
+## Actual
+
+Abrupt owner exit can strand a Hark-started SSH child and socket indefinitely. Later processes may reuse the forward but cannot stop it, so repeated crashes can accumulate orphan SSH processes.
