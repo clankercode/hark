@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from hark.answer_window import AnswerWindowDeps, AnswerWindowPolicy, open_answer_window
+from hark.answer_window.result import ListenResult
 from hark.audio import capture as capture_mod
 from hark.audio.capture import MicBusyError
 from hark.config import HarkConfig
@@ -78,8 +81,11 @@ def test_capture_sigint_aborts_stream_and_restores_handlers(monkeypatch):
 
     assert time.monotonic() - started < 2.0
     assert caught.value.signal_name == "SIGINT"
+    deadline = time.monotonic() + 1.0
+    while stream.aborted == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert stream.aborted >= 1
-    assert stream.exited_with is capture_mod.CaptureInterrupted
+    assert stream.exited_with is None
     assert capture_mod.cancel_active_capture() is False
     assert signal.getsignal(signal.SIGINT) is old_sigint
     assert signal.getsignal(signal.SIGTERM) is old_sigterm
@@ -105,6 +111,36 @@ def test_run_ask_maps_keyboard_interrupt_to_structured_abort(monkeypatch):
         "exit": ABORT,
         "tts": {"ok": True, "provider": "mock"},
     }
+
+
+def test_confirmation_interrupt_preserves_answer_and_initial_tts(monkeypatch):
+    tts_info = {"ok": True, "provider": "mock"}
+    monkeypatch.setattr(
+        "hark.speech.speak_and_listen",
+        lambda *_a, **_k: (
+            tts_info,
+            ListenResult(
+                text="ship the release",
+                provider="mock",
+                duration_ms=15,
+                end_mode="silence",
+                stream_id="answer",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "hark.speech.run_tts",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            capture_mod.CaptureInterrupted(signal.SIGINT)
+        ),
+    )
+
+    result = run_ask(HarkConfig(), "Deploy now?", confirm="always")
+
+    assert result["cancelled"] is True
+    assert result["signal"] == "SIGINT"
+    assert result["text"] == "ship the release"
+    assert result["tts"] is tts_info
 
 
 @pytest.mark.parametrize("phase", ["enter", "exit"])
@@ -169,7 +205,7 @@ def test_real_signal_scope_structures_install_and_restore_interrupts(
     assert len(calls) == expected_calls
 
 
-def test_sigterm_after_ask_operation_is_structured_during_scope_exit(monkeypatch):
+def test_sigterm_without_active_capture_is_structured_during_scope(monkeypatch):
     installed: dict[int, object] = {}
 
     def capture_handler(signum, handler):
@@ -180,13 +216,50 @@ def test_sigterm_after_ask_operation_is_structured_during_scope_exit(monkeypatch
 
     with pytest.raises(capture_mod.CaptureInterrupted) as caught:
         with capture_mod.capture_interrupt_signals():
-            with capture_mod.ask_signal_operation():
-                pass
             handler = installed[signal.SIGTERM]
             assert callable(handler)
             handler(signal.SIGTERM, None)
 
     assert caught.value.signal_name == "SIGTERM"
+
+
+def test_repeated_cancel_preserves_first_signal_identity():
+    with capture_mod.capture_interrupt_signals():
+        capture_mod.request_capture_cancel(signal.SIGINT)
+        capture_mod.request_capture_cancel(signal.SIGTERM)
+        with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+            capture_mod.raise_if_capture_cancelled()
+
+    assert caught.value.signal_name == "SIGINT"
+
+
+def test_sigterm_during_pre_stream_guard_is_structured_and_releases_attempt(
+    monkeypatch,
+):
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(
+            InputStream=lambda **_kwargs: pytest.fail(
+                "stream opened after cancellation"
+            )
+        ),
+    )
+
+    def interrupt_guard() -> None:
+        time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    interrupter = threading.Thread(target=interrupt_guard, daemon=True)
+    interrupter.start()
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(post_tts_guard_s=5.0)
+    interrupter.join(timeout=1.0)
+
+    assert caught.value.signal_name == "SIGTERM"
+    assert capture_mod.capture_in_progress() is False
 
 
 def test_signal_scope_restoration_does_not_replace_primary_interrupt(monkeypatch):
@@ -229,10 +302,575 @@ def test_cancel_active_capture_reports_abort_failure_and_closes():
     stream = AbortFailureStream()
     with capture_mod.capture_interrupt_signals():
         with capture_mod._registered_input_stream(stream):
-            assert capture_mod.cancel_active_capture(signal.SIGINT) is False
+            assert capture_mod.cancel_active_capture(signal.SIGINT) is True
+
+    deadline = time.monotonic() + 1.0
+    while stream.close_calls == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
 
     assert stream.abort_calls == 1
     assert stream.close_calls == 1
+
+
+def test_repeated_signal_during_cleanup_thread_start_is_reentrant(monkeypatch):
+    real_thread = threading.Thread
+    starts = 0
+
+    class Stream:
+        def abort(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class ReentrantStartThread:
+        def __init__(self, *, target, name, daemon):
+            assert name == "hark-capture-cancel"
+            assert daemon is True
+            self._target = target
+            self._inner = real_thread(target=target, name=name, daemon=daemon)
+
+        @property
+        def ident(self):
+            return self._inner.ident
+
+        def start(self) -> None:
+            nonlocal starts
+            starts += 1
+            repeated = signal.getsignal(signal.SIGTERM)
+            assert callable(repeated)
+            repeated(signal.SIGTERM, None)
+            self._inner.start()
+
+        def join(self, timeout=None) -> None:
+            self._inner.join(timeout=timeout)
+
+        def is_alive(self) -> bool:
+            return self._inner.is_alive()
+
+    stream = Stream()
+    monkeypatch.setattr(capture_mod.threading, "Thread", ReentrantStartThread)
+
+    with capture_mod.capture_interrupt_signals():
+        with capture_mod._registered_input_stream(stream):
+            assert capture_mod.cancel_active_capture(signal.SIGINT) is True
+
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert starts == 1
+    assert capture_mod._stream_cancel_workers == {}
+
+
+def test_definite_prelaunch_cleanup_failure_does_not_stick_registry(monkeypatch):
+    class Stream:
+        def abort(self) -> None:
+            pytest.fail("pre-launch target unexpectedly ran")
+
+    class FailedThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            assert callable(target)
+            assert name == "hark-capture-cancel"
+            assert daemon is True
+
+        def start(self) -> None:
+            raise RuntimeError("thread launch rejected")
+
+        def is_alive(self) -> bool:
+            return False
+
+    stream = Stream()
+    monkeypatch.setattr(capture_mod.threading, "Thread", FailedThread)
+
+    with capture_mod.capture_interrupt_signals():
+        with capture_mod._registered_input_stream(stream):
+            assert capture_mod.cancel_active_capture(signal.SIGINT) is False
+
+    assert capture_mod._stream_cancel_workers == {}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_postlaunch_start_interrupt_retains_single_cleanup_owner(monkeypatch):
+    real_thread = threading.Thread
+    allow_target = threading.Event()
+    target_finished = threading.Event()
+    starts = 0
+
+    class Stream:
+        def abort(self) -> None:
+            return None
+
+        def close(self) -> None:
+            target_finished.set()
+
+    class LaunchedThenInterrupted:
+        def __init__(self, *, target, name, daemon):
+            assert name == "hark-capture-cancel"
+            assert daemon is True
+            self._target = target
+            self._inner: threading.Thread | None = None
+
+        @property
+        def ident(self):
+            return None if self._inner is None else self._inner.ident
+
+        def start(self) -> None:
+            nonlocal starts
+            starts += 1
+
+            def delayed_target() -> None:
+                assert allow_target.wait(timeout=2.0)
+                self._target()
+
+            self._inner = real_thread(target=delayed_target, daemon=True)
+            self._inner.start()
+            raise capture_mod.CaptureInterrupted(signal.SIGINT)
+
+        def is_alive(self) -> bool:
+            return bool(self._inner and self._inner.is_alive())
+
+    stream = Stream()
+    monkeypatch.setattr(capture_mod.threading, "Thread", LaunchedThenInterrupted)
+
+    assert capture_mod._request_stream_cancel(stream) is True
+    assert capture_mod._request_stream_cancel(stream) is True
+    assert starts == 1
+    assert len(capture_mod._stream_cancel_workers) == 1
+    assert capture_mod.capture_in_progress() is True
+
+    allow_target.set()
+    assert target_finished.wait(timeout=1.0)
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert capture_mod._stream_cancel_workers == {}
+
+
+@pytest.mark.parametrize("phase", ["before_publish", "after_publish"])
+def test_signal_at_normal_cleanup_transfer_never_loses_stream_owner(monkeypatch, phase):
+    calls = {"abort": 0, "stop": 0, "close": 0}
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, block):
+            import numpy as np
+
+            return np.zeros((block, 1), dtype=np.float32), False
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def stop(self) -> None:
+            calls["stop"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    stream = Stream()
+    real_reserve = capture_mod._reserve_stream_cleanup
+
+    def interrupting_reserve(target, *, cancel, fallback_exit=None):
+        if cancel:
+            return real_reserve(
+                target,
+                cancel=True,
+                fallback_exit=fallback_exit,
+            )
+        if phase == "before_publish":
+            os.kill(os.getpid(), signal.SIGINT)
+        owner = real_reserve(
+            target,
+            cancel=False,
+            fallback_exit=fallback_exit,
+        )
+        if phase == "after_publish":
+            os.kill(os.getpid(), signal.SIGINT)
+        return owner
+
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: stream),
+    )
+    monkeypatch.setattr(
+        capture_mod,
+        "_reserve_stream_cleanup",
+        interrupting_reserve,
+    )
+
+    with pytest.raises(capture_mod.CaptureInterrupted):
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(
+                max_s=1.0,
+                initial_timeout_s=1.0,
+                post_tts_guard_s=0.0,
+                should_stop=lambda *_args: True,
+            )
+
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "stop": 0, "close": 1}
+    assert capture_mod._active_input_stream is None
+    assert capture_mod._stream_cancel_workers == {}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_ordinary_capture_exception_transfers_exactly_one_cleanup_owner(monkeypatch):
+    calls = {"abort": 0, "close": 0}
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, _block):
+            raise RuntimeError("capture backend failed")
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    stream = Stream()
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: stream),
+    )
+
+    with pytest.raises(RuntimeError, match="capture backend failed"):
+        capture_mod.capture_utterance(post_tts_guard_s=0.0)
+
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "close": 1}
+    assert capture_mod._active_input_stream is None
+    assert capture_mod._stream_cancel_workers == {}
+
+
+def test_signal_after_normal_detach_starts_and_upgrades_reserved_owner(monkeypatch):
+    calls = {"abort": 0, "stop": 0, "close": 0}
+    fired = False
+    real_start = capture_mod._start_stream_cleanup
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, block):
+            import numpy as np
+
+            return np.zeros((block, 1), dtype=np.float32), False
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def stop(self) -> None:
+            calls["stop"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    def interrupt_before_start(owner):
+        nonlocal fired
+        if not fired:
+            fired = True
+            assert capture_mod._active_input_stream is None
+            os.kill(os.getpid(), signal.SIGINT)
+        return real_start(owner)
+
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: Stream()),
+    )
+    monkeypatch.setattr(capture_mod, "_start_stream_cleanup", interrupt_before_start)
+
+    with pytest.raises(capture_mod.CaptureInterrupted):
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(
+                post_tts_guard_s=0.0,
+                should_stop=lambda *_args: True,
+            )
+
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "stop": 0, "close": 1}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_signal_after_exception_detach_starts_reserved_owner(monkeypatch):
+    calls = {"abort": 0, "close": 0}
+    fired = False
+    real_start = capture_mod._start_stream_cleanup
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, _block):
+            raise RuntimeError("backend failed")
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    def interrupt_before_start(owner):
+        nonlocal fired
+        if not fired:
+            fired = True
+            assert capture_mod._active_input_stream is None
+            os.kill(os.getpid(), signal.SIGTERM)
+        return real_start(owner)
+
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: Stream()),
+    )
+    monkeypatch.setattr(capture_mod, "_start_stream_cleanup", interrupt_before_start)
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(post_tts_guard_s=0.0)
+
+    assert caught.value.signal_name == "SIGTERM"
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "close": 1}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_signal_after_worker_start_upgrades_before_native_cleanup(monkeypatch):
+    calls = {"abort": 0, "stop": 0, "close": 0}
+    before_native = threading.Event()
+    allow_native = threading.Event()
+    real_perform = capture_mod._perform_stream_cleanup
+    owner_box = {}
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, block):
+            import numpy as np
+
+            return np.zeros((block, 1), dtype=np.float32), False
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def stop(self) -> None:
+            calls["stop"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    def gated_perform(owner):
+        owner_box["owner"] = owner
+        before_native.set()
+        assert allow_native.wait(timeout=2.0)
+        real_perform(owner)
+
+    def interrupt_worker() -> None:
+        assert before_native.wait(timeout=2.0)
+        os.kill(os.getpid(), signal.SIGINT)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            with capture_mod._stream_cancel_lock:
+                if owner_box["owner"].cancel_requested:
+                    break
+            time.sleep(0.001)
+        else:
+            pytest.fail("signal handler did not upgrade cleanup owner")
+        allow_native.set()
+
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: Stream()),
+    )
+    monkeypatch.setattr(capture_mod, "_perform_stream_cleanup", gated_perform)
+    interrupter = threading.Thread(target=interrupt_worker, daemon=True)
+    interrupter.start()
+
+    with pytest.raises(capture_mod.CaptureInterrupted):
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(
+                post_tts_guard_s=0.0,
+                should_stop=lambda *_args: True,
+            )
+
+    interrupter.join(timeout=1.0)
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "stop": 0, "close": 1}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_pending_signal_is_delivered_only_after_cleanup_worker_start(monkeypatch):
+    real_thread = threading.Thread
+    real_perform = capture_mod._perform_stream_cleanup
+    allow_native = threading.Event()
+    calls = {"abort": 0, "stop": 0, "close": 0}
+    sent = False
+
+    class Stream:
+        def start(self) -> None:
+            return None
+
+        def read(self, block):
+            import numpy as np
+
+            return np.zeros((block, 1), dtype=np.float32), False
+
+        def abort(self) -> None:
+            calls["abort"] += 1
+
+        def stop(self) -> None:
+            calls["stop"] += 1
+
+        def close(self) -> None:
+            calls["close"] += 1
+
+    class SignalDuringStart:
+        def __init__(self, *, target, name, daemon):
+            self._inner = real_thread(target=target, name=name, daemon=daemon)
+
+        @property
+        def ident(self):
+            return self._inner.ident
+
+        def start(self) -> None:
+            nonlocal sent
+            if not sent:
+                sent = True
+                os.kill(os.getpid(), signal.SIGINT)
+            self._inner.start()
+
+        def join(self, timeout=None) -> None:
+            self._inner.join(timeout=timeout)
+
+        def is_alive(self) -> bool:
+            return self._inner.is_alive()
+
+    def gated_perform(owner):
+        assert allow_native.wait(timeout=2.0)
+        real_perform(owner)
+
+    monkeypatch.setattr(capture_mod, "_require_sd", lambda: None)
+    monkeypatch.setattr(
+        capture_mod,
+        "sd",
+        SimpleNamespace(InputStream=lambda **_kwargs: Stream()),
+    )
+    monkeypatch.setattr(capture_mod.threading, "Thread", SignalDuringStart)
+    monkeypatch.setattr(capture_mod, "_perform_stream_cleanup", gated_perform)
+
+    with pytest.raises(capture_mod.CaptureInterrupted):
+        with capture_mod.capture_interrupt_signals():
+            capture_mod.capture_utterance(
+                post_tts_guard_s=0.0,
+                should_stop=lambda *_args: True,
+            )
+
+    owner = next(iter(capture_mod._stream_cancel_workers.values()))
+    assert owner.start_claimed is True
+    assert owner.worker is not None
+    assert owner.worker.is_alive() is True
+    assert owner.cancel_requested is True
+    allow_native.set()
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == {"abort": 1, "stop": 0, "close": 1}
+    assert capture_mod.capture_in_progress() is False
+
+
+def test_nonreturning_native_abort_cannot_block_structured_parent_exit(monkeypatch):
+    cfg = HarkConfig()
+    cfg.audio.overlap_prearm = True
+    cfg.audio.listen_pre_arm_ms = 50
+    entered = threading.Event()
+    abort_started = threading.Event()
+    release_abort = threading.Event()
+    release_read = threading.Event()
+    worker_finished = threading.Event()
+
+    class HangingAbortStream:
+        def abort(self) -> None:
+            abort_started.set()
+            assert release_abort.wait(timeout=2.0)
+            release_read.set()
+
+        def close(self) -> None:
+            release_read.set()
+
+    stream = HangingAbortStream()
+
+    def blocking_listen(*_args, **_kwargs):
+        try:
+            with capture_mod._registered_input_stream(stream):
+                entered.set()
+                assert release_read.wait(timeout=2.0)
+                capture_mod.raise_if_capture_cancelled()
+        finally:
+            worker_finished.set()
+
+    def fake_tts(_cfg, _text, **kwargs):
+        kwargs["on_near_end"]()
+        assert entered.wait(timeout=2.0)
+        return {"ok": True, "provider": "mock"}
+
+    def interrupt_join() -> None:
+        assert entered.wait(timeout=2.0)
+        time.sleep(0.02)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    monkeypatch.setattr("hark.speak_then_listen.handoff._OVERLAP_CANCEL_JOIN_S", 0.02)
+    monkeypatch.setattr("hark.speech.maybe_print_tts_question", lambda *_a, **_k: None)
+    monkeypatch.setattr("hark.speech.run_listen", blocking_listen)
+    monkeypatch.setattr("hark.speech.run_tts", fake_tts)
+    interrupter = threading.Thread(target=interrupt_join, daemon=True)
+    interrupter.start()
+
+    started = time.monotonic()
+    result = run_ask(cfg, "Still there?", confirm="never")
+
+    assert time.monotonic() - started < 0.5
+    assert result["cancelled"] is True
+    assert result["signal"] == "SIGINT"
+    assert abort_started.wait(timeout=1.0)
+    assert capture_mod._active_input_stream is None
+    assert capture_mod.cancel_active_capture(signal.SIGTERM) is True
+    assert len(capture_mod._stream_cancel_workers) == 1
+    assert capture_mod.capture_in_progress() is True
+    assert worker_finished.is_set() is False
+
+    release_abort.set()
+    assert worker_finished.wait(timeout=1.0)
+    interrupter.join(timeout=1.0)
+    deadline = time.monotonic() + 1.0
+    while capture_mod._stream_cancel_workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert capture_mod._stream_cancel_workers == {}
+    assert capture_mod.capture_in_progress() is False
 
 
 def test_sticky_cancel_preempts_late_input_stream_registration():
@@ -246,6 +884,170 @@ def test_sticky_cancel_preempts_late_input_stream_registration():
 
     assert caught.value.signal_name == "SIGTERM"
     assert stream.aborted == 1
+
+
+def test_mic_lease_interrupt_after_flock_rolls_back_fd_and_lock(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    real_flock = capture_mod.fcntl.flock
+
+    def interrupt_after_acquire(fd, operation):
+        real_flock(fd, operation)
+        if operation & capture_mod.fcntl.LOCK_EX:
+            raise capture_mod.CaptureInterrupted(signal.SIGINT)
+
+    monkeypatch.setattr(capture_mod.fcntl, "flock", interrupt_after_acquire)
+    with pytest.raises(capture_mod.CaptureInterrupted):
+        capture_mod.MicLease("interrupted").__enter__()
+    monkeypatch.setattr(capture_mod.fcntl, "flock", real_flock)
+
+    probe_fd = os.open(tmp_path / "state" / "hark" / "mic.lock", os.O_RDWR)
+    try:
+        real_flock(
+            probe_fd,
+            capture_mod.fcntl.LOCK_EX | capture_mod.fcntl.LOCK_NB,
+        )
+    finally:
+        os.close(probe_fd)
+    assert capture_mod.MicLease._holder is None
+
+
+def test_mic_lease_release_preserves_primary_and_close_releases_lock(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    real_flock = capture_mod.fcntl.flock
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with capture_mod.MicLease("primary"):
+
+            def fail_unlock(fd, operation):
+                if operation == capture_mod.fcntl.LOCK_UN:
+                    raise RuntimeError("unlock cleanup failed")
+                return real_flock(fd, operation)
+
+            monkeypatch.setattr(capture_mod.fcntl, "flock", fail_unlock)
+            raise primary
+    assert caught.value is primary
+    monkeypatch.setattr(capture_mod.fcntl, "flock", real_flock)
+
+    probe_fd = os.open(tmp_path / "state" / "hark" / "mic.lock", os.O_RDWR)
+    try:
+        real_flock(
+            probe_fd,
+            capture_mod.fcntl.LOCK_EX | capture_mod.fcntl.LOCK_NB,
+        )
+    finally:
+        os.close(probe_fd)
+    assert capture_mod.MicLease._holder is None
+
+
+def test_repeated_signal_during_stream_cleanup_preserves_first_and_clears_global(
+    monkeypatch,
+):
+    stream = _BlockingStream()
+    real_lock = capture_mod._active_stream_lock
+
+    class InterruptingRLock:
+        def __init__(self) -> None:
+            self.enters = 0
+
+        def __enter__(self):
+            real_lock.acquire()
+            self.enters += 1
+            if self.enters == 2:
+                handler = signal.getsignal(signal.SIGTERM)
+                assert callable(handler)
+                handler(signal.SIGTERM, None)
+            return self
+
+        def __exit__(self, *_args):
+            real_lock.release()
+
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+    with capture_mod.capture_interrupt_signals():
+        capture_mod.request_capture_cancel(signal.SIGINT)
+        monkeypatch.setattr(capture_mod, "_active_stream_lock", InterruptingRLock())
+        with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+            with capture_mod._registered_input_stream(stream):
+                raise primary
+
+    assert caught.value.signal_name == "SIGINT"
+    assert capture_mod._active_input_stream is None
+
+
+def test_first_signal_during_scope_teardown_finishes_state_cleanup(monkeypatch):
+    real_lock = capture_mod._capture_state_lock
+
+    class TeardownSignalRLock:
+        def __init__(self) -> None:
+            self.enters = 0
+
+        def __enter__(self):
+            real_lock.acquire()
+            self.enters += 1
+            if self.enters == 3:
+                handler = signal.getsignal(signal.SIGTERM)
+                assert callable(handler)
+                handler(signal.SIGTERM, None)
+            return self
+
+        def __exit__(self, *_args):
+            real_lock.release()
+
+    old_sigint = signal.getsignal(signal.SIGINT)
+    old_sigterm = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(capture_mod, "_capture_state_lock", TeardownSignalRLock())
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with capture_mod.capture_interrupt_signals():
+            pass
+
+    assert caught.value.signal_name == "SIGTERM"
+    assert capture_mod._capture_signal_state is None
+    assert signal.getsignal(signal.SIGINT) is old_sigint
+    assert signal.getsignal(signal.SIGTERM) is old_sigterm
+
+
+def test_ambient_pause_cleanup_does_not_replace_primary(monkeypatch):
+    import hark.mic_coord as mic_coord
+
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+    monkeypatch.setattr(
+        mic_coord, "request_ambient_pause", lambda **_kwargs: "pause-token"
+    )
+    monkeypatch.setattr(mic_coord, "wait_for_mic_free", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        mic_coord,
+        "clear_ambient_pause",
+        lambda _token: (_ for _ in ()).throw(
+            capture_mod.CaptureInterrupted(signal.SIGTERM)
+        ),
+    )
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with mic_coord.pause_ambient_for_mic():
+            raise primary
+
+    assert caught.value is primary
+
+
+def test_signal_after_ambient_pause_publication_rolls_back_owner(monkeypatch, tmp_path):
+    import hark.mic_coord as mic_coord
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def interrupting_syslog(*_args, **_kwargs):
+        os.kill(os.getpid(), signal.SIGINT)
+
+    monkeypatch.setattr(mic_coord, "syslog", interrupting_syslog)
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        with capture_mod.capture_interrupt_signals():
+            mic_coord.request_ambient_pause(reason="post-publication-signal")
+
+    assert caught.value.signal_name == "SIGINT"
+    assert mic_coord.ambient_pause_requested() is False
+    assert mic_coord.read_ambient_pause() is None
 
 
 def test_answer_window_interrupt_releases_mic_and_active_listen(monkeypatch):
@@ -349,10 +1151,239 @@ def test_overlap_join_interrupt_aborts_worker_capture(monkeypatch):
 
     assert caught.value is interrupted
     assert cancels == [True]
-    assert joins == [None, None]
+    assert joins[0] is None
+    assert joins[1] is not None
+    assert 0 < joins[1] <= 2.0
 
 
-def test_overlap_sigint_during_first_join_waits_for_worker_terminal(monkeypatch):
+def test_overlap_interrupt_during_thread_start_waits_for_publication(monkeypatch):
+    cfg = HarkConfig()
+    cfg.audio.overlap_prearm = True
+    cfg.audio.listen_pre_arm_ms = 50
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+    callback_done = threading.Event()
+    joined: list[float | None] = []
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+    real_thread = threading.Thread
+
+    class StartingThread:
+        def __init__(self, *, target, name, daemon):
+            assert callable(target)
+            assert name == "hark-overlap-listen"
+            assert daemon is True
+
+        def start(self) -> None:
+            start_entered.set()
+            assert allow_start.wait(timeout=2.0)
+
+        def join(self, timeout=None) -> None:
+            joined.append(timeout)
+
+        def is_alive(self) -> bool:
+            return False
+
+    def release_start() -> None:
+        assert start_entered.wait(timeout=2.0)
+        time.sleep(0.05)
+        allow_start.set()
+
+    def fake_tts(_cfg, _text, **kwargs):
+        def invoke_callback() -> None:
+            try:
+                kwargs["on_near_end"]()
+            finally:
+                callback_done.set()
+
+        callback = real_thread(target=invoke_callback, daemon=True)
+        callback.start()
+        assert start_entered.wait(timeout=2.0)
+        raise primary
+
+    monkeypatch.setattr(
+        "hark.speak_then_listen.handoff.threading.Thread", StartingThread
+    )
+    monkeypatch.setattr("hark.speech.maybe_print_tts_question", lambda *_a, **_k: None)
+    monkeypatch.setattr("hark.speech.run_tts", fake_tts)
+    monkeypatch.setattr("hark.audio.capture.cancel_active_capture", lambda *_a: True)
+    releaser = real_thread(target=release_start, daemon=True)
+    releaser.start()
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        speak_and_listen(cfg, "Still there?")
+    releaser.join(timeout=1.0)
+
+    assert caught.value is primary
+    assert callback_done.wait(timeout=1.0)
+    assert len(joined) == 1
+    assert joined[0] is not None
+
+
+def test_overlap_start_exception_after_launch_keeps_handle_for_cleanup(monkeypatch):
+    cfg = HarkConfig()
+    cfg.audio.overlap_prearm = True
+    cfg.audio.listen_pre_arm_ms = 50
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+    ran_worker: list[bool] = []
+    real_thread = threading.Thread
+
+    class LaunchedThenInterrupted:
+        def __init__(self, *, target, name, daemon):
+            assert name == "hark-overlap-listen"
+            assert daemon is True
+            self._target = target
+            self.ident = None
+            self._gate = threading.Event()
+            self._thread = None
+
+        def start(self) -> None:
+            def delayed_bootstrap() -> None:
+                assert self._gate.wait(timeout=2.0)
+                ran_worker.append(True)
+                self._target()
+
+            self._thread = real_thread(target=delayed_bootstrap, daemon=True)
+            self._thread.start()
+            raise primary
+
+        def join(self, timeout=None) -> None:
+            self._gate.set()
+            assert self._thread is not None
+            self._thread.join(timeout=timeout)
+
+        def is_alive(self) -> bool:
+            return bool(self._thread and self._thread.is_alive())
+
+    def fake_tts(_cfg, _text, **kwargs):
+        kwargs["on_near_end"]()
+        raise AssertionError("interrupted start unexpectedly returned")
+
+    monkeypatch.setattr(
+        "hark.speak_then_listen.handoff.threading.Thread",
+        LaunchedThenInterrupted,
+    )
+    monkeypatch.setattr("hark.speech.maybe_print_tts_question", lambda *_a, **_k: None)
+    monkeypatch.setattr("hark.speech.run_tts", fake_tts)
+
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        speak_and_listen(cfg, "Still there?")
+
+    assert caught.value is primary
+    assert ran_worker == [True]
+
+
+def test_overlap_cancel_cleanup_has_fixed_deadline(monkeypatch):
+    cfg = HarkConfig()
+    cfg.audio.overlap_prearm = True
+    cfg.audio.listen_pre_arm_ms = 50
+    primary = capture_mod.CaptureInterrupted(signal.SIGINT)
+    timeouts: list[float | None] = []
+    events: list[str] = []
+
+    class StuckDaemon:
+        def __init__(self, *, target, name, daemon):
+            assert callable(target)
+            assert name == "hark-overlap-listen"
+            assert daemon is True
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout=None) -> None:
+            timeouts.append(timeout)
+            if timeout is None:
+                raise primary
+
+        def is_alive(self) -> bool:
+            return True
+
+    def fake_tts(_cfg, _text, **kwargs):
+        kwargs["on_near_end"]()
+        return {"ok": True, "provider": "mock"}
+
+    monkeypatch.setattr("hark.speak_then_listen.handoff.threading.Thread", StuckDaemon)
+    monkeypatch.setattr("hark.speak_then_listen.handoff._OVERLAP_CANCEL_JOIN_S", 0.02)
+    monkeypatch.setattr(
+        "hark.speak_then_listen.handoff.syslog",
+        lambda event, **_k: events.append(event),
+    )
+    monkeypatch.setattr("hark.speech.maybe_print_tts_question", lambda *_a, **_k: None)
+    monkeypatch.setattr("hark.speech.run_tts", fake_tts)
+    monkeypatch.setattr("hark.audio.capture.cancel_active_capture", lambda *_a: True)
+
+    started = time.monotonic()
+    with pytest.raises(capture_mod.CaptureInterrupted) as caught:
+        speak_and_listen(cfg, "Still there?")
+
+    assert caught.value is primary
+    assert time.monotonic() - started < 0.5
+    assert timeouts[0] is None
+    assert all(timeout is not None for timeout in timeouts[1:])
+    assert events[-1] == "listen.cancel_cleanup_timeout"
+
+
+def test_delayed_overlap_worker_retains_cancel_token_after_parent_returns(
+    monkeypatch,
+):
+    cfg = HarkConfig()
+    cfg.audio.overlap_prearm = True
+    cfg.audio.listen_pre_arm_ms = 50
+    entered = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+    finished = threading.Event()
+    proceeded = threading.Event()
+
+    def delayed_listen(*_args, **_kwargs):
+        entered.set()
+        try:
+            assert release.wait(timeout=2.0)
+            try:
+                capture_mod.raise_if_capture_cancelled()
+            except capture_mod.CaptureInterrupted:
+                cancelled.set()
+                raise
+            proceeded.set()
+            raise AssertionError("delayed worker proceeded after cancellation")
+        finally:
+            finished.set()
+
+    def fake_tts(_cfg, _text, **kwargs):
+        kwargs["on_near_end"]()
+        assert entered.wait(timeout=2.0)
+        return {"ok": True, "provider": "mock"}
+
+    def interrupt_join() -> None:
+        assert entered.wait(timeout=2.0)
+        time.sleep(0.02)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    monkeypatch.setattr("hark.speak_then_listen.handoff._OVERLAP_CANCEL_JOIN_S", 0.02)
+    monkeypatch.setattr("hark.speech.maybe_print_tts_question", lambda *_a, **_k: None)
+    monkeypatch.setattr("hark.speech.run_listen", delayed_listen)
+    monkeypatch.setattr("hark.speech.run_tts", fake_tts)
+    interrupter = threading.Thread(target=interrupt_join, daemon=True)
+    interrupter.start()
+
+    result = run_ask(cfg, "Still there?", confirm="never")
+    assert result["cancelled"] is True
+    assert result["signal"] == "SIGINT"
+    assert capture_mod._capture_signal_state is None
+    assert finished.is_set() is False
+
+    release.set()
+    assert finished.wait(timeout=1.0)
+    interrupter.join(timeout=1.0)
+    assert cancelled.is_set()
+    assert proceeded.is_set() is False
+    assert capture_mod._active_input_stream is None
+    assert capture_mod.MicLease._holder is None
+
+
+@pytest.mark.parametrize("outer_scope", [False, True])
+def test_overlap_sigint_during_first_join_waits_for_worker_terminal(
+    monkeypatch, outer_scope
+):
     cfg = HarkConfig()
     cfg.audio.overlap_prearm = True
     cfg.audio.listen_pre_arm_ms = 50
@@ -386,7 +1417,8 @@ def test_overlap_sigint_during_first_join_waits_for_worker_terminal(monkeypatch)
     interrupter = threading.Thread(target=interrupt_first_join, daemon=True)
     interrupter.start()
 
-    with capture_mod.capture_interrupt_signals():
+    scope = capture_mod.capture_interrupt_signals() if outer_scope else nullcontext()
+    with scope:
         result = run_ask(cfg, "Still there?", confirm="never")
     interrupter.join(timeout=2.0)
 
@@ -453,74 +1485,6 @@ def test_overlap_interrupt_during_remaining_tts_waits_for_pause_release(monkeypa
     assert cleared == ["pause-token"]
 
 
-def test_sigterm_during_hung_tts_provider_uses_hard_termination(tmp_path):
-    ready = tmp_path / "provider-ready"
-    script = r"""
-import pathlib
-import sys
-import time
-from types import SimpleNamespace
-
-import hark.cli as cli
-import hark.conference as conference
-import hark.speech as speech
-
-ready = pathlib.Path(sys.argv[1])
-
-class HungProvider:
-    def synthesize(self, _text, *, voice=None):
-        ready.write_text("synthesizing")
-        while True:
-            time.sleep(1.0)
-
-conference.apply_conference_hold = lambda *_a, **_k: SimpleNamespace(
-    skipped=False,
-    as_meta=lambda: {},
-)
-speech.lookup_cached_tts = lambda *_a, **_k: None
-speech.resolve_tts = lambda *_a, **_k: HungProvider()
-speech.claim_tts_play_ticket = lambda: object()
-speech.abandon_tts_play_ticket = lambda *_a, **_k: None
-raise SystemExit(cli.main(["ask", "--confirm", "never", "--json", "Still there?"]))
-"""
-    env = os.environ.copy()
-    src_dir = Path(__file__).resolve().parents[1] / "src"
-    env["PYTHONPATH"] = os.pathsep.join(
-        filter(None, (str(src_dir), env.get("PYTHONPATH", "")))
-    )
-    env["XDG_STATE_HOME"] = str(tmp_path / "state")
-    process = subprocess.Popen(
-        [sys.executable, "-c", script, str(ready)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
-    try:
-        deadline = time.monotonic() + 5.0
-        while (
-            not ready.exists()
-            and process.poll() is None
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.02)
-        if not ready.exists():
-            if process.poll() is None:
-                process.kill()
-            stdout, stderr = process.communicate(timeout=2.0)
-            pytest.fail(f"provider did not block: stdout={stdout!r} stderr={stderr!r}")
-
-        process.send_signal(signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=3.0)
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.communicate(timeout=2.0)
-
-    assert process.returncode == -signal.SIGTERM
-    assert "Traceback" not in stderr
-
-
 @pytest.mark.parametrize(
     ("sent_signal", "signal_name"),
     [(signal.SIGINT, "SIGINT"), (signal.SIGTERM, "SIGTERM")],
@@ -551,11 +1515,17 @@ class BlockingStream:
         return self
 
     def __exit__(self, exc_type, _exc, _tb):
-        cleaned.write_text(exc_type.__name__ if exc_type else "none")
-        return False
+        cleaned.write_text("sync-exit")
+        while True:
+            time.sleep(1.0)
 
     def abort(self):
         self.aborted = True
+        cleaned.write_text("abort")
+
+    def close(self):
+        while True:
+            time.sleep(1.0)
 
     def read(self, _block):
         ready.write_text("reading")
@@ -618,6 +1588,109 @@ raise SystemExit(cli.main(["ask", "--confirm", "never", "--json", "Still there?"
     assert result["error"] == "interrupted"
     assert result["signal"] == signal_name
     assert result["exit"] == ABORT
-    assert cleaned.read_text() == "CaptureInterrupted"
+    assert cleaned.read_text() == "abort"
     assert "Traceback" not in stderr
     assert "KeyboardInterrupt" not in stderr
+
+
+@pytest.mark.skipif(shutil.which("script") is None, reason="util-linux script missing")
+def test_ctrl_c_from_real_pty_returns_structured_abort(tmp_path):
+    ready = tmp_path / "pty-ready"
+    cleaned = tmp_path / "pty-cleaned"
+    script = r"""
+import pathlib
+import sys
+import time
+from types import SimpleNamespace
+
+import hark.audio.capture as capture
+import hark.cli as cli
+import hark.speech as speech
+
+ready = pathlib.Path(sys.argv[1])
+cleaned = pathlib.Path(sys.argv[2])
+
+class BlockingStream:
+    def __init__(self):
+        self.aborted = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb):
+        cleaned.write_text("sync-exit")
+        while True:
+            time.sleep(1.0)
+
+    def abort(self):
+        self.aborted = True
+        cleaned.write_text("abort")
+
+    def close(self):
+        return None
+
+    def read(self, _block):
+        ready.write_text("reading")
+        while not self.aborted:
+            time.sleep(0.01)
+        raise RuntimeError("aborted blocking read")
+
+stream = BlockingStream()
+capture._require_sd = lambda: None
+capture.sd = SimpleNamespace(InputStream=lambda **_kwargs: stream)
+
+def blocking_speak_and_listen(_cfg, _prompt, **_kwargs):
+    capture.capture_utterance(
+        max_s=30.0,
+        initial_timeout_s=30.0,
+        post_tts_guard_s=0.0,
+    )
+    raise AssertionError("capture unexpectedly returned")
+
+speech.speak_and_listen = blocking_speak_and_listen
+raise SystemExit(cli.main(["ask", "--confirm", "never", "--json", "Still there?"]))
+"""
+    env = os.environ.copy()
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(src_dir), env.get("PYTHONPATH", "")))
+    )
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    child_command = shlex.join([sys.executable, "-c", script, str(ready), str(cleaned)])
+    process = subprocess.Popen(
+        ["script", "-qefc", child_command, "/dev/null"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while (
+            not ready.exists()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert ready.exists(), "PTY child did not enter blocking capture"
+        assert process.stdin is not None
+        process.stdin.write(b"\x03")
+        process.stdin.flush()
+        stdout, stderr = process.communicate(timeout=5.0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=2.0)
+
+    rendered = stdout.decode(errors="replace")
+    json_start = rendered.find("{")
+    assert json_start >= 0, rendered
+    result, _end = json.JSONDecoder().raw_decode(rendered[json_start:])
+    assert process.returncode == ABORT
+    assert result["cancelled"] is True
+    assert result["signal"] == "SIGINT"
+    assert cleaned.read_text() == "abort"
+    assert "Traceback" not in rendered
+    assert "KeyboardInterrupt" not in rendered
+    assert b"Traceback" not in stderr

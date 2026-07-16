@@ -51,7 +51,7 @@ class _CaptureSignalState:
         self._cancelled = False
         self._signum: int | None = None
         self._attempts = 0
-        self._operations = 0
+        self._cleanup_depth = 0
 
     def begin_attempt(self) -> None:
         with self._lock:
@@ -65,23 +65,16 @@ class _CaptureSignalState:
         with self._lock:
             return self._attempts > 0
 
-    def begin_operation(self) -> None:
+    def request(self, signum: int | None = None) -> bool:
+        """Publish cancellation atomically; return whether this was the first."""
         with self._lock:
-            self._operations += 1
-
-    def finish_operation(self) -> None:
-        with self._lock:
-            self._operations = max(0, self._operations - 1)
-
-    def has_operation(self) -> bool:
-        with self._lock:
-            return self._operations > 0
-
-    def request(self, signum: int | None = None) -> None:
-        with self._lock:
+            first = not self._cancelled
             self._cancelled = True
-            if signum is not None:
+            if signum is not None and self._signum is None:
+                # The first delivered signal is the cancellation's identity. A
+                # repeat may reinforce cleanup, but never rewrites the result.
                 self._signum = signum
+            return first
 
     def interruption(self) -> KeyboardInterrupt | None:
         with self._lock:
@@ -92,11 +85,39 @@ class _CaptureSignalState:
             return KeyboardInterrupt("capture cancelled")
         return CaptureInterrupted(signum)
 
+    def begin_cleanup(self) -> None:
+        with self._lock:
+            self._cleanup_depth += 1
+
+    def finish_cleanup(self) -> None:
+        with self._lock:
+            self._cleanup_depth = max(0, self._cleanup_depth - 1)
+
+    def cleaning_up(self) -> bool:
+        with self._lock:
+            return self._cleanup_depth > 0
+
 
 _capture_state_lock = threading.RLock()
 _capture_signal_state: _CaptureSignalState | None = None
+_capture_thread_state = threading.local()
 _active_stream_lock = threading.RLock()
 _active_input_stream: Any | None = None
+_stream_cancel_lock = threading.RLock()
+_STREAM_CLEANUP_JOIN_S = 2.0
+
+
+@dataclass
+class _StreamCleanupOwner:
+    stream: Any
+    entered: threading.Event
+    cancel_requested: bool
+    fallback_exit: Callable[[], Any] | None = None
+    worker: threading.Thread | None = None
+    start_claimed: bool = False
+
+
+_stream_cancel_workers: dict[int, _StreamCleanupOwner] = {}
 
 
 def _abort_input_stream(stream: Any) -> bool:
@@ -115,7 +136,171 @@ def _close_input_stream(stream: Any) -> bool:
     return True
 
 
+def _stop_input_stream(stream: Any) -> bool:
+    stop = getattr(stream, "stop", None)
+    if not callable(stop):
+        return False
+    try:
+        stop()
+    except BaseException:
+        return False
+    return True
+
+
+def _perform_stream_cleanup(owner: _StreamCleanupOwner) -> None:
+    """Choose normal versus cancel teardown at the last safe pre-native point."""
+    with _stream_cancel_lock:
+        cancel_now = owner.cancel_requested
+        fallback_now = owner.fallback_exit
+    if cancel_now:
+        _abort_input_stream(owner.stream)
+        _close_input_stream(owner.stream)
+        return
+    stopped = _stop_input_stream(owner.stream)
+    closed = _close_input_stream(owner.stream)
+    if not stopped and not closed and fallback_now is not None:
+        try:
+            fallback_now()
+        except BaseException:
+            pass
+
+
+def _reserve_stream_cleanup(
+    stream: Any,
+    *,
+    cancel: bool,
+    fallback_exit: Callable[[], Any] | None = None,
+) -> _StreamCleanupOwner:
+    """Publish or upgrade the exact stream's sole native cleanup owner."""
+    key = id(stream)
+    owner = _StreamCleanupOwner(
+        stream=stream,
+        entered=threading.Event(),
+        cancel_requested=cancel,
+        fallback_exit=fallback_exit,
+    )
+
+    def _cleanup() -> None:
+        owner.entered.set()
+        with _stream_cancel_lock:
+            # If start publication looked pre-launch and was reconciled away,
+            # reclaim only an empty slot. A repeated cancel may already own it.
+            current = _stream_cancel_workers.setdefault(key, owner)
+            if current is not owner:
+                return
+        try:
+            _perform_stream_cleanup(owner)
+        finally:
+            with _stream_cancel_lock:
+                current = _stream_cancel_workers.get(key)
+                if current is owner:
+                    _stream_cancel_workers.pop(key, None)
+
+    owner.worker = threading.Thread(
+        target=_cleanup,
+        name="hark-capture-cancel",
+        daemon=True,
+    )
+    with _stream_cancel_lock:
+        existing = _stream_cancel_workers.setdefault(key, owner)
+        existing.cancel_requested = existing.cancel_requested or cancel
+        if existing.fallback_exit is None:
+            existing.fallback_exit = fallback_exit
+        return existing
+
+
+def _start_stream_cleanup(owner: _StreamCleanupOwner) -> threading.Thread:
+    """Claim and start an owner without holding cancellation registry locks."""
+    key = id(owner.stream)
+    previous_mask: set[signal.Signals] | None = None
+    if threading.current_thread() is threading.main_thread() and hasattr(
+        signal, "pthread_sigmask"
+    ):
+        previous_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK,
+            {signal.SIGINT, signal.SIGTERM},
+        )
+
+    try:
+        with _stream_cancel_lock:
+            worker = owner.worker
+            assert worker is not None
+            if owner.start_claimed:
+                return worker
+            owner.start_claimed = True
+
+        try:
+            worker.start()
+        except BaseException as exc:
+            # A delivered signal may interrupt Thread.start after kernel launch
+            # on platforms without pthread_sigmask. Keep that owner so repeats
+            # cannot fan out. Ordinary start failures are definitive pre-launch.
+            launched = owner.entered.is_set() or isinstance(exc, KeyboardInterrupt)
+            if not launched:
+                try:
+                    launched = worker.ident is not None or worker.is_alive()
+                except BaseException:
+                    launched = True
+            if not launched:
+                with _stream_cancel_lock:
+                    current = _stream_cancel_workers.get(key)
+                    if current is owner:
+                        _stream_cancel_workers.pop(key, None)
+            raise
+        return worker
+    finally:
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _request_stream_cleanup(
+    stream: Any,
+    *,
+    cancel: bool,
+    fallback_exit: Callable[[], Any] | None = None,
+) -> threading.Thread:
+    owner = _reserve_stream_cleanup(
+        stream,
+        cancel=cancel,
+        fallback_exit=fallback_exit,
+    )
+    return _start_stream_cleanup(owner)
+
+
+def _request_stream_cancel(stream: Any) -> bool:
+    """Schedule best-effort native abort without blocking the signal path."""
+    try:
+        _request_stream_cleanup(stream, cancel=True)
+    except BaseException:
+        # The signal handler still raises the original interruption.  A
+        # post-launch interruption remains represented by the published owner;
+        # a definite pre-launch failure was reconciled above.
+        with _stream_cancel_lock:
+            return id(stream) in _stream_cancel_workers
+    return True
+
+
+def _wait_stream_cleanup(worker: threading.Thread) -> None:
+    """Give normal native teardown a bounded wait; daemon ownership stays truthful."""
+    deadline = time.monotonic() + _STREAM_CLEANUP_JOIN_S
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        try:
+            worker.join(timeout=remaining)
+        except RuntimeError:
+            # Post-launch publication can briefly precede Thread._started.
+            time.sleep(min(0.001, remaining))
+            continue
+        if not worker.is_alive():
+            return
+
+
 def _current_capture_state() -> _CaptureSignalState | None:
+    bound = getattr(_capture_thread_state, "state", None)
+    if bound is not None:
+        return bound
     with _capture_state_lock:
         return _capture_signal_state
 
@@ -126,13 +311,10 @@ def capture_in_progress() -> bool:
     if state is not None and state.has_attempt():
         return True
     with _active_stream_lock:
-        return _active_input_stream is not None
-
-
-def ask_operation_in_progress() -> bool:
-    """Whether ask is inside provider/TTS/listen work, not scope setup/teardown."""
-    state = _current_capture_state()
-    return state.has_operation() if state is not None else False
+        if _active_input_stream is not None:
+            return True
+    with _stream_cancel_lock:
+        return bool(_stream_cancel_workers)
 
 
 def request_capture_cancel(signum: int | None = None) -> None:
@@ -142,10 +324,12 @@ def request_capture_cancel(signum: int | None = None) -> None:
         state.request(signum)
 
 
-def raise_if_capture_cancelled() -> None:
-    """Raise the signal scope's primary cancellation in a capture worker."""
-    state = _current_capture_state()
-    interruption = state.interruption() if state is not None else None
+def raise_if_capture_cancelled(
+    state: _CaptureSignalState | None = None,
+) -> None:
+    """Raise cancellation from an explicit attempt or the current scope."""
+    owner = state if state is not None else _current_capture_state()
+    interruption = owner.interruption() if owner is not None else None
     if interruption is not None:
         raise interruption
 
@@ -169,63 +353,134 @@ def capture_attempt() -> Iterator[None]:
     """Register capture work early enough for pre-stream cancellation."""
     state = register_capture_attempt()
     try:
-        raise_if_capture_cancelled()
+        raise_if_capture_cancelled(state)
         yield
     finally:
         release_capture_attempt(state)
 
 
 @contextmanager
-def ask_signal_operation() -> Iterator[None]:
-    """Mark the part of ask where capture-free SIGTERM must stay terminating."""
-    state = _current_capture_state()
+def bind_capture_state(state: _CaptureSignalState | None) -> Iterator[None]:
+    """Keep an explicit turn token discoverable throughout a worker stack."""
+    previous = getattr(_capture_thread_state, "state", None)
     if state is not None:
-        state.begin_operation()
+        _capture_thread_state.state = state
     try:
         yield
     finally:
-        if state is not None:
-            state.finish_operation()
+        if previous is None:
+            try:
+                del _capture_thread_state.state
+            except AttributeError:
+                pass
+        else:
+            _capture_thread_state.state = previous
+
+
+@contextmanager
+def cancellation_cleanup(
+    state: _CaptureSignalState | None = None,
+    *,
+    primary: BaseException | None = None,
+) -> Iterator[None]:
+    """Finish cleanup before surfacing a signal delivered during cleanup."""
+    owner = state if state is not None else _current_capture_state()
+    if owner is None:
+        yield
+        return
+    already_cancelled = owner.interruption() is not None
+    owner.begin_cleanup()
+    try:
+        try:
+            yield
+        except BaseException:
+            if primary is None:
+                raise
+    finally:
+        owner.finish_cleanup()
+    if primary is None and not already_cancelled:
+        raise_if_capture_cancelled(owner)
 
 
 def cancel_active_capture(signum: int | None = None) -> bool:
-    """Abort this process's active input stream, if any.
+    """Detach and asynchronously abort this process's active input stream.
 
     No PID lookup or process signalling is performed: this is deliberately
-    scoped to the PortAudio stream registered by this Python process.
+    scoped to the PortAudio stream registered by this Python process. Native
+    ``abort``/``close`` may themselves hang, so neither the signal handler nor
+    bounded parent cleanup calls them synchronously.
     """
+    global _active_input_stream
     request_capture_cancel(signum)
+    owner: _StreamCleanupOwner | None = None
     with _active_stream_lock:
         stream = _active_input_stream
+        if stream is not None:
+            owner = _reserve_stream_cleanup(stream, cancel=True)
+            _active_input_stream = None
     if stream is None:
-        return False
-    aborted = _abort_input_stream(stream)
-    if not aborted:
-        # ``abort`` is the truthful return contract. ``close`` is only a
-        # best-effort release fallback so the owning worker can unwind.
-        _close_input_stream(stream)
-    return aborted
+        with _stream_cancel_lock:
+            owners = list(_stream_cancel_workers.values())
+            for pending in owners:
+                pending.cancel_requested = True
+        found = bool(owners)
+        for pending in owners:
+            try:
+                _start_stream_cleanup(pending)
+            except BaseException:
+                # Continue reinforcing every published owner; the primary
+                # signal remains authoritative at the handler boundary.
+                pass
+        return found
+    try:
+        assert owner is not None
+        _start_stream_cleanup(owner)
+        return True
+    except BaseException:
+        # The handler must still raise the original signal promptly even if
+        # cancellation worker startup itself fails or is interrupted.
+        with _stream_cancel_lock:
+            return id(stream) in _stream_cancel_workers
 
 
 @contextmanager
 def _registered_input_stream(stream: Any) -> Iterator[None]:
     global _active_input_stream
+    state = _current_capture_state()
     with _active_stream_lock:
         previous = _active_input_stream
         _active_input_stream = stream
+    primary: BaseException | None = None
     try:
-        raise_if_capture_cancelled()
+        raise_if_capture_cancelled(state)
         yield
-    except BaseException:
+    except BaseException as exc:
+        primary = exc
         # PortAudio's blocking Pa_ReadStream may not make progress on its own.
-        # Abort before InputStream.__exit__ closes it, then preserve the exact
-        # cancellation/interrupt exception for the orchestration boundary.
-        _abort_input_stream(stream)
-        raise
-    finally:
+        # Its tracked daemon owns abort/close; the interrupted parent must not
+        # enter InputStream.__exit__ or any native teardown synchronously.
+        owner: _StreamCleanupOwner | None = None
         with _active_stream_lock:
             if _active_input_stream is stream:
+                owner = _reserve_stream_cleanup(stream, cancel=True)
                 _active_input_stream = previous
+        if owner is not None:
+            try:
+                _start_stream_cleanup(owner)
+            except KeyboardInterrupt:
+                # A first signal delivered during the ownership handoff is the
+                # command-level outcome, not cleanup noise from the backend.
+                raise
+            except BaseException:
+                # Preserve the capture/provider exception; the owner registry
+                # already reflects post-launch uncertainty or was reconciled.
+                pass
+        raise
+    finally:
+        with cancellation_cleanup(state, primary=primary):
+            with _active_stream_lock:
+                if _active_input_stream is stream:
+                    _active_input_stream = previous
 
 
 def _restore_signal_handlers(previous: dict[int, Any]) -> None:
@@ -241,13 +496,6 @@ def _restore_signal_handlers(previous: dict[int, Any]) -> None:
         raise primary
 
 
-def _terminate_from_signal(signum: int) -> None:
-    """Restore OS termination when no capture exists to cancel."""
-    signal.signal(signum, signal.SIG_DFL)
-    os.kill(os.getpid(), signum)
-    os._exit(128 + signum)  # pragma: no cover - kill should not return
-
-
 @contextmanager
 def capture_interrupt_signals() -> Iterator[None]:
     """Scope SIGINT/SIGTERM to graceful cancellation of one-shot capture."""
@@ -256,6 +504,14 @@ def capture_interrupt_signals() -> Iterator[None]:
         return
 
     global _capture_signal_state
+    with _capture_state_lock:
+        inherited_state = _capture_signal_state
+    if inherited_state is not None:
+        # run_ask owns a scope for direct callers; cmd_ask supplies the outer
+        # command scope.  Reuse it so nested ownership never clobbers state.
+        yield
+        return
+
     watched = (signal.SIGINT, signal.SIGTERM)
     previous = {signum: signal.getsignal(signum) for signum in watched}
     state = _CaptureSignalState()
@@ -264,14 +520,12 @@ def capture_interrupt_signals() -> Iterator[None]:
         _capture_signal_state = state
 
     def _interrupt(signum: int, _frame: object) -> None:
-        had_capture = capture_in_progress()
+        first = state.request(signum)
         cancel_active_capture(signum)
-        if (
-            signum == signal.SIGTERM
-            and not had_capture
-            and ask_operation_in_progress()
-        ):
-            _terminate_from_signal(signum)
+        if not first or state.cleaning_up():
+            # Repeated signals reinforce stream abort but cannot interrupt
+            # teardown, replace the first cause, or strand cleanup state.
+            return
         raise CaptureInterrupted(signum)
 
     primary: BaseException | None = None
@@ -283,7 +537,10 @@ def capture_interrupt_signals() -> Iterator[None]:
         primary = exc
         raise
     finally:
-        try:
+        with cancellation_cleanup(state, primary=primary):
+            with _capture_state_lock:
+                if _capture_signal_state is state:
+                    _capture_signal_state = previous_state
             try:
                 _restore_signal_handlers(previous)
             except BaseException:
@@ -292,10 +549,6 @@ def capture_interrupt_signals() -> Iterator[None]:
                 # itself the interruption translated by the CLI boundary.
                 if primary is None:
                     raise
-        finally:
-            with _capture_state_lock:
-                if _capture_signal_state is state:
-                    _capture_signal_state = previous_state
 
 
 class MicLease:
@@ -310,37 +563,64 @@ class MicLease:
         self._lock_fd: int | None = None
 
     def __enter__(self) -> MicLease:
-        with MicLease._lock:
-            if MicLease._holder is not None:
-                raise MicBusyError(f"mic busy ({MicLease._holder})")
-            lock_path = state_dir() / "mic.lock"
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-            try:
+        fd: int | None = None
+        try:
+            with MicLease._lock:
+                if MicLease._holder is not None:
+                    raise MicBusyError(f"mic busy ({MicLease._holder})")
+                lock_path = state_dir() / "mic.lock"
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+                self._lock_fd = fd
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.close(fd)
+                MicLease._holder = self.name
+                self._held = True
+            return self
+        except BaseException as exc:
+            if fd is not None:
+                with cancellation_cleanup(primary=exc):
+                    with MicLease._lock:
+                        owns_fd = self._lock_fd == fd
+                        if owns_fd:
+                            self._held = False
+                            self._lock_fd = None
+                            if MicLease._holder == self.name:
+                                MicLease._holder = None
+                    if owns_fd:
+                        self._release_fd(fd, primary=exc)
+            if isinstance(exc, BlockingIOError):
                 raise MicBusyError("mic busy (held by another Hark process)") from None
-            except OSError:
-                os.close(fd)
-                raise
-            MicLease._holder = self.name
-            self._held = True
-            self._lock_fd = fd
-        return self
+            raise
 
     def __exit__(self, *args: object) -> None:
-        with MicLease._lock:
-            fd = self._lock_fd
-            self._lock_fd = None
-            if self._held and MicLease._holder == self.name:
-                MicLease._holder = None
-            self._held = False
+        primary = (
+            args[1] if len(args) > 1 and isinstance(args[1], BaseException) else None
+        )
+        with cancellation_cleanup(primary=primary):
+            with MicLease._lock:
+                fd = self._lock_fd
+                self._lock_fd = None
+                if self._held and MicLease._holder == self.name:
+                    MicLease._holder = None
+                self._held = False
             if fd is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
+                self._release_fd(fd, primary=primary)
+
+    @staticmethod
+    def _release_fd(fd: int, *, primary: BaseException | None) -> None:
+        """Release a detached fd; cleanup never replaces an existing error."""
+        cleanup_error: BaseException | None = None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except BaseException as exc:
+            cleanup_error = exc
+        try:
+            os.close(fd)
+        except BaseException as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+        if primary is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def _require_sd() -> None:
@@ -778,6 +1058,7 @@ def _still_discarding(
     return False
 
 
+@capture_attempt()
 def capture_utterance(
     *,
     sample_rate: int = 16000,
@@ -910,13 +1191,35 @@ def capture_utterance(
             pass
 
     try:
-        with sd.InputStream(
+        stream_owner = sd.InputStream(
             samplerate=sample_rate,
             channels=1,
             dtype="float32",
             blocksize=block,
             device=device,
-        ) as stream, _registered_input_stream(stream):
+        )
+        stream = stream_owner
+        fallback_exit: Callable[[], Any] | None = None
+        try:
+            start = getattr(stream_owner, "start", None)
+            if callable(start):
+                start()
+            else:
+                # Small test doubles and legacy backends may only expose the
+                # context protocol.  Real sounddevice streams use start/stop.
+                entered_stream = stream_owner.__enter__()
+                if entered_stream is not None:
+                    stream = entered_stream
+
+                def _legacy_exit() -> Any:
+                    return stream_owner.__exit__(None, None, None)
+
+                fallback_exit = _legacy_exit
+        except BaseException:
+            _request_stream_cancel(stream_owner)
+            raise
+
+        with _registered_input_stream(stream):
             open_mono = time.monotonic()
             # Phase 0: drop leading audio (overlap pre-arm / fixed discard window)
             if discard_leading_ms > 0 or audio_ok_after is not None:
@@ -1147,6 +1450,18 @@ def capture_utterance(
                     pcm = pcm16_mono_bytes(np.concatenate(chunks)) if chunks else b""
                     if should_stop(pcm, time.monotonic() - start):
                         break
+
+            # Publish normal teardown ownership before the registered stream is
+            # detached. A signal at this boundary sees either the active stream
+            # or this exact owner and upgrades it to cancellation; never neither.
+            normal_cleanup_owner = _reserve_stream_cleanup(
+                stream,
+                cancel=False,
+                fallback_exit=fallback_exit,
+            )
+
+        cleanup_worker = _start_stream_cleanup(normal_cleanup_owner)
+        _wait_stream_cleanup(cleanup_worker)
 
         if not chunks:
             raise TimeoutError(
