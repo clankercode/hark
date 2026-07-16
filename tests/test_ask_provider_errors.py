@@ -9,8 +9,13 @@ import pytest
 
 from hark import cli
 from hark.config import HarkConfig
+from hark.exitcodes import normalize_failure_exit
 from hark.providers.base import ProviderError
 from hark.speech import ListenResult, run_ask
+
+
+class _IntExit(int):
+    """Runtime int subclass must not widen the exact public-code contract."""
 
 
 def _initial_answer(monkeypatch) -> HarkConfig:
@@ -69,14 +74,14 @@ def test_run_ask_confirmation_provider_error_preserves_answer_and_tts(monkeypatc
     assert result == {
         "ok": False,
         "error": "confirmation provider failed",
-        "exit": 23,
+        "exit": 4,
         "text": "deploy the release",
         "tts": {"ok": True, "provider": "mock", "voice": "eve"},
     }
 
 
 def test_cmd_ask_serializes_confirmation_provider_error(monkeypatch, capsys):
-    cfg = _confirmation_provider_failure(monkeypatch, code=29)
+    cfg = _confirmation_provider_failure(monkeypatch, code=23)
     args = argparse.Namespace(
         text=["Deploy", "now?"],
         confirm=None,
@@ -88,11 +93,11 @@ def test_cmd_ask_serializes_confirmation_provider_error(monkeypatch, capsys):
 
     exit_code = cli.cmd_ask(args, cfg)
 
-    assert exit_code == 29
+    assert exit_code == 4
     assert json.loads(capsys.readouterr().out) == {
         "ok": False,
         "error": "confirmation provider failed",
-        "exit": 29,
+        "exit": 4,
         "text": "deploy the release",
         "tts": {"ok": True, "provider": "mock", "voice": "eve"},
         "for_event": "event-149",
@@ -114,7 +119,7 @@ def test_run_ask_readback_provider_error_uses_default_code(monkeypatch):
 
 
 def test_cmd_ask_serializes_readback_provider_error(monkeypatch, capsys):
-    cfg = _readback_provider_failure(monkeypatch, code=31)
+    cfg = _readback_provider_failure(monkeypatch, code=255)
     args = argparse.Namespace(
         text=["Deploy", "now?"],
         confirm=None,
@@ -126,11 +131,11 @@ def test_cmd_ask_serializes_readback_provider_error(monkeypatch, capsys):
 
     exit_code = cli.cmd_ask(args, cfg)
 
-    assert exit_code == 31
+    assert exit_code == 4
     assert json.loads(capsys.readouterr().out) == {
         "ok": False,
         "error": "readback provider failed",
-        "exit": 31,
+        "exit": 4,
         "text": "deploy the release",
         "tts": {"ok": True, "provider": "mock", "voice": "eve"},
         "for_event": "event-149-readback",
@@ -212,7 +217,7 @@ def test_cmd_ask_zero_provider_code_exits_failure(
     }
 
 
-@pytest.mark.parametrize("code", [-1, 256, "4", None, True])
+@pytest.mark.parametrize("code", [0, -1, 8, 23, 255, 256, "4", None, True, _IntExit(4)])
 def test_run_ask_normalizes_invalid_provider_failure_codes(monkeypatch, code):
     cfg = _confirmation_provider_failure(monkeypatch, code=code)
 
@@ -222,8 +227,8 @@ def test_run_ask_normalizes_invalid_provider_failure_codes(monkeypatch, code):
     assert result["exit"] == 4
 
 
-@pytest.mark.parametrize("code", [1, 4, 23, 255])
-def test_run_ask_preserves_valid_nonzero_provider_failure_codes(monkeypatch, code):
+@pytest.mark.parametrize("code", range(1, 8))
+def test_run_ask_preserves_canonical_provider_failure_codes(monkeypatch, code):
     cfg = _confirmation_provider_failure(monkeypatch, code=code)
 
     result = run_ask(cfg, "Deploy now?", risk_hint="R2")
@@ -232,7 +237,7 @@ def test_run_ask_preserves_valid_nonzero_provider_failure_codes(monkeypatch, cod
     assert result["exit"] == code
 
 
-@pytest.mark.parametrize("code", [0, -1, 256, "4", None, True])
+@pytest.mark.parametrize("code", [0, -1, 8, 23, 255, 256, "4", None, True, _IntExit(4)])
 def test_cmd_ask_normalizes_any_failed_result_exit(monkeypatch, capsys, code):
     monkeypatch.setattr(
         "hark.speech.run_ask",
@@ -248,7 +253,24 @@ def test_cmd_ask_normalizes_any_failed_result_exit(monkeypatch, capsys, code):
     assert json.loads(capsys.readouterr().out)["exit"] == 1
 
 
-@pytest.mark.parametrize("code", [0, -1, 256, "4", None, True])
+@pytest.mark.parametrize("code", range(1, 8))
+def test_cmd_ask_preserves_canonical_failed_result_exit(monkeypatch, capsys, code):
+    monkeypatch.setattr(
+        "hark.speech.run_ask",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "error": "canonical failure",
+            "exit": code,
+        },
+    )
+
+    exit_code = cli.cmd_ask(_ask_args("event-154-canonical"), HarkConfig())
+
+    assert exit_code == code
+    assert json.loads(capsys.readouterr().out)["exit"] == code
+
+
+@pytest.mark.parametrize("code", [0, -1, 8, 23, 255, 256, "4", None, True, _IntExit(4)])
 def test_main_normalizes_uncaught_provider_error_exit(monkeypatch, code):
     def fail_dispatch(*args, **kwargs):
         raise ProviderError("provider failed", code=code)  # type: ignore[arg-type]
@@ -257,3 +279,36 @@ def test_main_normalizes_uncaught_provider_error_exit(monkeypatch, code):
     monkeypatch.setattr(cli, "dispatch", fail_dispatch)
 
     assert cli.main(["doctor", "--json"]) == 4
+
+
+@pytest.mark.parametrize("code", range(1, 8))
+def test_normalize_failure_exit_preserves_canonical_failures(code):
+    assert normalize_failure_exit(code, fallback=4) == code
+
+
+@pytest.mark.parametrize("code", [0, -1, 8, 23, 255, 256, "4", None, True, _IntExit(4)])
+def test_normalize_failure_exit_rejects_noncanonical_codes(code):
+    assert normalize_failure_exit(code, fallback=4) == 4
+
+
+@pytest.mark.parametrize("fallback", [0, 8, True, _IntExit(4)])
+def test_normalize_failure_exit_rejects_noncanonical_fallback(fallback):
+    with pytest.raises(ValueError, match="canonical failure exit"):
+        normalize_failure_exit(4, fallback=fallback)  # type: ignore[arg-type]
+
+
+def test_cmd_ask_preserves_success_exit_zero(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hark.speech.run_ask",
+        lambda *args, **kwargs: {"ok": True, "text": "deploy", "exit": 0},
+    )
+
+    exit_code = cli.cmd_ask(_ask_args("event-154-success"), HarkConfig())
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "text": "deploy",
+        "exit": 0,
+        "for_event": "event-154-success",
+    }

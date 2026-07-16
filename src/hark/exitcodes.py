@@ -11,15 +11,14 @@ ABORT = 7  # stale / policy / user cancel
 
 
 def normalize_failure_exit(code: object, *, fallback: int = ERROR) -> int:
-    """Return a valid, nonzero process exit for a reported failure.
+    """Return a canonical Hark exit code for a reported failure.
 
-    Python accepts arbitrary objects at exception boundaries and the shell only
-    preserves integer exit statuses from 0 through 255.  Keep legitimate custom
-    failure codes, but never let a false/invalid value turn a failure into
-    success (or into platform-dependent truncation).
+    ``docs/SPEC.md`` defines the complete public range as ``0`` through ``7``.
+    Failures may use only the exact built-in integers ``1`` through ``7``;
+    everything else becomes the caller's contextual canonical fallback.
     """
-    if type(fallback) is not int or not 1 <= fallback <= 255:
-        raise ValueError("fallback must be an integer from 1 through 255")
-    if type(code) is int and 1 <= code <= 255:
+    if type(fallback) is not int or not 1 <= fallback <= ABORT:
+        raise ValueError("fallback must be a canonical failure exit from 1 through 7")
+    if type(code) is int and 1 <= code <= ABORT:
         return code
     return fallback
