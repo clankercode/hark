@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from hark.worker_process import (
     WorkerRecord,
     inspect_worker,
 )
+
+REAL_SPAWN_OWNED_POPEN = daemon._spawn_owned_popen
 
 
 def spawn_hark_worker(role: str, directory: Path) -> subprocess.Popen[bytes]:
@@ -104,6 +107,13 @@ class FakeWorker:
 @pytest.fixture
 def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(daemon, "state_dir", lambda: tmp_path)
+
+    def fake_owned_spawn(*args, _claim, **kwargs):
+        proc = daemon.subprocess.Popen(*args, **kwargs)
+        _claim(proc)
+        return proc
+
+    monkeypatch.setattr(daemon, "_spawn_owned_popen", fake_owned_spawn)
     monkeypatch.setattr(
         daemon,
         "capture_worker_identity",
@@ -290,6 +300,109 @@ def test_spawn_workers_rolls_back_then_preserves_base_exception(
     assert watch.returncode == -signal.SIGTERM
     assert watch.wait_calls == 1
     assert not (state / "mode-a.pids").exists()
+
+
+def test_real_child_is_preclaimed_before_initializer_keyboard_interrupt(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_hark = state / "hark"
+    fake_hark.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal\n"
+        "import time\n"
+        "signal.signal(signal.SIGTERM, lambda *_args: exit(0))\n"
+        "while True:\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    fake_hark.chmod(0o755)
+    monkeypatch.setenv("HARK_TEST_WORKER_EXECUTABLE", str(fake_hark))
+    monkeypatch.setattr(
+        daemon, "open_process_handle", worker_process.open_process_handle
+    )
+    monkeypatch.setattr(
+        daemon, "signal_process_handle", worker_process.signal_process_handle
+    )
+    monkeypatch.setattr(
+        daemon, "capture_worker_identity", worker_process.capture_worker_identity
+    )
+    monkeypatch.setattr(
+        daemon, "record_matches_lifetime", worker_process.record_matches_lifetime
+    )
+
+    claimed: list[subprocess.Popen] = []
+    interrupted: list[subprocess.Popen] = []
+    errpipe_fds: list[int] = []
+
+    def audited_spawn(*args, _claim, **kwargs):
+        def record_claim(proc: subprocess.Popen) -> None:
+            claimed.append(proc)
+            _claim(proc)
+
+        return REAL_SPAWN_OWNED_POPEN(*args, _claim=record_claim, **kwargs)
+
+    execute_child_code = subprocess.Popen._execute_child.__code__
+
+    def interrupt_post_pid(frame, event, _arg):
+        if frame.f_code is execute_child_code and event == "line":
+            proc = frame.f_locals["self"]
+            if getattr(proc, "pid", None) and not proc._child_created:
+                assert claimed == [proc]
+                interrupted.append(proc)
+                errpipe_fds.extend(
+                    [frame.f_locals["errpipe_read"], frame.f_locals["errpipe_write"]]
+                )
+                raise KeyboardInterrupt("after real child pid assignment")
+        return interrupt_post_pid
+
+    monkeypatch.setattr(daemon, "_spawn_owned_popen", audited_spawn)
+
+    try:
+        sys.settrace(interrupt_post_pid)
+        try:
+            with pytest.raises(
+                KeyboardInterrupt, match="after real child pid assignment"
+            ):
+                daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+        finally:
+            sys.settrace(None)
+
+        assert len(claimed) == 1
+        assert interrupted == claimed
+        assert claimed[0].poll() is not None
+        assert len(errpipe_fds) == 2
+        for descriptor in errpipe_fds:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+        assert not (state / "mode-a.pids").exists()
+    finally:
+        for proc in claimed:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=2)
+
+
+def test_owned_initializer_rejects_a_different_returned_object(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+):
+    claimed = FakeWorker(101)
+    different = FakeWorker(102)
+
+    def mismatched_spawn(*_args, _claim, **_kwargs):
+        _claim(claimed)
+        return different
+
+    monkeypatch.setattr(daemon, "_spawn_owned_popen", mismatched_spawn)
+
+    with pytest.raises(
+        daemon.WorkerSpawnError,
+        match="initializer did not return its preclaimed object",
+    ):
+        daemon.spawn_mode_a_workers(root=state, do_ambient=False)
+
+    assert claimed.returncode == -signal.SIGTERM
+    assert claimed.wait_calls == 1
+    assert different.wait_calls == 0
 
 
 def test_spawn_workers_reports_rollback_signal_failure(

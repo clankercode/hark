@@ -82,6 +82,24 @@ class WorkerSpawnError(OSError):
 _RETAINED_ROLLBACK_PIDFDS: dict[int, int] = {}
 
 
+class _PreclaimedPopen(subprocess.Popen):
+    """A Popen whose exact object is claimed before ``__init__`` can fork."""
+
+    def __new__(cls, *_args, _claim, **_kwargs):
+        instance = super().__new__(cls)
+        _claim(instance)
+        return instance
+
+    def __init__(self, *args, _claim, **kwargs) -> None:
+        # Python necessarily invokes this initializer on the exact object
+        # returned and preclaimed by __new__; it cannot substitute another.
+        super().__init__(*args, **kwargs)
+
+
+def _spawn_owned_popen(*args, _claim, **kwargs) -> subprocess.Popen[Any]:
+    return _PreclaimedPopen(*args, _claim=_claim, **kwargs)
+
+
 @dataclass
 class ProcessProbe:
     running: bool
@@ -577,47 +595,86 @@ def _spawn_mode_a_workers_locked(
     def _spawn(role: str, argv: list[str], log_name: str) -> None:
         nonlocal failed_role, pidfile_touched
         failed_role = role
-        # Popen duplicates the descriptor into the child, so the supervisor's
-        # copy can and must close immediately after the spawn attempt.
-        with open(log_dir / log_name, "a", encoding="utf-8") as log:
-            proc = subprocess.Popen(
-                argv,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env={
-                    **os.environ,
-                    WORKER_PIDFILE_ENV: str(pid_path.resolve(strict=False)),
-                    WORKER_ROLE_ENV: role,
-                },
-            )
-            if not proc.pid:
-                raise OSError("worker started without a process ID")
-            # Retain ownership before even closing the parent log stream, since
-            # context-manager cleanup is itself allowed to fail.
+
+        claimed: list[subprocess.Popen[Any]] = []
+
+        def claim(proc: subprocess.Popen[Any]) -> None:
+            if claimed:
+                raise RuntimeError("worker initializer attempted multiple claims")
+            claimed.append(proc)
             owned.append((role, proc))
+
+        def establish_authority(proc: subprocess.Popen[Any]) -> WorkerRecord:
+            pid = getattr(proc, "pid", None)
+            if not isinstance(pid, int) or pid <= 0:
+                raise OSError("worker started without a process ID")
             try:
-                owned_pidfds[proc.pid] = open_process_handle(proc.pid)
+                owned_pidfds[pid] = open_process_handle(pid)
             except BaseException:
                 provisional = capture_worker_identity(
-                    proc.pid,
+                    pid,
                     role=role,
                     expected_parent_pid=os.getpid(),
                     pidfile=pid_path,
                 )
                 if provisional is not None:
-                    owned_records[proc.pid] = provisional
+                    owned_records[pid] = provisional
+                raise
+            record = capture_worker_identity(
+                pid,
+                role=role,
+                expected_parent_pid=os.getpid(),
+                pidfile=pid_path,
+            )
+            if record is None:
+                raise OSError(f"could not capture {role} worker process identity")
+            owned_records[pid] = record
+            return record
+
+        # Popen duplicates the descriptor into the child, so the supervisor's
+        # copy can and must close immediately after the spawn attempt.
+        with open(log_dir / log_name, "a", encoding="utf-8") as log:
+            try:
+                proc = _spawn_owned_popen(
+                    argv,
+                    _claim=claim,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    env={
+                        **os.environ,
+                        WORKER_PIDFILE_ENV: str(pid_path.resolve(strict=False)),
+                        WORKER_ROLE_ENV: role,
+                    },
+                )
+                if len(claimed) != 1 or proc is not claimed[0]:
+                    raise RuntimeError(
+                        "worker initializer did not return its preclaimed object"
+                    )
+                record = establish_authority(proc)
+            except BaseException as spawn_exc:
+                if claimed:
+                    proc = claimed[0]
+                    pid = getattr(proc, "pid", None)
+                    if isinstance(pid, int) and pid > 0:
+                        # Popen stores its positive child PID before flipping
+                        # the private flag used by poll/wait. An interruption
+                        # there still names our exact preclaimed child.
+                        if not getattr(proc, "_child_created", False):
+                            proc._child_created = True
+                        if pid not in owned_pidfds and pid not in owned_records:
+                            try:
+                                establish_authority(proc)
+                            except BaseException as authority_exc:
+                                spawn_exc.add_note(
+                                    "failed to attach immutable authority after "
+                                    f"initializer error: {authority_exc}"
+                                )
+                    else:
+                        owned.remove((role, proc))
                 raise
         if proc.poll() is not None:
             raise OSError(f"worker exited immediately with status {proc.returncode}")
-        record = capture_worker_identity(
-            proc.pid,
-            role=role,
-            expected_parent_pid=os.getpid(),
-            pidfile=pid_path,
-        )
-        if record is None:
-            raise OSError(f"could not capture {role} worker process identity")
         # The intended role is provisional until the exact captured lifetime
         # execs a provenance-scoped Hark worker command.
         owned_records[proc.pid] = record
