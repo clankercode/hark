@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-16T00:37:18Z"
+depends_on: []
+estimate_hours: 1
+id: B149
+priority: medium
+status: pending
+tags: []
+title: Confirmation-turn provider failures escape hark ask structured result
+updated_at: "2026-07-16T00:37:18Z"
+---
+## Evidence
+
+In src/hark/speak_then_listen/ask.py, the initial speak_and_listen call converts ProviderError into the normal {ok:false,error,exit,tts} result, but the confirmation run_listen call catches only TimeoutError. A fresh-XDG deterministic probe made the initial answer succeed and the confirmation listen raise ProviderError("confirmation provider failed"); run_ask propagated ProviderError to its caller instead of returning JSON.
+
+## Expected
+
+All provider failures in hark ask, including the confirmation turn, return the same stable structured failure shape with provider exit code, original answer text, and TTS metadata where available.
+
+## Actual
+
+Confirmation-turn ProviderError escapes the run_ask API and can crash cmd_ask instead of producing the advertised JSON/exit contract.
+
+## Acceptance criteria
+
+- Catch ProviderError around confirmation run_listen and return a stable non-success result.
+- Preserve the original answer text and TTS metadata.
+- Use the provider error code consistently with the initial answer-window path.
+- Add direct run_ask and CLI regressions.
+- Keep confirmation timeout and cancellation behavior unchanged.
