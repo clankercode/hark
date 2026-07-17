@@ -606,7 +606,7 @@ def _library_preclaim_race_child() -> str:
         release = threading.Event()
         worker_started = threading.Event()
         real_spawn = isolation.SynthProcessLifecycle.spawn
-        real_popen_init = isolation.subprocess.Popen.__init__
+        real_popen_init = isolation._SYNTH_POPEN_INIT
 
         def blocked_spawn(self, process, command, **kwargs):
             print("PRECLAIM_ENTER", flush=True)
@@ -622,7 +622,7 @@ def _library_preclaim_race_child() -> str:
 
         speech.UsageStore = Store
         isolation.SynthProcessLifecycle.spawn = blocked_spawn
-        isolation.subprocess.Popen.__init__ = visible_popen
+        isolation._SYNTH_POPEN_INIT = visible_popen
         try:
             speech.run_tts(HarkConfig(), "race", play=False, use_cache=False)
         except speech.TtsSynthesisInterrupted:
@@ -707,7 +707,7 @@ def _post_real_popen_gap_child() -> str:
         import hark.tts_isolation as isolation
         from hark.config import HarkConfig
 
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
         def init_then_stall(self, *args, **kwargs):
             real_init(self, *args, **kwargs)
             command = args[0] if args else kwargs.get("args", ())
@@ -719,7 +719,7 @@ def _post_real_popen_gap_child() -> str:
             def record_tts(self, **kwargs):
                 return None
 
-        isolation.subprocess.Popen.__init__ = init_then_stall
+        isolation._SYNTH_POPEN_INIT = init_then_stall
         speech.UsageStore = Store
         def worker_command():
             command = isolation.synth_worker_command()
@@ -749,7 +749,7 @@ def _pre_real_popen_gap_child(release_file: Path) -> str:
         import hark.tts_isolation as isolation
         from hark.config import HarkConfig
 
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
         def stall_before_init(self, *args, **kwargs):
             command = args[0] if args else kwargs.get("args", ())
             if "hark.tts_worker" in command:
@@ -762,7 +762,7 @@ def _pre_real_popen_gap_child(release_file: Path) -> str:
             def record_tts(self, **kwargs):
                 return None
 
-        isolation.subprocess.Popen.__init__ = stall_before_init
+        isolation._SYNTH_POPEN_INIT = stall_before_init
         speech.UsageStore = Store
         def worker_command():
             command = isolation.synth_worker_command()
@@ -791,7 +791,7 @@ def _fork_without_pid_publication_child() -> str:
         import hark.tts_isolation as isolation
         from hark.config import HarkConfig
 
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
         hidden_processes = []
         def fork_then_hide_pid(self, *args, **kwargs):
             command = args[0] if args else kwargs.get("args", ())
@@ -807,7 +807,7 @@ def _fork_without_pid_publication_child() -> str:
             def record_tts(self, **kwargs):
                 return None
 
-        isolation.subprocess.Popen.__init__ = fork_then_hide_pid
+        isolation._SYNTH_POPEN_INIT = fork_then_hide_pid
         speech.UsageStore = Store
         def worker_command():
             command = isolation.synth_worker_command()
@@ -836,7 +836,7 @@ def _deceptive_worker_argv_gap_child(release_file: Path) -> str:
         import hark.tts_isolation as isolation
 
         lifecycle = isolation.SynthProcessLifecycle()
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
         release_file = {str(release_file)!r}
 
         def fork_then_hide_pid(self, *args, **kwargs):
@@ -858,7 +858,7 @@ def _deceptive_worker_argv_gap_child(release_file: Path) -> str:
             if safe:
                 os._exit(130)
 
-        isolation.subprocess.Popen.__init__ = fork_then_hide_pid
+        isolation._SYNTH_POPEN_INIT = fork_then_hide_pid
         signal.signal(signal.SIGINT, handle_sigint)
         process = subprocess.Popen.__new__(subprocess.Popen)
         try:
@@ -869,7 +869,7 @@ def _deceptive_worker_argv_gap_child(release_file: Path) -> str:
         except RuntimeError as exc:
             assert str(exc) == "released deceptive child"
         finally:
-            isolation.subprocess.Popen.__init__ = real_init
+            isolation._SYNTH_POPEN_INIT = real_init
         print("DECEPTIVE_CLEAN", flush=True)
         """
     )
@@ -894,7 +894,7 @@ def _canonical_pre_main_unknown_pid_subreaper_child(
 
         hidden_file = Path({str(hidden_file)!r})
         publish_release = Path({str(publish_release)!r})
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
 
         def fork_then_publish_late(self, *args, **kwargs):
             command = args[0] if args else kwargs.get("args", ())
@@ -914,7 +914,7 @@ def _canonical_pre_main_unknown_pid_subreaper_child(
             def record_tts(self, **kwargs):
                 return None
 
-        isolation.subprocess.Popen.__init__ = fork_then_publish_late
+        isolation._SYNTH_POPEN_INIT = fork_then_publish_late
         speech.UsageStore = Store
         cfg = HarkConfig()
         cli.load_config = lambda *args, **kwargs: cfg
@@ -1425,6 +1425,7 @@ def test_sigint_during_waiting_shutdown_retains_repeated_exit_handler(tmp_path):
     assert "concurrent.futures" not in stderr
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux pidfd regression")
 def test_gil_holding_provider_has_os_independent_repeated_exit(tmp_path):
     proc = subprocess.Popen(
         [sys.executable, "-c", _gil_holding_tts_child()],
@@ -1433,10 +1434,12 @@ def test_gil_holding_provider_has_os_independent_repeated_exit(tmp_path):
         text=True,
         env=_isolated_env(tmp_path),
     )
+    provider_pidfd = -1
     try:
         ready, provider_pid_text = _read_ready(proc).split()
         assert ready == "GIL_READY"
         provider_pid = int(provider_pid_text)
+        provider_pidfd = _linux_pidfd_open(provider_pid)
 
         for _ in range(3):
             os.kill(proc.pid, signal.SIGINT)
@@ -1449,8 +1452,12 @@ def test_gil_holding_provider_has_os_independent_repeated_exit(tmp_path):
     assert proc.returncode == 130
     assert stdout == ""
     assert stderr == ""
-    with pytest.raises(ProcessLookupError):
-        os.kill(provider_pid, 0)
+    assert provider_pidfd >= 0
+    try:
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(provider_pidfd, 0)
+    finally:
+        os.close(provider_pidfd)
 
 
 @pytest.mark.skipif(
@@ -1528,10 +1535,12 @@ def test_repeated_sigint_kills_worker_hung_before_python_main_and_closes_pipes(
         text=True,
         env=_isolated_env(tmp_path),
     )
+    worker_pidfd = -1
     try:
         markers = _read_markers(proc, {"PRE_MAIN", "PIDFD_PUBLISHED"})
         worker_pid = markers["PRE_MAIN"]
         assert markers["PIDFD_PUBLISHED"] == worker_pid
+        worker_pidfd = _linux_pidfd_open(worker_pid)
 
         os.kill(proc.pid, signal.SIGINT)
         time.sleep(0.15)
@@ -1546,8 +1555,12 @@ def test_repeated_sigint_kills_worker_hung_before_python_main_and_closes_pipes(
     assert proc.returncode == 130
     assert stdout == ""
     assert stderr == ""
-    with pytest.raises(ProcessLookupError):
-        os.kill(worker_pid, 0)
+    assert worker_pidfd >= 0
+    try:
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(worker_pidfd, 0)
+    finally:
+        os.close(worker_pidfd)
 
 
 @pytest.mark.skipif(not hasattr(os, "pidfd_open"), reason="Linux pidfd regression")
@@ -1563,10 +1576,12 @@ def test_repeated_sigint_kills_unreaped_child_in_popen_to_pidfd_gap(tmp_path):
         text=True,
         env=_isolated_env(tmp_path),
     )
+    worker_pidfd = -1
     try:
         markers = _read_markers(proc, {"PRE_MAIN", "PIDFD_GAP"})
         worker_pid = markers["PRE_MAIN"]
         assert markers["PIDFD_GAP"] == worker_pid
+        worker_pidfd = _linux_pidfd_open(worker_pid)
 
         os.kill(proc.pid, signal.SIGINT)
         time.sleep(0.15)
@@ -1580,8 +1595,12 @@ def test_repeated_sigint_kills_unreaped_child_in_popen_to_pidfd_gap(tmp_path):
     assert proc.returncode == 130
     assert stdout == ""
     assert stderr == ""
-    with pytest.raises(ProcessLookupError):
-        os.kill(worker_pid, 0)
+    assert worker_pidfd >= 0
+    try:
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(worker_pidfd, 0)
+    finally:
+        os.close(worker_pidfd)
 
 
 @pytest.mark.skipif(not hasattr(os, "pidfd_open"), reason="Linux pidfd regression")
@@ -1599,10 +1618,12 @@ def test_process_group_sigint_during_startup_has_no_worker_traceback(tmp_path):
         env=_isolated_env(tmp_path),
         start_new_session=True,
     )
+    worker_pidfd = -1
     try:
         markers = _read_markers(proc, {"PRE_MAIN", "PIDFD_PUBLISHED"})
         worker_pid = markers["PRE_MAIN"]
         assert markers["PIDFD_PUBLISHED"] == worker_pid
+        worker_pidfd = _linux_pidfd_open(worker_pid)
 
         os.killpg(proc.pid, signal.SIGINT)
         release_path.touch()
@@ -1615,8 +1636,12 @@ def test_process_group_sigint_during_startup_has_no_worker_traceback(tmp_path):
     assert proc.returncode == 130
     assert stdout == ""
     assert stderr == ""
-    with pytest.raises(ProcessLookupError):
-        os.kill(worker_pid, 0)
+    assert worker_pidfd >= 0
+    try:
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(worker_pidfd, 0)
+    finally:
+        os.close(worker_pidfd)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper regression")
@@ -1632,6 +1657,7 @@ def test_repeated_sigint_reaps_setsid_double_fork_provider_tree_and_pipes(tmp_pa
         text=True,
         env=_isolated_env(tmp_path),
     )
+    process_pidfds: list[int] = []
     try:
         markers = _read_markers(
             proc,
@@ -1640,6 +1666,10 @@ def test_repeated_sigint_reaps_setsid_double_fork_provider_tree_and_pipes(tmp_pa
         supervisor_pid = markers["PIDFD_PUBLISHED"]
         payload_pid = markers["PROVIDER_HUNG"]
         detached_pid = markers["DETACHED"]
+        process_pidfds = [
+            _linux_pidfd_open(pid)
+            for pid in (supervisor_pid, payload_pid, detached_pid)
+        ]
 
         os.kill(proc.pid, signal.SIGINT)
         time.sleep(0.15)
@@ -1653,9 +1683,14 @@ def test_repeated_sigint_reaps_setsid_double_fork_provider_tree_and_pipes(tmp_pa
     assert proc.returncode == 130
     assert stdout == ""
     assert stderr == ""
-    for pid in (supervisor_pid, payload_pid, detached_pid):
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+    assert len(process_pidfds) == 3
+    try:
+        for pidfd in process_pidfds:
+            with pytest.raises(ProcessLookupError):
+                _linux_pidfd_send_signal(pidfd, 0)
+    finally:
+        for pidfd in process_pidfds:
+            os.close(pidfd)
 
 
 def test_cli_sigint_before_pool_handler_install_is_typed_and_traceback_free(tmp_path):
@@ -1952,6 +1987,45 @@ def test_cli_handler_install_post_effect_raise_rolls_back_actual_handler(tmp_pat
     assert proc.returncode == 0
     assert proc.stdout == "CLI_INSTALL_ROLLED_BACK\n"
     assert proc.stderr == ""
+
+
+def test_cli_scope_restores_previous_sigint_handler_on_normal_exit():
+    import hark.tts_interrupt_policy as policy
+
+    controller = policy._CliSigintController()
+    previous = signal.getsignal(signal.SIGINT)
+
+    try:
+        controller.activate()
+        assert signal.getsignal(signal.SIGINT) is controller._handler
+        controller.deactivate()
+
+        assert controller._active_depth == 0
+        assert controller._installed is False
+        assert signal.getsignal(signal.SIGINT) is previous
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def test_cli_scope_preserves_live_pool_handler_on_outer_exit():
+    import hark.tts_interrupt_policy as policy
+
+    controller = policy._CliSigintController()
+    previous = signal.getsignal(signal.SIGINT)
+
+    def pool_handler(signum, frame):
+        del signum, frame
+
+    try:
+        controller.activate()
+        signal.signal(signal.SIGINT, pool_handler)
+        controller.deactivate()
+
+        assert controller._active_depth == 0
+        assert controller._installed is False
+        assert signal.getsignal(signal.SIGINT) is pool_handler
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def test_cli_outer_reactivation_repairs_externally_reset_sigint_handler(tmp_path):
@@ -2707,6 +2781,50 @@ def test_saturated_stdout_stderr_cannot_block_repeated_interrupt_cleanup(tmp_pat
         os.close(supervisor_pidfd)
 
 
+def test_output_relay_appends_to_existing_redirected_file(tmp_path):
+    import hark.tts_worker as worker
+
+    output_path = tmp_path / "provider-output.log"
+    with output_path.open("w+b") as inherited_output:
+        inherited_output.write(b"parent-prefix\n")
+        inherited_output.flush()
+        relay_fd = worker._open_output_relay_fd(inherited_output.fileno())
+        try:
+            assert relay_fd >= 0
+            worker._write_output_nowait(relay_fd, b"provider-diagnostic\n")
+        finally:
+            if relay_fd >= 0:
+                os.close(relay_fd)
+
+        inherited_output.seek(0)
+        assert inherited_output.read() == (
+            b"parent-prefix\nprovider-diagnostic\n"
+        )
+
+
+def test_output_relay_uses_private_nonblocking_open_description():
+    import hark.tts_worker as worker
+
+    read_fd, inherited_write_fd = os.pipe()
+    relay_fd = -1
+    try:
+        relay_fd = worker._open_output_relay_fd(inherited_write_fd)
+        assert relay_fd >= 0
+        assert relay_fd != inherited_write_fd
+        assert os.get_blocking(inherited_write_fd) is True
+        assert os.get_blocking(relay_fd) is False
+
+        worker._write_output_nowait(relay_fd, b"diagnostic")
+
+        assert os.get_blocking(inherited_write_fd) is True
+        assert os.read(read_fd, len(b"diagnostic")) == b"diagnostic"
+    finally:
+        if relay_fd >= 0:
+            os.close(relay_fd)
+        os.close(inherited_write_fd)
+        os.close(read_fd)
+
+
 @pytest.mark.parametrize("failure_effect", ["pre", "post"])
 def test_output_relay_restores_blocking_after_transition_failure(
     monkeypatch,
@@ -3019,9 +3137,10 @@ def test_supervisor_relinquishes_adopted_result_fd_before_forward_failure(
     read_fd, write_fd = os.pipe()
     reused_fd = None
 
-    def close_reuse_then_raise(payload_result, forwarding_fd):
+    def close_reuse_then_raise(payload_result, forwarding_owner):
         nonlocal reused_fd
-        os.close(forwarding_fd)
+        forwarding_fd = forwarding_owner.fd
+        forwarding_owner.close_if_owned()
         reused_fd = os.open(os.devnull, os.O_WRONLY)
         assert reused_fd == forwarding_fd
         raise MemoryError("post-adoption forward failure")
@@ -3072,11 +3191,11 @@ def test_result_fd_guard_closes_original_once_on_pre_adoption_baseexception(
     real_close = worker._RESULT_CLOSE
     close_calls: list[int] = []
 
-    def tracking_close(fd):
+    def tracking_close(fd, state):
         close_calls.append(fd)
-        real_close(fd)
+        real_close(fd, state)
 
-    def fail_fdopen(fd, *args, **kwargs):
+    def fail_fdopen(fd, state, *args, **kwargs):
         raise MemoryError("pre-adoption primary")
 
     monkeypatch.setattr(worker, "_RESULT_CLOSE", tracking_close)
@@ -3107,13 +3226,14 @@ def test_result_fd_guard_disarms_after_fdopen_close_reuse_failure(monkeypatch):
     real_fdopen = worker._RESULT_FDOPEN
     close_calls: list[int] = []
 
-    def adopt_close_reuse_then_raise(fd, *args, **kwargs):
-        adopted = real_fdopen(fd, *args, **kwargs)
+    def adopt_close_reuse_then_raise(fd, state, *args, **kwargs):
+        adopted = real_fdopen(fd, state, *args, **kwargs)
         adopted.close()
         os.dup2(source_fd, fd)
         raise MemoryError("post-adoption primary")
 
-    def tracking_close(fd):
+    def tracking_close(fd, state):
+        del state
         close_calls.append(fd)
         os.close(fd)
 
@@ -3153,10 +3273,11 @@ def test_result_fd_guard_disarms_before_adopted_context_can_reuse_fd(monkeypatch
         def __exit__(self, *args):
             return False
 
-    def return_adopted_context(fd, *args, **kwargs):
-        return PostAdoptionFailure(real_fdopen(fd, *args, **kwargs))
+    def return_adopted_context(fd, state, *args, **kwargs):
+        return PostAdoptionFailure(real_fdopen(fd, state, *args, **kwargs))
 
-    def tracking_close(fd):
+    def tracking_close(fd, state):
+        del state
         close_calls.append(fd)
         os.close(fd)
 
@@ -3190,8 +3311,9 @@ def test_result_fd_guard_close_reuse_failure_preserves_pre_adoption_primary(
         def flush(self):
             raise payload_primary
 
-    def close_reuse_then_raise(fd):
+    def close_reuse_then_raise(fd, state):
         nonlocal close_calls
+        state.effect_started = True
         close_calls += 1
         os.close(fd)
         os.dup2(source_fd, fd)
@@ -3551,15 +3673,15 @@ def test_pipe_write_close_post_effect_failure_does_not_close_reused_fd(monkeypat
     real_close = isolation._PIPE_CLOSE
     injected = False
 
-    def close_reuse_then_raise(fd):
+    def close_reuse_then_raise(fd, state):
         nonlocal injected, reused_fd
         if not injected:
             injected = True
             reused_fd = fd
-            real_close(fd)
+            real_close(fd, state)
             os.dup2(source_fd, fd)
             raise MemoryError("pipe close post-effect primary")
-        real_close(fd)
+        real_close(fd, state)
 
     def worker_command():
         command = isolation.synth_worker_command()
@@ -3601,9 +3723,9 @@ def test_pipe_fdopen_post_adoption_failure_does_not_close_reused_fd(monkeypatch)
     reused_fd = None
     real_fdopen = isolation._PIPE_FDOPEN
 
-    def adopt_close_reuse_then_raise(fd, *args, **kwargs):
+    def adopt_close_reuse_then_raise(fd, state, *args, **kwargs):
         nonlocal reused_fd
-        adopted = real_fdopen(fd, *args, **kwargs)
+        adopted = real_fdopen(fd, state, *args, **kwargs)
         adopted.close()
         os.dup2(source_fd, fd)
         reused_fd = fd
@@ -3659,19 +3781,19 @@ def test_pipe_transfer_baseexception_ownership_matrix(
     real_close = isolation._PIPE_CLOSE
     real_fdopen = isolation._PIPE_FDOPEN
 
-    def fail_close(fd):
+    def fail_close(fd, state):
         nonlocal transferred_fd
         transferred_fd = fd
         if phase == "post-reuse":
-            real_close(fd)
+            real_close(fd, state)
             os.dup2(source_fd, fd)
         raise primary
 
-    def fail_fdopen(fd, *args, **kwargs):
+    def fail_fdopen(fd, state, *args, **kwargs):
         nonlocal transferred_fd
         transferred_fd = fd
         if phase == "post-reuse":
-            adopted = real_fdopen(fd, *args, **kwargs)
+            adopted = real_fdopen(fd, state, *args, **kwargs)
             adopted.close()
             os.dup2(source_fd, fd)
         raise primary
@@ -3723,7 +3845,7 @@ def test_pidfd_open_failure_reaps_worker_and_preserves_primary(monkeypatch):
     from hark.tts_isolation import SynthWorkerError
 
     spawned = []
-    real_init = isolation.subprocess.Popen.__init__
+    real_init = isolation._SYNTH_POPEN_INIT
 
     def capture_init(process, *args, **kwargs):
         real_init(process, *args, **kwargs)
@@ -3746,7 +3868,7 @@ def test_pidfd_open_failure_reaps_worker_and_preserves_primary(monkeypatch):
         "pidfd_open",
         lambda pid, flags=0: (_ for _ in ()).throw(OSError(errno.EIO, "boom")),
     )
-    monkeypatch.setattr(isolation.subprocess.Popen, "__init__", capture_init)
+    monkeypatch.setattr(isolation, "_SYNTH_POPEN_INIT", capture_init)
 
     try:
         with pytest.raises(SynthWorkerError, match="could not claim"):
@@ -3768,7 +3890,7 @@ def test_worker_exit_before_pidfd_open_fails_closed_without_foreign_kill(monkeyp
 
     real_pidfd_open = isolation.os.pidfd_open
     spawned = []
-    real_init = isolation.subprocess.Popen.__init__
+    real_init = isolation._SYNTH_POPEN_INIT
 
     def capture_init(process, *args, **kwargs):
         real_init(process, *args, **kwargs)
@@ -3787,7 +3909,7 @@ def test_worker_exit_before_pidfd_open_fails_closed_without_foreign_kill(monkeyp
         command_factory=lambda: [sys.executable, "-c", "pass"],
     )
     monkeypatch.setattr(isolation.os, "pidfd_open", reap_before_open)
-    monkeypatch.setattr(isolation.subprocess.Popen, "__init__", capture_init)
+    monkeypatch.setattr(isolation, "_SYNTH_POPEN_INIT", capture_init)
 
     try:
         with pytest.raises(SynthWorkerError, match="could not claim"):
@@ -3811,7 +3933,7 @@ def test_pidfd_publication_failure_closes_fd_and_unregisters_worker(monkeypatch,
     opened = []
     spawned = []
     real_open = isolation.os.pidfd_open
-    real_init = isolation.subprocess.Popen.__init__
+    real_init = isolation._SYNTH_POPEN_INIT
 
     def visible_open(pid, flags=0):
         fd = real_open(pid, flags)
@@ -3830,7 +3952,7 @@ def test_pidfd_publication_failure_closes_fd_and_unregisters_worker(monkeypatch,
         return False
 
     monkeypatch.setattr(isolation.os, "pidfd_open", visible_open)
-    monkeypatch.setattr(isolation.subprocess.Popen, "__init__", capture_init)
+    monkeypatch.setattr(isolation, "_SYNTH_POPEN_INIT", capture_init)
     monkeypatch.setattr(owner, "publish_synth_process_pidfd", fail_publish)
     transport = SubprocessSynthTransport(
         owner,
@@ -4678,8 +4800,8 @@ def test_popen_entry_without_pid_retains_uncertain_child_authority(monkeypatch):
     lifecycle = isolation.SynthProcessLifecycle()
     process = subprocess.Popen.__new__(subprocess.Popen)
     monkeypatch.setattr(
-        isolation.subprocess.Popen,
-        "__init__",
+        isolation,
+        "_SYNTH_POPEN_INIT",
         lambda self, *args, **kwargs: None,
     )
 
@@ -4780,7 +4902,7 @@ def test_spawn_return_failure_reaps_preclaimed_child_and_preserves_primary(tmp_p
             def record_tts(self, **kwargs):
                 return None
 
-        real_init = isolation.subprocess.Popen.__init__
+        real_init = isolation._SYNTH_POPEN_INIT
         spawned = {}
         def init_then_raise(self, *args, **kwargs):
             real_init(self, *args, **kwargs)
@@ -4794,13 +4916,13 @@ def test_spawn_return_failure_reaps_preclaimed_child_and_preserves_primary(tmp_p
             "hark.tts_worker",
             "--test-hang",
         ]
-        isolation.subprocess.Popen.__init__ = init_then_raise
+        isolation._SYNTH_POPEN_INIT = init_then_raise
         try:
             speech.run_tts(HarkConfig(), "hello", play=False, use_cache=False)
         except MemoryError as exc:
             print(f"PRIMARY {exc}", flush=True)
         finally:
-            isolation.subprocess.Popen.__init__ = real_init
+            isolation._SYNTH_POPEN_INIT = real_init
 
         pid = spawned["pid"]
         try:
@@ -5215,7 +5337,7 @@ def test_true_portable_host_rejects_isolation_before_payload_spawn(
         raise AssertionError("payload Popen must not be entered without tree authority")
 
     monkeypatch.setattr(worker.sys, "platform", platform)
-    monkeypatch.setattr(worker.subprocess, "Popen", unexpected_popen)
+    monkeypatch.setattr(worker, "_PAYLOAD_POPEN_INIT", unexpected_popen)
 
     with pytest.raises(RuntimeError, match="exact descendant cleanup authority"):
         worker._supervise_payload([], subreaper=False)
@@ -5234,7 +5356,7 @@ def test_linux_without_subreaper_rejects_isolation_before_payload_spawn(monkeypa
         raise AssertionError("payload Popen must not precede subreaper authority")
 
     monkeypatch.setattr(worker.sys, "platform", "linux")
-    monkeypatch.setattr(worker.subprocess, "Popen", unexpected_popen)
+    monkeypatch.setattr(worker, "_PAYLOAD_POPEN_INIT", unexpected_popen)
 
     with pytest.raises(RuntimeError, match="exact descendant cleanup authority"):
         worker._supervise_payload([], subreaper=False)
@@ -5260,7 +5382,9 @@ def test_persistent_subreaper_enumeration_failure_is_bounded_and_conservative(
     monkeypatch.setattr(worker, "_linux_direct_children", child_once_then_fail)
     started = time.monotonic()
     try:
-        assert worker._cleanup_process_tree(payload, subreaper=True) is False
+        # The exact unreaped payload remains signal-safe even after procfs
+        # disappears. ECHILD then proves that this direct-only tree is gone.
+        assert worker._cleanup_process_tree(payload, subreaper=True) is True
         assert time.monotonic() - started < 1.0
         with pytest.raises(ProcessLookupError):
             os.kill(payload.pid, 0)
@@ -5353,8 +5477,8 @@ def test_authority_acquisition_failures_share_one_pre_supervisor_contract(
         lambda *a, **k: pytest.fail("failed authority entered supervision"),
     )
     monkeypatch.setattr(
-        worker.subprocess,
-        "Popen",
+        worker,
+        "_PAYLOAD_POPEN_INIT",
         lambda *a, **k: pytest.fail("failed authority spawned a payload"),
     )
 
@@ -5394,7 +5518,9 @@ def test_successful_authority_acquisition_enters_supervisor_once(monkeypatch):
     monkeypatch.setattr(
         worker,
         "_supervise_payload",
-        lambda args, *, subreaper: supervisor_calls.append((args, subreaper)) or 23,
+        lambda args, *, subreaper, result_handoff=None: (
+            supervisor_calls.append((args, subreaper)) or 23
+        ),
     )
 
     assert worker.main(["--test-success"]) == 23
@@ -5424,14 +5550,14 @@ def test_pipe_transfer_post_return_trace_never_owns_reused_fd(
     real_close = isolation._PIPE_CLOSE
     real_fdopen = isolation._PIPE_FDOPEN
 
-    def close_then_return(fd):
+    def close_then_return(fd, state):
         nonlocal effect_returned
-        real_close(fd)
+        real_close(fd, state)
         effect_returned = True
 
-    def adopt_then_return(fd, *args, **kwargs):
+    def adopt_then_return(fd, state, *args, **kwargs):
         nonlocal adopted, effect_returned
-        adopted = real_fdopen(fd, *args, **kwargs)
+        adopted = real_fdopen(fd, state, *args, **kwargs)
         effect_returned = True
         return adopted
 
@@ -5489,6 +5615,394 @@ def test_pipe_transfer_post_return_trace_never_owns_reused_fd(
 
 
 @pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize("transfer", ["close", "fdopen", "raw-close"])
+def test_pipe_transfer_post_effect_never_reclaims_same_ofd_alias(
+    monkeypatch,
+    failure_type,
+    transfer,
+):
+    import hark.tts_isolation as isolation
+
+    read_fd, owned_fd = os.pipe()
+    same_ofd_alias = os.dup(owned_fd)
+    guard = isolation._RawPipeFdGuard(owned_fd)
+    primary = failure_type(f"{transfer} same-ofd post-effect primary")
+    real_close = isolation._PIPE_CLOSE
+    real_fdopen = isolation._PIPE_FDOPEN
+    real_raw_close = isolation._PIPE_RAW_CLOSE
+
+    def close_reuse_then_raise(fd, state):
+        real_close(fd, state)
+        os.dup2(same_ofd_alias, fd)
+        raise primary
+
+    def fdopen_reuse_then_raise(fd, state, *args, **kwargs):
+        adopted = real_fdopen(fd, state, *args, **kwargs)
+        adopted.close()
+        os.dup2(same_ofd_alias, fd)
+        raise primary
+
+    def raw_close_reuse_then_raise(fd, state):
+        real_raw_close(fd, state)
+        os.dup2(same_ofd_alias, fd)
+        raise primary
+
+    seam, replacement = {
+        "close": ("_PIPE_CLOSE", close_reuse_then_raise),
+        "fdopen": ("_PIPE_FDOPEN", fdopen_reuse_then_raise),
+        "raw-close": ("_PIPE_RAW_CLOSE", raw_close_reuse_then_raise),
+    }[transfer]
+    monkeypatch.setattr(isolation, seam, replacement)
+
+    try:
+        with pytest.raises(failure_type) as raised:
+            if transfer == "close":
+                guard.close()
+            elif transfer == "fdopen":
+                guard.adopt("wb", closefd=True)
+            else:
+                guard.close_if_owned()
+        assert raised.value is primary
+        assert guard.fd == -1
+
+        # The replacement has the same stat/resource identity as the original
+        # descriptor. Explicit effect state, not identity inference, must keep
+        # the guard disarmed and preserve this foreign alias.
+        guard.close_if_owned()
+        reused_identity = os.fstat(owned_fd)
+        alias_identity = os.fstat(same_ofd_alias)
+        assert (
+            reused_identity.st_dev,
+            reused_identity.st_ino,
+            reused_identity.st_mode,
+            reused_identity.st_rdev,
+        ) == (
+            alias_identity.st_dev,
+            alias_identity.st_ino,
+            alias_identity.st_mode,
+            alias_identity.st_rdev,
+        )
+    finally:
+        for fd in (read_fd, owned_fd, same_ofd_alias):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize("transfer", ["close", "fdopen", "raw-close"])
+def test_pipe_transfer_disarm_interruption_reclaims_for_retry(
+    failure_type,
+    transfer,
+):
+    import hark.tts_isolation as isolation
+
+    read_fd, owned_fd = os.pipe()
+    guard = isolation._RawPipeFdGuard(owned_fd)
+    primary = failure_type(f"{transfer} disarm primary")
+    target = {
+        "close": isolation._RawPipeFdGuard.close,
+        "fdopen": isolation._RawPipeFdGuard.adopt,
+        "raw-close": isolation._RawPipeFdGuard.close_if_owned,
+    }[transfer]
+    injected = False
+
+    def trace(frame, event, arg):
+        nonlocal injected
+        state = frame.f_locals.get("state")
+        if (
+            frame.f_code is target.__code__
+            and event == "line"
+            and not injected
+            and guard.fd == -1
+            and state is not None
+            and not state.effect_started
+        ):
+            injected = True
+            raise primary
+        return trace
+
+    try:
+        sys.settrace(trace)
+        with pytest.raises(failure_type) as raised:
+            if transfer == "close":
+                guard.close()
+            elif transfer == "fdopen":
+                guard.adopt("rb", closefd=True)
+            else:
+                guard.close_if_owned()
+        assert raised.value is primary
+    finally:
+        sys.settrace(None)
+
+    try:
+        assert injected is True
+        assert guard.fd == owned_fd
+        os.fstat(owned_fd)
+        guard.close_if_owned()
+        with pytest.raises(OSError):
+            os.fstat(owned_fd)
+    finally:
+        for fd in (read_fd, owned_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize("phase", ["before", "at", "after"])
+@pytest.mark.parametrize("transfer", ["close", "fdopen", "raw-close"])
+def test_pipe_transfer_actual_effect_trace_boundary(
+    monkeypatch,
+    failure_type,
+    phase,
+    transfer,
+):
+    import hark.tts_isolation as isolation
+
+    read_fd, owned_fd = os.pipe()
+    source_fd = os.open(os.devnull, os.O_RDONLY)
+    source_identity = os.fstat(source_fd)
+    guard = isolation._RawPipeFdGuard(owned_fd)
+    primary = failure_type(f"{transfer} {phase}-effect primary")
+    target_code = isolation._run_fd_transfer.__code__
+    real_os_close = isolation._OS_CLOSE
+    real_fdopen = os.fdopen
+    effect_called = False
+    effect_complete = False
+    injected = False
+    adopted = None
+
+    def close_effect(fd):
+        nonlocal effect_called, effect_complete
+        effect_called = True
+        assert sys.gettrace() is None
+        real_os_close(fd)
+        if phase == "after":
+            os.dup2(source_fd, fd)
+        effect_complete = True
+
+    def fdopen_effect(fd, *args, **kwargs):
+        nonlocal effect_called, effect_complete
+        effect_called = True
+        assert sys.gettrace() is None
+        result = real_fdopen(fd, *args, **kwargs)
+        if phase == "after":
+            result.close()
+            os.dup2(source_fd, fd)
+        effect_complete = True
+        return result
+
+    def trace(frame, event, arg):
+        nonlocal injected
+        if frame.f_code is not target_code:
+            return trace
+        frame.f_trace_opcodes = True
+        state = frame.f_locals.get("state")
+        if state is None or injected:
+            return trace
+        should_inject = (
+            (phase == "before" and guard.fd == -1 and not state.effect_started)
+            or (phase == "at" and state.effect_started and not effect_called)
+            or (phase == "after" and state.effect_started and effect_complete)
+        )
+        if should_inject:
+            injected = True
+            raise primary
+        return trace
+
+    if transfer == "fdopen":
+        monkeypatch.setattr(os, "fdopen", fdopen_effect)
+    else:
+        monkeypatch.setattr(isolation, "_OS_CLOSE", close_effect)
+
+    try:
+        sys.settrace(trace)
+        if phase in {"before", "after"}:
+            with pytest.raises(failure_type) as raised:
+                if transfer == "close":
+                    guard.close()
+                elif transfer == "fdopen":
+                    guard.adopt("rb", closefd=True)
+                else:
+                    guard.close_if_owned()
+            assert raised.value is primary
+        elif transfer == "close":
+            guard.close()
+        elif transfer == "fdopen":
+            adopted = guard.adopt("rb", closefd=True)
+        else:
+            guard.close_if_owned()
+    finally:
+        sys.settrace(None)
+
+    try:
+        if phase == "before":
+            assert injected is True
+            assert effect_called is False
+            assert guard.fd == owned_fd
+            os.fstat(owned_fd)
+            guard.close_if_owned()
+        elif phase == "at":
+            # No callback can run between the authoritative marker and the
+            # actual effect. The operation therefore completes normally.
+            assert injected is False
+            assert effect_called is True
+            assert effect_complete is True
+            assert guard.fd == -1
+            if adopted is not None:
+                adopted.close()
+            with pytest.raises(OSError):
+                os.fstat(owned_fd)
+        else:
+            assert injected is True
+            assert effect_complete is True
+            assert guard.fd == -1
+            guard.close_if_owned()
+            reused_identity = os.fstat(owned_fd)
+            assert (
+                reused_identity.st_dev,
+                reused_identity.st_ino,
+                reused_identity.st_mode,
+                reused_identity.st_rdev,
+            ) == (
+                source_identity.st_dev,
+                source_identity.st_ino,
+                source_identity.st_mode,
+                source_identity.st_rdev,
+            )
+    finally:
+        if adopted is not None:
+            adopted.close()
+        for fd in (read_fd, owned_fd, source_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("phase", ["before", "effect"])
+@pytest.mark.parametrize("transfer", ["close", "fdopen", "raw-close"])
+def test_pipe_transfer_actual_effect_sigint_boundary(
+    monkeypatch,
+    phase,
+    transfer,
+):
+    import hark.tts_isolation as isolation
+
+    if getattr(signal, "pthread_sigmask", None) is None:
+        pytest.skip("requires pthread signal masking")
+
+    read_fd, owned_fd = os.pipe()
+    source_fd = os.open(os.devnull, os.O_RDONLY)
+    source_identity = os.fstat(source_fd)
+    guard = isolation._RawPipeFdGuard(owned_fd)
+    real_os_close = isolation._OS_CLOSE
+    real_fdopen = os.fdopen
+    real_mask = signal.pthread_sigmask
+    effect_called = False
+    delivered = False
+
+    def interrupt_before(*args, **kwargs):
+        raise KeyboardInterrupt("SIGINT before transfer")
+
+    def deliver_on_restore(how, mask):
+        nonlocal delivered
+        result = real_mask(how, mask)
+        if effect_called and not delivered and how == signal.SIG_SETMASK:
+            delivered = True
+            raise KeyboardInterrupt("SIGINT delivered after transfer effect")
+        return result
+
+    def close_during_effect(fd):
+        nonlocal effect_called
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGINT in blocked
+        effect_called = True
+        real_os_close(fd)
+        os.dup2(source_fd, fd)
+
+    def fdopen_during_effect(fd, *args, **kwargs):
+        nonlocal effect_called
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGINT in blocked
+        effect_called = True
+        return real_fdopen(fd, *args, **kwargs)
+
+    if phase == "before":
+        seam = {
+            "close": "_PIPE_CLOSE",
+            "fdopen": "_PIPE_FDOPEN",
+            "raw-close": "_PIPE_RAW_CLOSE",
+        }[transfer]
+        monkeypatch.setattr(isolation, seam, interrupt_before)
+    else:
+        monkeypatch.setattr(isolation, "_PTHREAD_SIGMASK", deliver_on_restore)
+        if transfer == "fdopen":
+            monkeypatch.setattr(os, "fdopen", fdopen_during_effect)
+        else:
+            monkeypatch.setattr(isolation, "_OS_CLOSE", close_during_effect)
+
+    def transfer_once():
+        if transfer == "close":
+            guard.close()
+        elif transfer == "fdopen":
+            guard.adopt("rb", closefd=True)
+        else:
+            guard.close_if_owned()
+
+    try:
+        # An ambient handled exception must not be mistaken for this
+        # transfer's primary and suppress the newly delivered SIGINT.
+        try:
+            raise LookupError("ambient exception context")
+        except LookupError:
+            with pytest.raises(KeyboardInterrupt):
+                transfer_once()
+
+        if phase == "before":
+            assert effect_called is False
+            assert delivered is False
+            assert guard.fd == owned_fd
+            os.fstat(owned_fd)
+            monkeypatch.setattr(isolation, "_PIPE_CLOSE", isolation._pipe_close)
+            monkeypatch.setattr(isolation, "_PIPE_FDOPEN", isolation._pipe_fdopen)
+            monkeypatch.setattr(isolation, "_PIPE_RAW_CLOSE", isolation._pipe_close)
+            guard.close_if_owned()
+        else:
+            assert effect_called is True
+            assert delivered is True
+            assert guard.fd == -1
+            guard.close_if_owned()
+            if transfer == "fdopen":
+                # The pending signal interrupted publication of the adopted
+                # file object. Transfer-state cleanup must close that object.
+                with pytest.raises(OSError):
+                    os.fstat(owned_fd)
+                return
+            reused_identity = os.fstat(owned_fd)
+            assert (
+                reused_identity.st_dev,
+                reused_identity.st_ino,
+                reused_identity.st_mode,
+                reused_identity.st_rdev,
+            ) == (
+                source_identity.st_dev,
+                source_identity.st_ino,
+                source_identity.st_mode,
+                source_identity.st_rdev,
+            )
+    finally:
+        for fd in (read_fd, owned_fd, source_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
 def test_result_fd_adoption_post_return_trace_never_owns_reused_fd(
     monkeypatch,
     failure_type,
@@ -5505,9 +6019,9 @@ def test_result_fd_adoption_post_return_trace_never_owns_reused_fd(
     injected = False
     real_fdopen = worker._RESULT_FDOPEN
 
-    def adopt_then_return(fd, *args, **kwargs):
+    def adopt_then_return(fd, state, *args, **kwargs):
         nonlocal adopted, effect_returned
-        adopted = real_fdopen(fd, *args, **kwargs)
+        adopted = real_fdopen(fd, state, *args, **kwargs)
         effect_returned = True
         return adopted
 
@@ -5549,3 +6063,1817 @@ def test_result_fd_adoption_post_return_trace_never_owns_reused_fd(
                 os.close(fd)
             except OSError:
                 pass
+
+
+@pytest.mark.parametrize("owner_kind", ["pidfd", "pidfd-raw", "result"])
+def test_owned_fd_close_suppresses_profile_c_call_before_kernel_effect(owner_kind):
+    import hark.tts_isolation as isolation
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    attempted = False
+
+    def profile(frame, event, arg):
+        nonlocal attempted
+        if event == "c_call" and arg is os.close:
+            if frame.f_code in {
+                isolation._run_fd_transfer.__code__,
+                worker._run_fd_transfer.__code__,
+            }:
+                attempted = True
+                raise MemoryError("profile entered fd close")
+        return profile
+
+    try:
+        sys.setprofile(profile)
+        if owner_kind == "pidfd":
+            owner = isolation._OwnedPidfd.from_raw(owned_fd)
+            owner.request_close()
+            assert owner.fd is None
+        elif owner_kind == "pidfd-raw":
+            isolation._OwnedPidfd._close_raw(owned_fd)
+        else:
+            guard = worker._RawResultFdGuard(owned_fd)
+            guard.close_if_owned()
+            assert guard._fd == -1
+        assert sys.getprofile() is profile
+    finally:
+        sys.setprofile(None)
+
+    try:
+        assert attempted is False
+        with pytest.raises(OSError):
+            os.fstat(owned_fd)
+    finally:
+        for fd in (owned_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_result_fd_adopt_suppresses_profile_c_call_before_fdopen():
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    guard = worker._RawResultFdGuard(owned_fd)
+    attempted = False
+    adopted = None
+
+    def profile(frame, event, arg):
+        nonlocal attempted
+        if (
+            frame.f_code is worker._run_fd_transfer.__code__
+            and event == "c_call"
+            and arg is os.fdopen
+        ):
+            attempted = True
+            raise MemoryError("profile entered fdopen")
+        return profile
+
+    try:
+        sys.setprofile(profile)
+        adopted = guard.adopt()
+        assert sys.getprofile() is profile
+    finally:
+        sys.setprofile(None)
+
+    try:
+        assert attempted is False
+        assert guard.fd == -1
+        assert adopted is not None
+        adopted.close()
+        with pytest.raises(OSError):
+            os.fstat(owned_fd)
+    finally:
+        if adopted is not None:
+            adopted.close()
+        for fd in (owned_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_profile_restoration_after_fdopen_never_closes_reused_result_fd(
+    monkeypatch,
+):
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    source_fd = os.open(os.devnull, os.O_RDONLY)
+    source_identity = os.fstat(source_fd)
+    guard = worker._RawResultFdGuard(owned_fd)
+    real_fdopen = os.fdopen
+    effect_complete = False
+    injected = False
+
+    def fdopen_and_reuse(fd, *args, **kwargs):
+        nonlocal effect_complete
+        adopted = real_fdopen(fd, *args, **kwargs)
+        adopted.close()
+        os.dup2(source_fd, fd)
+        effect_complete = True
+        return adopted
+
+    def profile(frame, event, arg):
+        nonlocal injected
+        del frame, event, arg
+        if effect_complete and not injected:
+            injected = True
+            raise MemoryError("profile restoration after fdopen")
+        return profile
+
+    monkeypatch.setattr(worker.os, "fdopen", fdopen_and_reuse)
+    try:
+        sys.setprofile(profile)
+        with pytest.raises(MemoryError, match="profile restoration after fdopen"):
+            guard.adopt()
+    finally:
+        sys.setprofile(None)
+
+    try:
+        assert effect_complete is True
+        assert injected is True
+        assert guard.fd == -1
+        guard.close_if_owned()
+        reused_identity = os.fstat(owned_fd)
+        assert (reused_identity.st_dev, reused_identity.st_ino) == (
+            source_identity.st_dev,
+            source_identity.st_ino,
+        )
+    finally:
+        for fd in (owned_fd, source_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("owner_kind", ["pidfd", "result"])
+def test_owned_fd_close_retries_profile_disable_post_effect_failure(
+    monkeypatch,
+    owner_kind,
+):
+    import hark.tts_isolation as isolation
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    real_setprofile = sys.setprofile
+    injected = False
+
+    def profile(frame, event, arg):
+        del frame, event, arg
+
+    def disable_then_raise(callback):
+        nonlocal injected
+        real_setprofile(callback)
+        if callback is None and not injected:
+            injected = True
+            raise MemoryError("profile disable post-effect primary")
+
+    real_setprofile(profile)
+    monkeypatch.setattr(sys, "setprofile", disable_then_raise)
+    try:
+        if owner_kind == "pidfd":
+            owner = isolation._OwnedPidfd.from_raw(owned_fd)
+            owner.request_close()
+            assert owner.fd is None
+        else:
+            guard = worker._RawResultFdGuard(owned_fd)
+            with pytest.raises(MemoryError, match="profile disable post-effect"):
+                guard.close_if_owned()
+            assert guard._fd == owned_fd
+            os.fstat(owned_fd)
+            monkeypatch.setattr(sys, "setprofile", real_setprofile)
+            guard.close_if_owned()
+            assert guard._fd == -1
+        assert injected is True
+        assert sys.getprofile() is profile
+    finally:
+        monkeypatch.setattr(sys, "setprofile", real_setprofile)
+        real_setprofile(None)
+
+    try:
+        with pytest.raises(OSError):
+            os.fstat(owned_fd)
+    finally:
+        for fd in (owned_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("owner_kind", ["pidfd", "result"])
+def test_profile_restoration_failure_after_close_never_closes_reused_fd(
+    monkeypatch,
+    owner_kind,
+):
+    import hark.tts_isolation as isolation
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    source_fd = os.open(os.devnull, os.O_RDONLY)
+    source_identity = os.fstat(source_fd)
+    effect_complete = False
+    injected = False
+    real_close = os.close
+
+    def close_and_reuse(fd):
+        nonlocal effect_complete
+        real_close(fd)
+        os.dup2(source_fd, fd)
+        effect_complete = True
+
+    def profile(frame, event, arg):
+        nonlocal injected
+        del frame, event, arg
+        if effect_complete and not injected:
+            injected = True
+            raise MemoryError("profile restoration post-effect primary")
+        return profile
+
+    if owner_kind == "pidfd":
+        monkeypatch.setattr(isolation, "_OS_CLOSE", close_and_reuse)
+        owner = isolation._OwnedPidfd.from_raw(owned_fd)
+    else:
+        monkeypatch.setattr(worker.os, "close", close_and_reuse)
+        guard = worker._RawResultFdGuard(owned_fd)
+
+    try:
+        sys.setprofile(profile)
+        if owner_kind == "pidfd":
+            owner.request_close()
+            assert owner.fd is None
+        else:
+            with pytest.raises(MemoryError, match="profile restoration post-effect"):
+                guard.close_if_owned()
+            assert guard._fd == -1
+    finally:
+        sys.setprofile(None)
+
+    try:
+        assert effect_complete is True
+        assert injected is True
+        reused_identity = os.fstat(owned_fd)
+        assert (reused_identity.st_dev, reused_identity.st_ino) == (
+            source_identity.st_dev,
+            source_identity.st_ino,
+        )
+    finally:
+        for fd in (owned_fd, source_fd, read_fd):
+            try:
+                real_close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.skipif(
+    getattr(signal, "pthread_sigmask", None) is None,
+    reason="requires pthread signal masking",
+)
+@pytest.mark.parametrize("owner_kind", ["pidfd", "result"])
+def test_pending_sigint_after_owned_fd_close_restores_profile_and_disarms(
+    monkeypatch,
+    owner_kind,
+):
+    import hark.tts_isolation as isolation
+    import hark.tts_worker as worker
+
+    read_fd, owned_fd = os.pipe()
+    real_mask = signal.pthread_sigmask
+    effect_complete = False
+    delivered = False
+    cleanup_close = os.close
+
+    def profile(frame, event, arg):
+        del frame, event, arg
+
+    def deliver_on_restore(how, mask):
+        nonlocal delivered
+        result = real_mask(how, mask)
+        if effect_complete and not delivered and how == signal.SIG_SETMASK:
+            delivered = True
+            raise KeyboardInterrupt("pending SIGINT after close")
+        return result
+
+    if owner_kind == "pidfd":
+        real_close = isolation._OS_CLOSE
+
+        def close_and_mark(fd):
+            nonlocal effect_complete
+            real_close(fd)
+            effect_complete = True
+
+        monkeypatch.setattr(isolation, "_OS_CLOSE", close_and_mark)
+        monkeypatch.setattr(isolation, "_PTHREAD_SIGMASK", deliver_on_restore)
+        owner = isolation._OwnedPidfd.from_raw(owned_fd)
+    else:
+        real_os_close = os.close
+
+        def close_and_mark(fd):
+            nonlocal effect_complete
+            real_os_close(fd)
+            effect_complete = True
+
+        monkeypatch.setattr(worker.os, "close", close_and_mark)
+        monkeypatch.setattr(worker, "_PTHREAD_SIGMASK", deliver_on_restore)
+        guard = worker._RawResultFdGuard(owned_fd)
+
+    try:
+        sys.setprofile(profile)
+        if owner_kind == "pidfd":
+            owner.request_close()
+            assert owner.fd is None
+        else:
+            with pytest.raises(KeyboardInterrupt, match="pending SIGINT after close"):
+                guard.close_if_owned()
+            assert guard._fd == -1
+        assert sys.getprofile() is profile
+    finally:
+        sys.setprofile(None)
+
+    try:
+        assert effect_complete is True
+        assert delivered is True
+        with pytest.raises(OSError):
+            os.fstat(owned_fd)
+    finally:
+        for fd in (owned_fd, read_fd):
+            try:
+                cleanup_close(fd)
+            except OSError:
+                pass
+
+
+def test_successful_run_tts_propagates_delivered_sigint_from_mute_repair(tmp_path):
+    child = textwrap.dedent(
+        """
+        import contextlib
+        import os
+        import signal
+        from types import SimpleNamespace
+
+        import hark.cli as cli
+        import hark.conference as conference
+        import hark.speech as speech
+        from hark.config import HarkConfig
+
+        class Store:
+            def record_tts(self, **kwargs):
+                return None
+
+        class Synth:
+            def synthesize(self, text, *, voice):
+                return SimpleNamespace(
+                    audio=b"audio",
+                    provider="fake",
+                    content_type="audio/mpeg",
+                    voice=voice,
+                )
+
+        class State:
+            skipped = False
+            applied = False
+            was_muted = False
+            def as_meta(self):
+                return {}
+
+        speech.UsageStore = Store
+        speech.resolve_tts = lambda *args, **kwargs: Synth()
+        speech._synth_transport_factory = speech._in_process_synth_transport_factory
+        speech.claim_tts_play_ticket = lambda: object()
+        speech.exclusive_playback = lambda **kwargs: contextlib.nullcontext()
+        speech.mic_muted_during_tts = (
+            lambda **kwargs: contextlib.nullcontext(State())
+        )
+        speech.duck_media = lambda *args, **kwargs: contextlib.nullcontext(State())
+        speech.play_wav_bytes = lambda *args, **kwargs: SimpleNamespace(duration_ms=1)
+        conference.apply_conference_hold = lambda *args, **kwargs: State()
+
+        def repair(**kwargs):
+            print("REPAIR_SIGINT", flush=True)
+            os.kill(os.getpid(), signal.SIGINT)
+            raise AssertionError("delivered SIGINT returned")
+
+        speech.repair_tts_mute_after_play = repair
+        cfg = HarkConfig()
+        cfg.audio.defer_tts_while_listening = False
+        cli.load_config = lambda *args, **kwargs: cfg
+        cli.dispatch = lambda args, loaded: speech.run_tts(
+            loaded, "success", play=True, use_cache=False
+        )
+        rc = cli.main(["providers"])
+        print(f"RC {rc}", flush=True)
+        raise SystemExit(rc)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child],
+        capture_output=True,
+        text=True,
+        timeout=3.0,
+        env=_isolated_env(tmp_path),
+        check=False,
+    )
+
+    assert proc.returncode == 130
+    assert proc.stdout == "REPAIR_SIGINT\nRC 130\n"
+    assert proc.stderr == ""
+
+
+def test_mute_repair_baseexception_cannot_replace_run_tts_primary(
+    monkeypatch, tmp_path
+):
+    import hark.conference as conference
+    import hark.speech as speech
+    from hark.config import HarkConfig
+    from hark.tts_interrupt_policy import TtsSynthesisInterrupted
+
+    primary = MemoryError("synthesis primary")
+
+    class Store:
+        def record_tts(self, **kwargs):
+            return None
+
+    class Synth:
+        def synthesize(self, text, *, voice):
+            raise primary
+
+    class Hold:
+        skipped = False
+
+        def as_meta(self):
+            return {}
+
+    def repair(**kwargs):
+        raise TtsSynthesisInterrupted
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(speech, "UsageStore", Store)
+    monkeypatch.setattr(speech, "resolve_tts", lambda *args, **kwargs: Synth())
+    monkeypatch.setattr(
+        speech,
+        "_synth_transport_factory",
+        speech._in_process_synth_transport_factory,
+    )
+    monkeypatch.setattr(speech, "claim_tts_play_ticket", lambda: object())
+    monkeypatch.setattr(speech, "abandon_tts_play_ticket", lambda ticket: None)
+    monkeypatch.setattr(speech, "repair_tts_mute_after_play", repair)
+    monkeypatch.setattr(conference, "apply_conference_hold", lambda *a, **k: Hold())
+
+    with pytest.raises(MemoryError) as raised:
+        speech.run_tts(HarkConfig(), "failure", play=True, use_cache=False)
+
+    assert raised.value is primary
+
+
+def test_inner_payload_init_return_failure_reaps_exact_child_and_preserves_primary(
+    monkeypatch,
+):
+    import hark.tts_worker as worker
+
+    read_fd, write_fd = os.pipe()
+    spawned_pid = None
+    real_init = worker._PAYLOAD_POPEN_INIT
+
+    def init_then_raise(self, *args, **kwargs):
+        nonlocal spawned_pid
+        real_init(self, *args, **kwargs)
+        spawned_pid = self.pid
+        raise MemoryError("inner wrapper after child creation")
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(write_fd))
+    monkeypatch.setattr(worker, "_stage_payload_request", lambda request: None)
+    monkeypatch.setattr(worker, "_PAYLOAD_POPEN_INIT", init_then_raise)
+    try:
+        with pytest.raises(MemoryError, match="inner wrapper after child creation"):
+            worker._supervise_payload(["--test-hang"], subreaper=True)
+
+        assert spawned_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(spawned_pid, 0)
+        assert os.read(read_fd, 1) == b""
+    finally:
+        for fd in (write_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_supervisor_retries_settle_boundary_fault_until_exact_child_is_reaped(
+    monkeypatch,
+):
+    import hark.tts_worker as worker
+
+    read_fd, write_fd = os.pipe()
+    spawned_pid = None
+    settle_calls = 0
+    primary = MemoryError("inner wrapper primary")
+    real_init = worker._PAYLOAD_POPEN_INIT
+    real_settle = worker._settle_process_tree
+
+    def init_then_raise(self, *args, **kwargs):
+        nonlocal spawned_pid
+        real_init(self, *args, **kwargs)
+        spawned_pid = self.pid
+        raise primary
+
+    def interrupt_settle_once(*args, **kwargs):
+        nonlocal settle_calls
+        settle_calls += 1
+        if settle_calls == 1:
+            raise SystemExit("settle boundary secondary")
+        return real_settle(*args, **kwargs)
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(write_fd))
+    monkeypatch.setattr(worker, "_stage_payload_request", lambda request: None)
+    monkeypatch.setattr(worker, "_PAYLOAD_POPEN_INIT", init_then_raise)
+    monkeypatch.setattr(worker, "_settle_process_tree", interrupt_settle_once)
+    try:
+        with pytest.raises(MemoryError) as raised:
+            worker._supervise_payload(["--test-hang"], subreaper=True)
+
+        assert raised.value is primary
+        assert settle_calls == 2
+        assert spawned_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(spawned_pid, 0)
+        assert os.read(read_fd, 1) == b""
+    finally:
+        for fd in (write_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("body_failure", [False, True])
+def test_supervisor_finalization_preserves_primary_and_cleans_after_selector_close(
+    monkeypatch,
+    body_failure,
+):
+    import hark.tts_worker as worker
+
+    read_fd, write_fd = os.pipe()
+    events: list[str] = []
+    settled_payloads = []
+    primary = MemoryError("forwarding primary")
+    real_selector = worker.selectors.DefaultSelector
+    real_settle = worker._settle_process_tree
+
+    class CloseFaultSelector:
+        def __init__(self):
+            self._inner = real_selector()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def close(self):
+            self._inner.close()
+            events.append("selector-close")
+            raise SystemExit("selector close secondary")
+
+    def track_settle(payload, **kwargs):
+        events.append("settle")
+        settled_payloads.append(payload)
+        return real_settle(payload, **kwargs)
+
+    def fail_forward(payload_result, forwarding_owner):
+        forwarding_owner.close_if_owned()
+        raise primary
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(write_fd))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        str(ROOT / "src")
+        + (
+            os.pathsep + os.environ["PYTHONPATH"]
+            if os.environ.get("PYTHONPATH")
+            else ""
+        ),
+    )
+    monkeypatch.setattr(worker, "_stage_payload_request", lambda request: None)
+    monkeypatch.setattr(worker.selectors, "DefaultSelector", CloseFaultSelector)
+    monkeypatch.setattr(worker, "_settle_process_tree", track_settle)
+    if body_failure:
+        monkeypatch.setattr(worker, "_forward_payload_result", fail_forward)
+
+    try:
+        if body_failure:
+            with pytest.raises(MemoryError) as raised:
+                worker._supervise_payload(["--test-success"], subreaper=True)
+            assert raised.value is primary
+        else:
+            with pytest.raises(SystemExit, match="selector close secondary"):
+                worker._supervise_payload(["--test-success"], subreaper=True)
+
+        assert events[-2:] == ["selector-close", "settle"]
+        assert settled_payloads[-1].returncode == 0
+        assert os.read(read_fd, 1) in {b"", b"\x00"}
+    finally:
+        for fd in (write_fd, read_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_settle_process_tree_retries_false_cleanup_until_proven(monkeypatch):
+    import hark.tts_worker as worker
+
+    outcomes = iter([False, False, True])
+    calls = 0
+
+    def cleanup(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return next(outcomes)
+
+    monkeypatch.setattr(worker, "_cleanup_process_tree", cleanup)
+
+    assert (
+        worker._settle_process_tree(
+            object(),
+            subreaper=True,
+            payload_pidfd=None,
+        )
+        is None
+    )
+    assert calls == 3
+
+
+def test_public_interrupt_is_bounded_when_procfs_fails_after_payload_spawn(tmp_path):
+    supervisor = textwrap.dedent(
+        """
+        import hark.tts_worker as worker
+
+        subreaper = worker._claim_descendant_cleanup_authority()
+        def unavailable():
+            raise OSError("persistent procfs failure")
+        worker._linux_direct_children = unavailable
+        raise SystemExit(
+            worker._supervise_payload(["--test-gil-hang"], subreaper=subreaper)
+        )
+        """
+    )
+    child = textwrap.dedent(
+        f"""
+        import sys
+
+        import hark.cli as cli
+        import hark.speech as speech
+        from hark.config import HarkConfig
+
+        class Store:
+            def record_tts(self, **kwargs):
+                return None
+
+        speech.UsageStore = Store
+        speech._synth_worker_command_factory = lambda: [
+            sys.executable, "-c", {supervisor!r}
+        ]
+        cfg = HarkConfig()
+        cli.load_config = lambda *args, **kwargs: cfg
+        cli.dispatch = lambda args, loaded: speech.run_tts(
+            loaded, "hung", play=False, use_cache=False
+        )
+        raise SystemExit(cli.main(["providers"]))
+        """
+    )
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_isolated_env(tmp_path),
+    )
+    payload_pidfd = None
+    try:
+        marker = _read_ready(proc)
+        assert marker.startswith("GIL_READY ")
+        payload_pid = int(marker.split()[1])
+        payload_pidfd = _linux_pidfd_open(payload_pid)
+
+        os.kill(proc.pid, signal.SIGINT)
+        time.sleep(0.01)
+        if proc.poll() is None:
+            os.kill(proc.pid, signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=2.0)
+
+        assert proc.returncode == 130
+        assert stdout == ""
+        assert "Traceback" not in stderr
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(payload_pidfd, 0)
+        assert unrelated.poll() is None
+    finally:
+        if payload_pidfd is not None:
+            os.close(payload_pidfd)
+        if proc.poll() is None:
+            _terminate(proc)
+        _terminate(unrelated)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper regression")
+def test_procfs_loss_with_adopted_descendant_is_bounded_and_orphan_free(tmp_path):
+    detached_helper = textwrap.dedent(
+        """
+        import os
+        import signal
+        import time
+        if os.fork() > 0:
+            while True:
+                time.sleep(1)
+        os.setsid()
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        print(f"PROCFS_LOST_DESCENDANT {os.getpid()}", flush=True)
+        while True:
+            time.sleep(1)
+        """
+    )
+    sitecustomize = textwrap.dedent(
+        f"""
+        import subprocess
+        import sys
+        import hark.providers.resolve as provider_resolve
+
+        class DetachedProvider:
+            def synthesize(self, text, *, voice):
+                child = subprocess.Popen([sys.executable, "-c", {detached_helper!r}])
+                child.wait()
+
+        provider_resolve.resolve_tts = lambda *args, **kwargs: DetachedProvider()
+        """
+    )
+    supervisor = textwrap.dedent(
+        """
+        import hark.tts_worker as worker
+
+        subreaper = worker._claim_descendant_cleanup_authority()
+        worker._linux_direct_children = lambda: (_ for _ in ()).throw(
+            OSError("persistent procfs path failure")
+        )
+        raise SystemExit(worker._supervise_payload([], subreaper=subreaper))
+        """
+    )
+    child = textwrap.dedent(
+        f"""
+        import os
+        import sys
+        from pathlib import Path
+
+        import hark.cli as cli
+        import hark.speech as speech
+        from hark.config import HarkConfig
+
+        site_dir = Path({str(tmp_path / "procfs-loss-site")!r})
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "sitecustomize.py").write_text(
+            {sitecustomize!r}, encoding="utf-8"
+        )
+        os.environ["PYTHONPATH"] = str(site_dir) + os.pathsep + {str(ROOT / "src")!r}
+
+        class Store:
+            def record_tts(self, **kwargs):
+                return None
+
+        speech.UsageStore = Store
+        speech._synth_worker_command_factory = lambda: [
+            sys.executable, "-c", {supervisor!r}
+        ]
+        cfg = HarkConfig()
+        cli.load_config = lambda *args, **kwargs: cfg
+        cli.dispatch = lambda args, loaded: speech.run_tts(
+            loaded, "procfs lost", play=False, use_cache=False
+        )
+        raise SystemExit(cli.main(["providers"]))
+        """
+    )
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_isolated_env(tmp_path),
+    )
+    descendant_pidfd = None
+    try:
+        marker = _read_ready(proc)
+        assert marker.startswith("PROCFS_LOST_DESCENDANT ")
+        descendant_pidfd = _linux_pidfd_open(int(marker.split()[1]))
+
+        os.kill(proc.pid, signal.SIGINT)
+        time.sleep(0.01)
+        if proc.poll() is None:
+            os.kill(proc.pid, signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=2.0)
+
+        assert proc.returncode == 130
+        assert stdout == ""
+        assert "Traceback" not in stderr
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(descendant_pidfd, 0)
+        assert unrelated.poll() is None
+    finally:
+        if descendant_pidfd is not None:
+            try:
+                _linux_pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(descendant_pidfd)
+        if proc.poll() is None:
+            _terminate(proc)
+        _terminate(unrelated)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper regression")
+def test_already_exited_payload_still_cleans_adopted_descendant(tmp_path):
+    detached_helper = textwrap.dedent(
+        """
+        import os
+        import signal
+        import time
+        if os.fork() > 0:
+            os._exit(0)
+        os.setsid()
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        print(f"EXITED_PAYLOAD_DESCENDANT {os.getpid()}", flush=True)
+        while True:
+            time.sleep(1)
+        """
+    )
+    sitecustomize = textwrap.dedent(
+        f"""
+        import os
+        import subprocess
+        import sys
+        import hark.providers.resolve as provider_resolve
+
+        class ExitAfterForkProvider:
+            def synthesize(self, text, *, voice):
+                intermediate = subprocess.Popen(
+                    [sys.executable, "-c", {detached_helper!r}]
+                )
+                intermediate.wait(timeout=2.0)
+                os._exit(0)
+
+        provider_resolve.resolve_tts = lambda *args, **kwargs: ExitAfterForkProvider()
+        """
+    )
+    supervisor = textwrap.dedent(
+        """
+        import hark.tts_worker as worker
+        raise SystemExit(worker.main())
+        """
+    )
+    child = textwrap.dedent(
+        f"""
+        import os
+        import sys
+        from pathlib import Path
+
+        import hark.cli as cli
+        import hark.speech as speech
+        from hark.config import HarkConfig
+
+        site_dir = Path({str(tmp_path / "exited-payload-site")!r})
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "sitecustomize.py").write_text(
+            {sitecustomize!r}, encoding="utf-8"
+        )
+        os.environ["PYTHONPATH"] = (
+            str(site_dir) + os.pathsep + {str(ROOT / "src")!r}
+        )
+
+        class Store:
+            def record_tts(self, **kwargs):
+                return None
+
+        speech.UsageStore = Store
+        speech._synth_worker_command_factory = lambda: [
+            sys.executable, "-c", {supervisor!r}
+        ]
+        cfg = HarkConfig()
+        cli.load_config = lambda *args, **kwargs: cfg
+        cli.dispatch = lambda args, loaded: speech.run_tts(
+            loaded, "exit after fork", play=False, use_cache=False
+        )
+        raise SystemExit(cli.main(["providers"]))
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_isolated_env(tmp_path),
+    )
+    descendant_pidfd = None
+    try:
+        marker = _read_ready(proc)
+        assert marker.startswith("EXITED_PAYLOAD_DESCENDANT ")
+        descendant_pidfd = _linux_pidfd_open(int(marker.split()[1]))
+        stdout, stderr = proc.communicate(timeout=3.0)
+
+        assert proc.returncode != 0
+        assert stdout == ""
+        assert "Traceback" not in stderr
+        with pytest.raises(ProcessLookupError):
+            _linux_pidfd_send_signal(descendant_pidfd, 0)
+    finally:
+        if descendant_pidfd is not None:
+            try:
+                _linux_pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(descendant_pidfd)
+        if proc.poll() is None:
+            _terminate(proc)
+
+
+@pytest.mark.parametrize("stage", ["pre-publication", "guard-published"])
+@pytest.mark.parametrize(
+    "failure_type", [MemoryError, KeyboardInterrupt, SystemExit, GeneratorExit]
+)
+def test_raw_pipe_claim_has_one_close_owner_under_fault_and_fd_reuse(
+    monkeypatch,
+    stage,
+    failure_type,
+):
+    import hark.tts_isolation as isolation
+
+    raw_fds = list(os.pipe())
+    owned_fd = raw_fds[1]
+    source_fd = os.dup(owned_fd)
+    source_identity = os.fstat(source_fd)
+    primary = failure_type(f"{stage} primary")
+    close_calls = 0
+    injected = False
+    real_close = isolation._PIPE_RAW_CLOSE
+    target_code = isolation._RawPipeFdGuard.claim.__func__.__code__
+
+    def close_reuse_then_raise(fd, state):
+        nonlocal close_calls
+        close_calls += 1
+        real_close(fd, state)
+        os.dup2(source_fd, fd)
+        raise RuntimeError("raw close secondary")
+
+    def trace(frame, event, arg):
+        nonlocal injected
+        if frame.f_code is not target_code or injected:
+            return trace
+        guard = frame.f_locals.get("guard")
+        slots = frame.f_locals.get("slots")
+        index = frame.f_locals.get("index")
+        if guard is None or slots is None or index is None:
+            return trace
+        at_stage = (
+            stage == "pre-publication"
+            and event == "line"
+            and slots[index] == owned_fd
+            and getattr(guard, "_fd", None) == owned_fd
+            and not getattr(guard, "_committed", False)
+        ) or (
+            stage == "guard-published"
+            and event == "return"
+            and slots[index] is guard
+            and getattr(guard, "_committed", False)
+            and getattr(guard, "_fd", None) == owned_fd
+        )
+        if at_stage:
+            injected = True
+            raise primary
+        return trace
+
+    monkeypatch.setattr(isolation, "_PIPE_RAW_CLOSE", close_reuse_then_raise)
+    raw_slot_cleaned = False
+    try:
+        sys.settrace(trace)
+        with pytest.raises(failure_type) as raised:
+            isolation._RawPipeFdGuard.claim(raw_fds, 1)
+        assert raised.value is primary
+    finally:
+        sys.settrace(None)
+
+    raw_owner = raw_fds[1]
+    if isinstance(raw_owner, isolation._RawPipeFdGuard):
+        raw_fds[1] = -1
+        try:
+            raw_owner.close_if_owned()
+        except RuntimeError as exc:
+            assert str(exc) == "raw close secondary"
+        raw_slot_cleaned = True
+    elif isinstance(raw_owner, int) and raw_owner >= 0:
+        raw_fds[1] = -1
+        try:
+            isolation._PIPE_RAW_CLOSE(raw_owner, isolation._FdTransferState())
+        except RuntimeError as exc:
+            assert str(exc) == "raw close secondary"
+        raw_slot_cleaned = True
+
+    try:
+        assert injected is True
+        assert raw_fds[1] == -1
+        assert close_calls == 1
+        assert raw_slot_cleaned is True
+        reused_identity = os.fstat(owned_fd)
+        assert (reused_identity.st_dev, reused_identity.st_ino) == (
+            source_identity.st_dev,
+            source_identity.st_ino,
+        )
+    finally:
+        for fd in (raw_fds[0], owned_fd, source_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize(
+    "failure_type", [MemoryError, KeyboardInterrupt, SystemExit, GeneratorExit]
+)
+def test_raw_pipe_claim_retains_owner_when_cleanup_close_fails_before_effect(
+    monkeypatch,
+    failure_type,
+):
+    import hark.tts_isolation as isolation
+
+    raw_fds = list(os.pipe())
+    owned_fd = raw_fds[1]
+    primary = failure_type("publication primary")
+    close_primary = OSError("raw close failed before effect")
+    injected = False
+    close_calls = 0
+    real_close = isolation._PIPE_RAW_CLOSE
+    target_code = isolation._RawPipeFdGuard.claim.__func__.__code__
+
+    def fail_before_close(fd, state):
+        nonlocal close_calls
+        close_calls += 1
+        raise close_primary
+
+    def trace(frame, event, arg):
+        nonlocal injected
+        if frame.f_code is not target_code or injected:
+            return trace
+        guard = frame.f_locals.get("guard")
+        slots = frame.f_locals.get("slots")
+        index = frame.f_locals.get("index")
+        if (
+            guard is not None
+            and slots is not None
+            and index is not None
+            and event == "return"
+            and slots[index] is guard
+            and guard._committed
+            and guard._fd == owned_fd
+        ):
+            injected = True
+            raise primary
+        return trace
+
+    monkeypatch.setattr(isolation, "_PIPE_RAW_CLOSE", fail_before_close)
+    try:
+        sys.settrace(trace)
+        with pytest.raises(failure_type) as raised:
+            isolation._RawPipeFdGuard.claim(raw_fds, 1)
+        assert raised.value is primary
+    finally:
+        sys.settrace(None)
+
+    owner = raw_fds[1]
+    assert isinstance(owner, isolation._RawPipeFdGuard)
+    assert owner.fd == owned_fd
+    assert close_calls == 0
+    os.fstat(owned_fd)
+
+    raw_fds[1] = -1
+    with pytest.raises(OSError) as raised:
+        owner.close_if_owned()
+    assert raised.value is close_primary
+    assert close_calls == 1
+    assert owner.fd == owned_fd
+    monkeypatch.setattr(isolation, "_PIPE_RAW_CLOSE", real_close)
+    owner.close_if_owned()
+    with pytest.raises(OSError):
+        os.fstat(owned_fd)
+    os.close(raw_fds[0])
+
+
+def test_supervisor_selector_setup_failure_transfers_one_result_owner(monkeypatch):
+    import hark.tts_worker as worker
+
+    result_read, result_write = os.pipe()
+    foreign_fds: list[int] = []
+    previous_term = signal.getsignal(signal.SIGTERM)
+    real_write_to_owner = worker._write_result_to_owner
+
+    class SelectorFailure(MemoryError):
+        pass
+
+    def fail_selector():
+        raise SelectorFailure("selector construction primary")
+
+    def write_then_reuse(message, owner):
+        real_write_to_owner(message, owner)
+        foreign_fds.extend(os.pipe())
+        assert result_write in foreign_fds
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(result_write))
+    monkeypatch.setattr(worker, "_claim_descendant_cleanup_authority", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(worker.selectors, "DefaultSelector", fail_selector)
+    monkeypatch.setattr(worker, "_write_result_to_owner", write_then_reuse)
+
+    try:
+        assert worker.main(["--selector-failure"]) == 1
+        assert signal.getsignal(signal.SIGTERM) is previous_term
+        assert all(os.fstat(fd) for fd in foreign_fds)
+        frame = os.read(result_read, 64 * 1024)
+        size = struct.unpack("!I", frame[:4])[0]
+        message = json.loads(frame[4 : 4 + size])
+        assert message["status"] == "error"
+        assert message["kind"] == "exception"
+        assert message["type"].endswith(".<locals>.SelectorFailure")
+        assert message["message"] == "selector construction primary"
+        assert message["audio_size"] == 0
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        for fd in (result_read, *foreign_fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("callback_kind", ["trace", "profile"])
+@pytest.mark.parametrize("stage", ["pre-publication", "post-publication"])
+def test_result_owner_claim_fault_still_serializes_structured_primary(
+    monkeypatch,
+    callback_kind,
+    stage,
+):
+    import hark.tts_worker as worker
+
+    result_read, result_write = os.pipe()
+    primary = MemoryError(f"{callback_kind} {stage} result claim primary")
+    claim_code = worker._RawResultFdGuard.claim.__func__.__code__
+    transfer_code = worker._run_fd_transfer.__code__
+    injected = False
+    previous_term = signal.getsignal(signal.SIGTERM)
+
+    def claim_stage(frame, event):
+        guard = frame.f_locals.get("guard")
+        slots = frame.f_locals.get("slots")
+        index = frame.f_locals.get("index")
+        if guard is None or slots is None or index is None:
+            return False
+        if stage == "pre-publication":
+            return (
+                event == "line"
+                and slots[index] == result_write
+                and getattr(guard, "_fd", None) == result_write
+                and not getattr(guard, "_committed", False)
+            )
+        return (
+            event == "return"
+            and slots[index] is guard
+            and getattr(guard, "_fd", None) == result_write
+            and getattr(guard, "_committed", False)
+        )
+
+    def trace(frame, event, arg):
+        nonlocal injected
+        del arg
+        if not injected and frame.f_code is claim_code and claim_stage(frame, event):
+            injected = True
+            raise primary
+        return trace
+
+    def profile(frame, event, arg):
+        nonlocal injected
+        del arg
+        if injected:
+            return
+        if stage == "pre-publication" and frame.f_code is transfer_code:
+            caller = frame.f_back
+            if caller is not None and caller.f_code is claim_code:
+                injected = True
+                raise primary
+        if stage == "post-publication" and frame.f_code is claim_code:
+            if claim_stage(frame, event):
+                injected = True
+                raise primary
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(result_write))
+    monkeypatch.setattr(worker, "_claim_descendant_cleanup_authority", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    try:
+        if callback_kind == "trace":
+            sys.settrace(trace)
+        else:
+            sys.setprofile(profile)
+        assert worker.main(["--claim-failure"]) == 1
+    finally:
+        sys.settrace(None)
+        sys.setprofile(None)
+        signal.signal(signal.SIGTERM, previous_term)
+
+    try:
+        assert injected is True
+        frame = os.read(result_read, 64 * 1024)
+        size = struct.unpack("!I", frame[:4])[0]
+        message = json.loads(frame[4 : 4 + size])
+        assert message["status"] == "error"
+        assert message["kind"] == "exception"
+        assert message["type"] == "builtins.MemoryError"
+        assert message["message"] == str(primary)
+        assert message["audio_size"] == 0
+        assert signal.getsignal(signal.SIGTERM) is previous_term
+    finally:
+        for fd in (result_read, result_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize("failure_phase", ["pre-effect", "post-effect"])
+def test_supervisor_setup_retries_sigterm_restoration_and_preserves_primary(
+    monkeypatch,
+    failure_phase,
+):
+    import hark.tts_worker as worker
+
+    previous_term = signal.getsignal(signal.SIGTERM)
+    real_signal = signal.signal
+    calls = 0
+    restore_failure = MemoryError(f"SIGTERM restore {failure_phase}")
+
+    def fail_restore_once(signum, handler):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if failure_phase == "post-effect":
+                real_signal(signum, handler)
+            raise restore_failure
+        return real_signal(signum, handler)
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", "not-an-integer")
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(worker.signal, "signal", fail_restore_once)
+    try:
+        with pytest.raises(ValueError):
+            worker._supervise_payload([], subreaper=True)
+        assert signal.getsignal(signal.SIGTERM) is previous_term
+        assert calls == (3 if failure_phase == "pre-effect" else 2)
+    finally:
+        real_signal(signal.SIGTERM, previous_term)
+
+
+@pytest.mark.parametrize("failure_phase", ["pre-effect", "post-effect"])
+def test_direct_children_close_retains_authority_until_effect(
+    monkeypatch,
+    failure_phase,
+):
+    import hark.tts_worker as worker
+
+    authority_fd, writer = os.pipe()
+    os.close(writer)
+    real_close = worker._DIRECT_CHILDREN_CLOSE
+    primary = MemoryError(f"authority close {failure_phase}")
+    calls = 0
+
+    def fail_once(fd, state, retire):
+        nonlocal calls
+        calls += 1
+        if calls == 1 and failure_phase == "pre-effect":
+            raise primary
+        real_close(fd, state, retire)
+        if calls == 1 and failure_phase == "post-effect":
+            raise primary
+
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_FD", authority_fd)
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_PID", os.getpid())
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_CLOSE", fail_once)
+
+    with pytest.raises(MemoryError) as raised:
+        worker._close_direct_children_authority()
+
+    assert raised.value is primary
+    assert calls == (2 if failure_phase == "pre-effect" else 1)
+    assert worker._DIRECT_CHILDREN_AUTHORITY_FD == -1
+    assert worker._DIRECT_CHILDREN_AUTHORITY_PID == -1
+    with pytest.raises(OSError):
+        os.fstat(authority_fd)
+
+
+@pytest.mark.parametrize("failure_phase", ["pre-effect", "post-effect"])
+def test_payload_pidfd_close_retains_slot_until_effect(monkeypatch, failure_phase):
+    import hark.tts_worker as worker
+
+    pidfd, writer = os.pipe()
+    os.close(writer)
+    owner = [pidfd]
+    real_close = worker._PIDFD_CLOSE
+    primary = MemoryError(f"pidfd close {failure_phase}")
+    calls = 0
+
+    def fail_once(fd, state, retire):
+        nonlocal calls
+        calls += 1
+        if calls == 1 and failure_phase == "pre-effect":
+            assert owner[0] == pidfd
+            raise primary
+        real_close(fd, state, retire)
+        if calls == 1 and failure_phase == "post-effect":
+            assert owner[0] is None
+            raise primary
+
+    monkeypatch.setattr(worker, "_PIDFD_CLOSE", fail_once)
+    close_error = worker._close_pidfd_owner(owner)
+
+    assert close_error is not None
+    assert close_error[0] is primary
+    assert calls == (2 if failure_phase == "pre-effect" else 1)
+    assert owner == [None]
+    with pytest.raises(OSError):
+        os.fstat(pidfd)
+
+
+@pytest.mark.parametrize("result_fd_text", [None, "not-an-integer"])
+def test_supervisor_invalid_setup_always_restores_sigterm(
+    monkeypatch,
+    result_fd_text,
+):
+    import hark.tts_worker as worker
+
+    previous_term = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    if result_fd_text is None:
+        monkeypatch.delenv("HARK_TTS_RESULT_FD", raising=False)
+    else:
+        monkeypatch.setenv("HARK_TTS_RESULT_FD", result_fd_text)
+
+    with pytest.raises((RuntimeError, ValueError)):
+        worker._supervise_payload([], subreaper=True)
+    assert signal.getsignal(signal.SIGTERM) is previous_term
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks",
+)
+@pytest.mark.parametrize(
+    "failure_mode",
+    ["pending-sigint", "restore-failure", "pre-effect-failure"],
+)
+def test_main_authority_cleanup_preserves_structured_primary(
+    monkeypatch,
+    failure_mode,
+):
+    import hark.tts_worker as worker
+
+    result_read, result_write = os.pipe()
+    authority_read, authority_write = os.pipe()
+    os.close(authority_write)
+    primary = MemoryError("supervisor entry primary")
+    real_close = os.close
+    real_mask = signal.pthread_sigmask
+    close_sent = False
+    restore_calls = 0
+    block_calls = 0
+
+    def fail_entry():
+        raise primary
+
+    def close_with_pending_sigint(fd):
+        nonlocal close_sent
+        if fd == authority_read and failure_mode == "pending-sigint" and not close_sent:
+            close_sent = True
+            os.kill(os.getpid(), signal.SIGINT)
+        return real_close(fd)
+
+    def fail_first_restore(how, values):
+        nonlocal block_calls, restore_calls
+        if how == signal.SIG_BLOCK:
+            block_calls += 1
+            if failure_mode == "pre-effect-failure" and block_calls == 2:
+                raise GeneratorExit("mask acquisition secondary")
+        if how == signal.SIG_SETMASK:
+            restore_calls += 1
+            if failure_mode == "restore-failure" and restore_calls == 1:
+                raise SystemExit("mask restoration secondary")
+        return real_mask(how, values)
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(result_write))
+    monkeypatch.setattr(worker, "_claim_descendant_cleanup_authority", fail_entry)
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_FD", authority_read)
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_PID", os.getpid())
+    monkeypatch.setattr(worker, "_OS_CLOSE", close_with_pending_sigint)
+    monkeypatch.setattr(worker, "_PTHREAD_SIGMASK", fail_first_restore)
+
+    try:
+        assert worker.main(["--cleanup-primary"]) == 1
+        with pytest.raises(OSError):
+            os.fstat(authority_read)
+        frame = os.read(result_read, 64 * 1024)
+        size = struct.unpack("!I", frame[:4])[0]
+        message = json.loads(frame[4 : 4 + size])
+        assert message["type"] == "builtins.MemoryError"
+        assert message["message"] == "supervisor entry primary"
+        assert message["audio_size"] == 0
+        if failure_mode == "pending-sigint":
+            assert close_sent is True
+        elif failure_mode == "restore-failure":
+            assert restore_calls == 2
+        else:
+            assert block_calls >= 4
+    finally:
+        for fd in (result_read, authority_read):
+            try:
+                real_close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks",
+)
+def test_pipe_creation_publishes_both_fds_before_delivered_sigint(monkeypatch):
+    import hark.tts_isolation as isolation
+
+    real_pipe = os.pipe
+    opened: list[int] = []
+
+    def pipe_then_sigint():
+        fds = real_pipe()
+        opened.extend(fds)
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGINT in blocked
+        os.kill(os.getpid(), signal.SIGINT)
+        return fds
+
+    monkeypatch.setattr(isolation.os, "pipe", pipe_then_sigint)
+    transport = isolation.SubprocessSynthTransport(object())
+    previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            transport.synthesize(isolation.SynthRequest("p", "v", None, "x"))
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+
+    assert len(opened) == 2
+    for fd in opened:
+        with pytest.raises(OSError) as caught:
+            os.fstat(fd)
+        assert caught.value.errno == errno.EBADF
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux pidfd regression")
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks",
+)
+def test_outer_pidfd_is_owned_before_delivered_sigint(monkeypatch):
+    import hark.tts_isolation as isolation
+
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    opened: list[int] = []
+
+    def pidfd_then_sigint(pid, flags=0):
+        assert flags == 0
+        fd = _linux_pidfd_open(pid)
+        opened.append(fd)
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGINT in blocked
+        os.kill(os.getpid(), signal.SIGINT)
+        return fd
+
+    monkeypatch.setattr(isolation.os, "pidfd_open", pidfd_then_sigint, raising=False)
+    monkeypatch.setattr(
+        isolation.signal,
+        "pidfd_send_signal",
+        lambda *args: None,
+        raising=False,
+    )
+    previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            isolation.SubprocessSynthTransport._open_pidfd(process)
+        assert len(opened) == 1
+        with pytest.raises(OSError) as caught:
+            os.fstat(opened[0])
+        assert caught.value.errno == errno.EBADF
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=1.0)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires fork_exec")
+def test_outer_popen_suppresses_profile_c_return_until_pid_publication():
+    import hark.tts_isolation as isolation
+
+    lifecycle = isolation.SynthProcessLifecycle()
+    process = subprocess.Popen.__new__(subprocess.Popen)
+    passed_read, passed_write = os.pipe()
+    attempted = False
+
+    def profile(frame, event, arg):
+        nonlocal attempted
+        del frame
+        if event == "c_return" and getattr(arg, "__name__", "") == "fork_exec":
+            attempted = True
+            raise MemoryError("profile after supervisor fork_exec")
+
+    try:
+        sys.setprofile(profile)
+        lifecycle.spawn(
+            process,
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            pass_fds=(passed_write,),
+        )
+        assert sys.getprofile() is profile
+    finally:
+        sys.setprofile(None)
+        for fd in (passed_read, passed_write):
+            os.close(fd)
+
+    assert attempted is False
+    assert isinstance(process.pid, int)
+    assert lifecycle.cancel() is True
+    assert lifecycle.active is False
+    assert process.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires fork_exec")
+def test_outer_popen_suppresses_opcode_trace_until_pid_publication():
+    import dis
+
+    import hark.tts_isolation as isolation
+
+    lifecycle = isolation.SynthProcessLifecycle()
+    process = subprocess.Popen.__new__(subprocess.Popen)
+    passed_read, passed_write = os.pipe()
+    instructions = {
+        instruction.offset: instruction
+        for instruction in dis.get_instructions(subprocess.Popen._execute_child)
+    }
+    assert any(
+        instruction.opname == "STORE_ATTR" and instruction.argval == "pid"
+        for instruction in instructions.values()
+    )
+    attempted = False
+
+    def trace(frame, event, arg):
+        nonlocal attempted
+        del arg
+        if frame.f_code is subprocess.Popen._execute_child.__code__:
+            frame.f_trace_opcodes = True
+            instruction = instructions.get(frame.f_lasti)
+            if (
+                event == "opcode"
+                and instruction is not None
+                and instruction.opname == "STORE_ATTR"
+                and instruction.argval == "pid"
+            ):
+                attempted = True
+                raise MemoryError("opcode before supervisor pid publication")
+        return trace
+
+    try:
+        sys.settrace(trace)
+        lifecycle.spawn(
+            process,
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            pass_fds=(passed_write,),
+        )
+        assert sys.gettrace() is trace
+    finally:
+        sys.settrace(None)
+        for fd in (passed_read, passed_write):
+            os.close(fd)
+
+    assert attempted is False
+    assert isinstance(process.pid, int)
+    assert lifecycle.cancel() is True
+    assert lifecycle.active is False
+    assert process.poll() is not None
+
+
+def test_outer_popen_restore_fault_retains_cancellable_pid(monkeypatch):
+    import hark.tts_isolation as isolation
+
+    lifecycle = isolation.SynthProcessLifecycle()
+    process = subprocess.Popen.__new__(subprocess.Popen)
+    passed_read, passed_write = os.pipe()
+    primary = MemoryError("profile restoration after supervisor fork")
+    real_restore = isolation._restore_runtime_callback
+    real_init = isolation._SYNTH_POPEN_INIT
+    armed = False
+
+    def init_then_arm(process, *args, **kwargs):
+        nonlocal armed
+        armed = True
+        real_init(process, *args, **kwargs)
+
+    def restore_then_raise(setter, callback):
+        real_restore(setter, callback)
+        if armed and setter is sys.setprofile:
+            raise primary
+
+    monkeypatch.setattr(isolation, "_SYNTH_POPEN_INIT", init_then_arm)
+    monkeypatch.setattr(isolation, "_restore_runtime_callback", restore_then_raise)
+    try:
+        sys.setprofile(lambda frame, event, arg: None)
+        with pytest.raises(MemoryError) as raised:
+            lifecycle.spawn(
+                process,
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                pass_fds=(passed_write,),
+            )
+        assert raised.value is primary
+    finally:
+        sys.setprofile(None)
+        for fd in (passed_read, passed_write):
+            os.close(fd)
+
+    assert isinstance(process.pid, int)
+    assert lifecycle.cancel() is True
+    assert lifecycle.active is False
+    assert process.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires fork_exec")
+def test_inner_popen_suppresses_profile_c_return_until_pid_publication(monkeypatch):
+    import hark.tts_worker as worker
+
+    result_read, result_write = os.pipe()
+    request = struct.pack("!I", 2) + b"{}"
+    attempted = False
+
+    class Stdin:
+        buffer = io.BytesIO(request)
+
+    def profile(frame, event, arg):
+        nonlocal attempted
+        del frame
+        if event == "c_return" and getattr(arg, "__name__", "") == "fork_exec":
+            attempted = True
+            raise MemoryError("profile after payload fork_exec")
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(result_write))
+    monkeypatch.setattr(worker.sys, "stdin", Stdin())
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    previous_term = signal.getsignal(signal.SIGTERM)
+    try:
+        sys.setprofile(profile)
+        assert worker._supervise_payload(["--test-success"], subreaper=True) == 0
+        assert sys.getprofile() is profile
+    finally:
+        sys.setprofile(None)
+        signal.signal(signal.SIGTERM, previous_term)
+        try:
+            os.close(result_write)
+        except OSError:
+            pass
+
+    assert attempted is False
+    frame = os.read(result_read, 64 * 1024)
+    os.close(result_read)
+    size = struct.unpack("!I", frame[:4])[0]
+    message = json.loads(frame[4 : 4 + size])
+    assert message["status"] == "ok"
+
+
+def test_inner_popen_restore_fault_reaps_published_payload(monkeypatch):
+    import hark.tts_worker as worker
+
+    result_read, result_write = os.pipe()
+    request = struct.pack("!I", 2) + b"{}"
+    primary = MemoryError("profile restoration after payload fork")
+    real_restore = worker._restore_runtime_callback
+    real_init = worker._PAYLOAD_POPEN_INIT
+    payloads = []
+    armed = False
+    injected = False
+
+    class Stdin:
+        buffer = io.BytesIO(request)
+
+    def init_then_arm(process, *args, **kwargs):
+        nonlocal armed
+        armed = True
+        try:
+            real_init(process, *args, **kwargs)
+        finally:
+            if isinstance(getattr(process, "pid", None), int):
+                payloads.append(process)
+
+    def restore_then_raise(setter, callback):
+        nonlocal injected
+        real_restore(setter, callback)
+        if armed and not injected and setter is sys.setprofile:
+            injected = True
+            raise primary
+
+    monkeypatch.setenv("HARK_TTS_RESULT_FD", str(result_write))
+    monkeypatch.setattr(worker.sys, "stdin", Stdin())
+    monkeypatch.setattr(
+        worker,
+        "_require_descendant_cleanup_authority",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(worker, "_PAYLOAD_POPEN_INIT", init_then_arm)
+    monkeypatch.setattr(worker, "_restore_runtime_callback", restore_then_raise)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    try:
+        sys.setprofile(lambda frame, event, arg: None)
+        with pytest.raises(MemoryError) as raised:
+            worker._supervise_payload(["--test-hang"], subreaper=True)
+        assert raised.value is primary
+    finally:
+        sys.setprofile(None)
+        signal.signal(signal.SIGTERM, previous_term)
+        for fd in (result_read, result_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    assert injected is True
+    assert len(payloads) == 1
+    assert isinstance(payloads[0].pid, int)
+    assert payloads[0].poll() is not None
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX signal masks",
+)
+def test_direct_children_open_publishes_before_delivered_sigint(monkeypatch):
+    import hark.tts_worker as worker
+
+    real_open = os.open
+    opened: list[int] = []
+
+    class Libc:
+        @staticmethod
+        def prctl(*args):
+            return 0
+
+    def open_then_sigint(path, flags):
+        fd = real_open(path, flags)
+        opened.append(fd)
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGINT in blocked
+        os.kill(os.getpid(), signal.SIGINT)
+        return fd
+
+    monkeypatch.setattr(worker.ctypes, "CDLL", lambda *args, **kwargs: Libc())
+    monkeypatch.setattr(worker, "_linux_direct_children", lambda: set())
+    monkeypatch.setattr(worker.os, "open", open_then_sigint)
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_FD", -1)
+    monkeypatch.setattr(worker, "_DIRECT_CHILDREN_AUTHORITY_PID", -1)
+    previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            worker._install_parent_death_signal()
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+
+    assert len(opened) == 1
+    assert worker._DIRECT_CHILDREN_AUTHORITY_FD == -1
+    assert worker._DIRECT_CHILDREN_AUTHORITY_PID == -1
+    with pytest.raises(OSError) as caught:
+        os.fstat(opened[0])
+    assert caught.value.errno == errno.EBADF

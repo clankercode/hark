@@ -129,8 +129,35 @@ class _CliSigintController:
                 guard.restore_preserving_primary()
 
     def deactivate(self) -> None:
+        if not self._active_depth:
+            return
+        self._active_depth -= 1
         if self._active_depth:
-            self._active_depth -= 1
+            return
+
+        entry_primary = sys.exception()
+        guard: SigintMaskGuard | None = None
+        try:
+            guard = SigintMaskGuard.acquire()
+            try:
+                # A still-running synth pool deliberately retains its own
+                # handler for repeated-SIGINT escalation. Only restore the
+                # controller when it is still the live outermost owner.
+                if signal.getsignal(signal.SIGINT) is self._handler:
+                    signal.signal(signal.SIGINT, self._previous)
+            finally:
+                self._reconcile_handler_truth()
+        except (OSError, ValueError):
+            # Match activate's main-thread-only degradation without replacing
+            # an exception already leaving the CLI dispatch boundary.
+            if entry_primary is None:
+                raise
+        except BaseException:
+            if entry_primary is None:
+                raise
+        finally:
+            if guard is not None:
+                guard.restore_preserving_primary()
 
 
 _CLI_SIGINT_CONTROLLER = _CliSigintController()

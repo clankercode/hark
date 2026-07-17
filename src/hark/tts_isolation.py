@@ -24,10 +24,122 @@ _MAX_METADATA_SIZE = 64 * 1024
 _MAX_AUDIO_SIZE = 64 * 1024 * 1024
 _BORROW_BUSY = object()
 _OS_CLOSE = os.close
-_PIPE_CLOSE = os.close
-_PIPE_FDOPEN = os.fdopen
-_PIPE_RAW_CLOSE = os.close
 _PTHREAD_SIGMASK = getattr(signal, "pthread_sigmask", None)
+_NATIVE_SYNTH_POPEN_INIT = subprocess.Popen.__init__
+
+
+class _FdTransferState:
+    """Record whether a fallible fd transfer may have taken kernel effect."""
+
+    __slots__ = ("effect_started", "result")
+
+    def __init__(self) -> None:
+        self.effect_started = False
+        self.result: Any = None
+
+
+def _restore_runtime_callback(
+    setter: Callable[[Any], None],
+    callback: Any,
+) -> None:
+    """Restore one tracing callback without replacing an active exception."""
+    primary = sys.exception()
+    try:
+        setter(callback)
+    except BaseException:
+        if primary is None:
+            raise
+
+
+def _run_fd_transfer(
+    state: _FdTransferState,
+    operation: Callable[..., Any],
+    *args: Any,
+    on_success: Callable[[], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run marker and fd effect without a Python interruption window."""
+    mask = SigintMaskGuard.acquire(_PTHREAD_SIGMASK)
+    trace = sys.gettrace()
+    profile = sys.getprofile()
+    caught: BaseException | None = None
+    try:
+        # A trace/profile callback can raise at any opcode. Disable both only
+        # after SIGINT is blocked, then publish the irreversible boundary and
+        # enter the fd operation without executing interruptible callbacks in
+        # between. Any exception before this point leaves ``effect_started``
+        # false; every exception after it must leave the caller disarmed.
+        if trace is not None:
+            sys.settrace(None)
+        if profile is not None:
+            sys.setprofile(None)
+        state.effect_started = True
+        state.result = operation(*args, **kwargs)
+        if on_success is not None:
+            on_success()
+    except BaseException:
+        caught = sys.exception()
+        raise
+    finally:
+        try:
+            # Restore the signal mask while callbacks remain disabled. A
+            # pending SIGINT is delivered here, after effect state is final.
+            try:
+                mask.restore()
+            except BaseException:
+                restore_failure = sys.exception()
+                # If unmasking delivered a pending signal, the kernel mask may
+                # already be restored while the guard has not yet observed it.
+                # Retry its reconciliation before propagating that exact
+                # signal, so __del__ cannot redeliver it later.
+                mask.restore_suppressing()
+                if caught is None:
+                    assert restore_failure is not None
+                    raise restore_failure
+        finally:
+            try:
+                if profile is not None:
+                    _restore_runtime_callback(sys.setprofile, profile)
+            finally:
+                if trace is not None:
+                    _restore_runtime_callback(sys.settrace, trace)
+    return state.result
+
+
+def _protected_synth_popen_init(
+    process: subprocess.Popen[bytes],
+    command: list[str],
+    **kwargs: Any,
+) -> None:
+    """Protect only real Popen init, leaving injectable wrappers interruptible."""
+    _run_fd_transfer(
+        _FdTransferState(),
+        _NATIVE_SYNTH_POPEN_INIT,
+        process,
+        command,
+        **kwargs,
+    )
+
+
+_SYNTH_POPEN_INIT = _protected_synth_popen_init
+
+
+def _pipe_close(fd: int, state: _FdTransferState) -> None:
+    _run_fd_transfer(state, _OS_CLOSE, fd)
+
+
+def _pipe_fdopen(
+    fd: int,
+    state: _FdTransferState,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    return _run_fd_transfer(state, os.fdopen, fd, *args, **kwargs)
+
+
+_PIPE_CLOSE = _pipe_close
+_PIPE_FDOPEN = _pipe_fdopen
+_PIPE_RAW_CLOSE = _pipe_close
 
 
 @dataclass(frozen=True)
@@ -58,26 +170,65 @@ def _pipe_fd_identity(fd: int) -> tuple[int, int, int, int]:
 class _RawPipeFdGuard:
     """Own one pipe fd across fallible close/fdopen ownership transfers."""
 
-    __slots__ = ("_fd", "_identity")
+    __slots__ = ("_committed", "_fd")
 
     def __init__(self, fd: int) -> None:
+        _pipe_fd_identity(fd)
         self._fd = fd
-        self._identity = _pipe_fd_identity(fd)
+        self._committed = True
+
+    @classmethod
+    def claim(cls, slots: list[Any], index: int) -> _RawPipeFdGuard:
+        """Atomically move one raw descriptor slot into a guard.
+
+        The mutable slot is the source-of-truth owner.  Invalidating it and
+        publishing guard ownership happen inside one exception region, so an
+        asynchronous exception can never leave both the scalar cleanup and the
+        guard believing they own the same descriptor.
+        """
+        guard = object.__new__(cls)
+        guard._committed = False
+        fd = slots[index]
+        if not isinstance(fd, int) or fd < 0:
+            raise ValueError("raw pipe descriptor is already claimed")
+        guard._fd = fd
+
+        def publish() -> None:
+            # The raw slot remains authoritative until this callback runs with
+            # SIGINT blocked and trace/profile callbacks disabled.  Once the
+            # slot points at ``guard``, commit destructor ownership before any
+            # callback can observe the transfer.
+            slots[index] = guard
+            guard._committed = True
+
+        try:
+            _pipe_fd_identity(fd)
+            _run_fd_transfer(_FdTransferState(), publish)
+            return guard
+        except BaseException:
+            # Before publication the original integer slot is still the sole
+            # owner and this uncommitted temporary must not close it.  After
+            # publication the slot contains the committed guard, allowing the
+            # caller's ordinary cleanup/error path to retain or consume it.
+            raise
+
+    def __del__(self) -> None:
+        # A signal/trace exception can be delivered after claim() returns but
+        # before its caller stores the temporary.  The temporary guard remains
+        # the sole owner and must release that descriptor when unwound.
+        if getattr(self, "_committed", False):
+            try:
+                self.close_if_owned()
+            except BaseException:
+                pass
 
     @property
     def fd(self) -> int:
         return self._fd
 
-    def _reconcile_failed_transfer(self, fd: int) -> None:
-        """Reclaim ownership only while *fd* still names our original pipe."""
-        try:
-            current = _pipe_fd_identity(fd)
-        except OSError:
-            # The transfer may have consumed the descriptor before raising.
-            return
-        if current == self._identity:
-            # The operation failed before consuming the pipe. Reclaim it only
-            # after live identity proves that no foreign fd reused the number.
+    def _reconcile_failed_transfer(self, fd: int, state: _FdTransferState) -> None:
+        """Reclaim ownership only after a proven pre-effect failure."""
+        if not state.effect_started:
             self._fd = fd
 
     def close(self) -> None:
@@ -85,13 +236,14 @@ class _RawPipeFdGuard:
         # Relinquish before close can consume the descriptor. This closes the
         # post-return bytecode window: an asynchronous BaseException after the
         # kernel effect can never leave a reused descriptor owned by this guard.
-        self._fd = -1
+        state = _FdTransferState()
         try:
-            _PIPE_CLOSE(fd)
+            self._fd = -1
+            _PIPE_CLOSE(fd, state)
         except BaseException:
             primary = sys.exception()
             try:
-                self._reconcile_failed_transfer(fd)
+                self._reconcile_failed_transfer(fd, state)
             except BaseException:
                 # Transfer reconciliation is cleanup; preserve the exact
                 # close failure that established this unwind.
@@ -103,13 +255,25 @@ class _RawPipeFdGuard:
         # fdopen owns the resource if it returns. Publish relinquishment before
         # entering that fallible transfer so a post-return signal/trace hook
         # cannot make later cleanup close a same-number replacement.
-        self._fd = -1
+        state = _FdTransferState()
+        adopted = None
         try:
-            adopted = _PIPE_FDOPEN(fd, *args, **kwargs)
+            self._fd = -1
+            adopted = _PIPE_FDOPEN(fd, state, *args, **kwargs)
+            state.result = None
         except BaseException:
             primary = sys.exception()
             try:
-                self._reconcile_failed_transfer(fd)
+                # The operation may have returned an owning file object before
+                # a pending signal or restored trace callback interrupted its
+                # publication. Close that object, never its reused integer.
+                transfer_result = state.result
+                state.result = None
+                if transfer_result is not None:
+                    transfer_result.close()
+                if adopted is not None and adopted is not transfer_result:
+                    adopted.close()
+                self._reconcile_failed_transfer(fd, state)
             except BaseException:
                 assert primary is not None
             raise
@@ -121,8 +285,17 @@ class _RawPipeFdGuard:
             return
         # Relinquish before the raw close. A post-effect failure must not make
         # later cleanup close a same-number replacement.
-        self._fd = -1
-        _PIPE_RAW_CLOSE(fd)
+        state = _FdTransferState()
+        try:
+            self._fd = -1
+            _PIPE_RAW_CLOSE(fd, state)
+        except BaseException:
+            primary = sys.exception()
+            try:
+                self._reconcile_failed_transfer(fd, state)
+            except BaseException:
+                assert primary is not None
+            raise
 
 
 class _BorrowLease:
@@ -250,37 +423,21 @@ class _OwnedPidfd:
 
     @staticmethod
     def _close_raw(fd: int) -> None:
+        """Close an uncommitted raw pidfd without an interruption gap."""
+
         # Construction cleanup is best-effort and cannot replace its primary.
-        # A one-shot injected mask failure is retried after the guard restores
-        # the known prior state.
-        guard = None
+        # Retry only failures proven to precede the close-effect boundary. Once
+        # the operation may have run, the numeric descriptor must never be used
+        # again because it may already name a foreign replacement.
         for _ in range(2):
+            state = _FdTransferState()
             try:
-                guard = SigintMaskGuard.acquire(_PTHREAD_SIGMASK)
-                break
+                _run_fd_transfer(state, _OS_CLOSE, fd)
             except BaseException:
+                if state.effect_started:
+                    return
                 continue
-        if guard is None:
-            try:
-                _OS_CLOSE(fd)
-            except BaseException:
-                pass
             return
-        trace = sys.gettrace()
-        try:
-            if trace is not None:
-                sys.settrace(None)
-            try:
-                _OS_CLOSE(fd)
-            except BaseException:
-                pass
-        finally:
-            if trace is not None:
-                try:
-                    sys.settrace(trace)
-                except BaseException:
-                    pass
-            guard.restore_suppressing()
 
     @property
     def fd(self) -> int | None:
@@ -356,35 +513,25 @@ class _OwnedPidfd:
             return
 
     def _finish_close_exclusive(self) -> None:
-        fd = self._fd
-        if fd is None:
-            return
-        guard = SigintMaskGuard.acquire(_PTHREAD_SIGMASK)
-        trace = sys.gettrace()
-        try:
-            if trace is not None:
-                sys.settrace(None)
-            # Invalidate ownership only while SIGINT is blocked, then close via
-            # the captured OS primitive with Python tracing disabled. Nested or
-            # concurrent cleanup cannot win the close authority or observe a
-            # descriptor integer after the kernel consumes it.
-            self._fd = None
+        for _ in range(2):
+            fd = self._fd
+            if fd is None:
+                return
+            state = _FdTransferState()
             try:
-                _OS_CLOSE(fd)
+                # Relinquish before entering the atomic transfer primitive. A
+                # callback exception on the call boundary is still pre-effect
+                # and restores this exact owner; once the operation may have
+                # begun, no retry can close a same-number replacement.
+                self._fd = None
+                _run_fd_transfer(state, _OS_CLOSE, fd)
             except BaseException:
-                # Ownership is already invalidated under the signal mask. A
-                # hostile cleanup hook must not replace the primary exception
-                # or make this object close the same integer again.
-                pass
-        finally:
-            primary = sys.exception()
-            if trace is not None:
-                try:
-                    sys.settrace(trace)
-                except BaseException:
-                    if primary is None:
-                        raise
-            guard.restore()
+                if not state.effect_started:
+                    self._fd = fd
+                    continue
+                raise
+            return
+        raise RuntimeError("could not enter pidfd close effect boundary")
 
     def __del__(self) -> None:
         if not getattr(self, "_committed", False):
@@ -526,7 +673,7 @@ class SynthProcessLifecycle:
                 # has published a real PID but an outer wrapper stalls before
                 # returning, the signal path can terminate that direct child
                 # through the preclaimed authority object.
-                subprocess.Popen.__init__(process, command, **kwargs)
+                _SYNTH_POPEN_INIT(process, command, **kwargs)
             finally:
                 primary = sys.exception()
                 if self._pid(process) is not None:
@@ -874,14 +1021,31 @@ class SubprocessSynthTransport:
         pid = SynthProcessLifecycle._pid(process)
         if pid is None:
             raise SynthWorkerError("TTS synth supervisor has no process id")
+        state = _FdTransferState()
+
+        def open_owned_pidfd() -> _OwnedPidfd:
+            # Trace/profile callbacks and SIGINT stay suppressed from the
+            # kernel fd creation through publication into its RAII owner. A
+            # pending interrupt delivered during restoration therefore finds
+            # the owner reachable through ``state.result``.
+            return _OwnedPidfd.from_raw(pidfd_open(pid, 0))
+
+        def close_published_owner() -> None:
+            owner = state.result
+            state.result = None
+            if isinstance(owner, _OwnedPidfd):
+                try:
+                    owner.request_close()
+                except BaseException:
+                    pass
+
         try:
-            raw_pidfd = pidfd_open(pid, 0)
+            return _run_fd_transfer(state, open_owned_pidfd)
         except OSError as exc:
+            close_published_owner()
             raise SynthWorkerError("could not claim TTS synth worker pidfd") from exc
-        try:
-            return _OwnedPidfd.from_raw(raw_pidfd)
         except BaseException:
-            # from_raw has already consumed the raw descriptor on failure.
+            close_published_owner()
             raise
 
     @staticmethod
@@ -962,17 +1126,42 @@ class SubprocessSynthTransport:
         raise SynthWorkerError(f"TTS synth worker {remote_type}: {remote_message}")
 
     def synthesize(self, request: SynthRequest) -> SynthResponse:
-        read_fd, write_fd = os.pipe()
+        # Preallocate the cleanup publication before entering os.pipe. The
+        # protected operation writes both returned integers here before
+        # callbacks or pending SIGINT can resume, so kernel-created pipe ends
+        # are never stranded in an ephemeral return tuple.
+        raw_fds: list[int | _RawPipeFdGuard] = [-1, -1]
+
+        def acquire_pipe() -> None:
+            read_fd, write_fd = os.pipe()
+            raw_fds[0] = read_fd
+            raw_fds[1] = write_fd
+
+        def publish_pipe_guards() -> None:
+            # Convert both integers to destructor-backed owners before the
+            # outer transfer restores callbacks or unmasks pending SIGINT.
+            for index in range(2):
+                _RawPipeFdGuard.claim(raw_fds, index)
+
         read_guard: _RawPipeFdGuard | None = None
         write_guard: _RawPipeFdGuard | None = None
         process: subprocess.Popen[bytes] | None = None
         identity: _IdentityToken | None = None
         read_file = None
         try:
-            read_guard = _RawPipeFdGuard(read_fd)
-            read_fd = -1
-            write_guard = _RawPipeFdGuard(write_fd)
-            write_fd = -1
+            _run_fd_transfer(
+                _FdTransferState(),
+                acquire_pipe,
+                on_success=publish_pipe_guards,
+            )
+            raw_read_owner = raw_fds[0]
+            assert isinstance(raw_read_owner, _RawPipeFdGuard)
+            read_guard = raw_read_owner
+            raw_fds[0] = -1
+            raw_write_owner = raw_fds[1]
+            assert isinstance(raw_write_owner, _RawPipeFdGuard)
+            write_guard = raw_write_owner
+            raw_fds[1] = -1
             env = os.environ.copy()
             assert write_guard.fd >= 0
             env["HARK_TTS_RESULT_FD"] = str(write_guard.fd)
@@ -1047,18 +1236,20 @@ class SubprocessSynthTransport:
                     write_guard.close_if_owned()
                 except BaseException:
                     pass
-            if read_fd >= 0:
+            for index, raw_owner in enumerate(raw_fds):
+                if isinstance(raw_owner, _RawPipeFdGuard):
+                    raw_fds[index] = -1
+                    try:
+                        raw_owner.close_if_owned()
+                    except BaseException:
+                        pass
+                    continue
+                raw_fd = raw_owner
+                if raw_fd < 0:
+                    continue
                 try:
-                    closing_fd = read_fd
-                    read_fd = -1
-                    _PIPE_RAW_CLOSE(closing_fd)
-                except BaseException:
-                    pass
-            if write_fd >= 0:
-                try:
-                    closing_fd = write_fd
-                    write_fd = -1
-                    _PIPE_RAW_CLOSE(closing_fd)
+                    raw_fds[index] = -1
+                    _PIPE_RAW_CLOSE(raw_fd, _FdTransferState())
                 except BaseException:
                     pass
             if process is not None:

@@ -1062,6 +1062,8 @@ def run_tts(
                         raise
                     _apply_synth(ab, pn, ct, vu, fch)
     finally:
+        run_primary = sys.exception()
+        cleanup_primary: tuple[BaseException, Any] | None = None
         try:
             if play:
                 # B086 / B120 / B123: never leave depth>0 or Pulse stuck muted after TTS
@@ -1071,11 +1073,20 @@ def run_tts(
                         mute_applied=mute_applied,
                         was_muted_before=mute_was_muted,
                     )
-                except BaseException:
+                except BaseException as exc:
                     mute_repair = None
+                    if run_primary is None:
+                        cleanup_primary = (exc, exc.__traceback__)
         finally:
             if synth_pool is not None:
-                synth_pool.arm_terminal_exit()
+                try:
+                    synth_pool.arm_terminal_exit()
+                except BaseException as exc:
+                    if run_primary is None and cleanup_primary is None:
+                        cleanup_primary = (exc, exc.__traceback__)
+        if cleanup_primary is not None:
+            exc, traceback = cleanup_primary
+            raise exc.with_traceback(traceback)
 
     latency_ms = int(1000 * (time.monotonic() - t0))
     out_path = None
