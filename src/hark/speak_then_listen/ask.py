@@ -173,8 +173,11 @@ def _run_ask(
 def interrupted_ask_result(exc: KeyboardInterrupt) -> dict[str, Any]:
     """Translate an interruption anywhere in the ask signal scope to JSON."""
     signal_name = getattr(exc, "signal_name", None)
-    end_phrase = f"signal:{signal_name}" if signal_name else "interrupt"
-    return {
+    reason = getattr(exc, "reason", None)
+    end_phrase = reason or (
+        f"signal:{signal_name}" if signal_name else "interrupt"
+    )
+    result = {
         "ok": False,
         "cancelled": True,
         "error": "interrupted",
@@ -184,6 +187,9 @@ def interrupted_ask_result(exc: KeyboardInterrupt) -> dict[str, Any]:
         "exit": ABORT,
         "tts": getattr(exc, "tts_info", None),
     }
+    if reason is not None:
+        result["reason"] = reason
+    return result
 
 
 def run_ask(

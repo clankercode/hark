@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import fcntl
 import os
+import select
 import signal
 import struct
 import threading
@@ -43,6 +44,15 @@ class CaptureInterrupted(KeyboardInterrupt):
         super().__init__(f"capture interrupted by {signal_name}")
 
 
+class CaptureCancelled(KeyboardInterrupt):
+    """A non-signal lifecycle event cancelled one-shot microphone capture."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.signal_name = None
+        super().__init__(f"capture cancelled: {reason}")
+
+
 class _CaptureSignalState:
     """Cancellation shared by the ask thread and an overlap capture worker."""
 
@@ -50,6 +60,8 @@ class _CaptureSignalState:
         self._lock = threading.RLock()
         self._cancelled = False
         self._signum: int | None = None
+        self._reason: str | None = None
+        self._wake_signal_reason: str | None = None
         self._attempts = 0
         self._cleanup_depth = 0
 
@@ -65,22 +77,53 @@ class _CaptureSignalState:
         with self._lock:
             return self._attempts > 0
 
-    def request(self, signum: int | None = None) -> bool:
-        """Publish cancellation atomically; return whether this was the first."""
+    def request(
+        self,
+        signum: int | None = None,
+        *,
+        reason: str | None = None,
+    ) -> bool:
+        """Publish cancellation atomically; preserve its first known identity."""
         with self._lock:
             first = not self._cancelled
             self._cancelled = True
-            if signum is not None and self._signum is None:
-                # The first delivered signal is the cancellation's identity. A
-                # repeat may reinforce cleanup, but never rewrites the result.
-                self._signum = signum
+            if self._signum is None and self._reason is None:
+                if reason:
+                    self._reason = reason
+                elif signum is not None:
+                    # The first delivered signal is the cancellation's identity.
+                    # A repeat reinforces cleanup but never rewrites the result.
+                    self._signum = signum
             return first
+
+    def prepare_wake_signal(self, reason: str) -> bool:
+        """Stage an internal SIGTERM that wakes the main thread from native read."""
+        with self._lock:
+            if self._signum is not None:
+                return False
+            self._cancelled = True
+            if self._reason is None:
+                self._reason = reason
+            self._wake_signal_reason = self._reason
+            return True
+
+    def consume_wake_signal(self, signum: int) -> str | None:
+        """Return a staged lifecycle reason instead of treating SIGTERM as external."""
+        with self._lock:
+            if signum != signal.SIGTERM or self._wake_signal_reason is None:
+                return None
+            reason = self._wake_signal_reason
+            self._wake_signal_reason = None
+            return reason
 
     def interruption(self) -> KeyboardInterrupt | None:
         with self._lock:
             if not self._cancelled:
                 return None
             signum = self._signum
+            reason = self._reason
+        if reason is not None:
+            return CaptureCancelled(reason)
         if signum is None:
             return KeyboardInterrupt("capture cancelled")
         return CaptureInterrupted(signum)
@@ -118,6 +161,130 @@ class _StreamCleanupOwner:
 
 
 _stream_cancel_workers: dict[int, _StreamCleanupOwner] = {}
+_PARENT_EXIT_REASON = "orchestrator_disappeared"
+_PARENT_WATCH_POLL_S = 0.05
+# Keep parent-lifetime monitoring independent of tests that replace the native
+# cleanup thread factory to exercise Thread.start publication races.
+_ParentWatchThread = threading.Thread
+
+
+def _proc_parent_and_start(pid: int) -> tuple[int, str]:
+    """Return Linux procfs parent PID and start ticks for one process."""
+    with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+        raw = handle.read()
+    fields = raw[raw.rfind(")") + 2 :].split()
+    try:
+        return int(fields[1]), fields[19]
+    except (IndexError, ValueError) as exc:
+        raise OSError(f"malformed /proc/{pid}/stat") from exc
+
+
+def _ancestor_identities() -> tuple[tuple[int, str | None], ...]:
+    """Snapshot the launch chain so surviving shell wrappers cannot mask exit."""
+    identities: list[tuple[int, str | None]] = []
+    seen: set[int] = set()
+    pid = os.getppid()
+    while pid > 1 and pid not in seen and len(identities) < 64:
+        seen.add(pid)
+        try:
+            parent, start = _proc_parent_and_start(pid)
+        except OSError:
+            identities.append((pid, None))
+            break
+        identities.append((pid, start))
+        pid = parent
+    return tuple(identities)
+
+
+def _ancestor_still_alive(identity: tuple[int, str | None]) -> bool:
+    pid, expected_start = identity
+    try:
+        _parent, current_start = _proc_parent_and_start(pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    except OSError:
+        # Transient procfs failures are not evidence that the orchestrator died.
+        return True
+    return expected_start is None or current_start == expected_start
+
+
+class _ParentLifetimeGuard:
+    """Wake a one-shot ask when any original launcher ancestor disappears."""
+
+    def __init__(self, state: _CaptureSignalState) -> None:
+        self._state = state
+        self._ancestors = _ancestor_identities()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not self._ancestors:
+            return
+        self._thread = _ParentWatchThread(
+            target=self._watch,
+            name="hark-ask-parent-watch",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.1, _PARENT_WATCH_POLL_S * 3))
+
+    def _watch(self) -> None:
+        parent_gone = False
+        pidfds: list[int] = []
+        fallback: list[tuple[int, str | None]] = []
+        try:
+            pidfd_open = getattr(os, "pidfd_open", None)
+            for identity in self._ancestors:
+                if not callable(pidfd_open):
+                    fallback.append(identity)
+                    continue
+                try:
+                    pidfds.append(pidfd_open(identity[0], 0))
+                except (FileNotFoundError, ProcessLookupError):
+                    parent_gone = True
+                    break
+                except OSError:
+                    fallback.append(identity)
+            while not parent_gone and not self._stop.is_set():
+                if pidfds:
+                    readable, _writable, _errors = select.select(
+                        pidfds, [], [], _PARENT_WATCH_POLL_S
+                    )
+                    parent_gone = bool(readable)
+                else:
+                    self._stop.wait(_PARENT_WATCH_POLL_S)
+                if not parent_gone and fallback:
+                    parent_gone = any(
+                        not _ancestor_still_alive(identity)
+                        for identity in fallback
+                    )
+        finally:
+            for pidfd in pidfds:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    pass
+
+        if not parent_gone or self._stop.is_set():
+            return
+        # The orchestrator supplied no signal. Stage a reason-bearing internal
+        # wake so a main thread blocked in Pa_ReadStream exits promptly even if
+        # PortAudio abort/close itself never returns.
+        if not self._state.prepare_wake_signal(_PARENT_EXIT_REASON):
+            return
+        # Start native abort even when SIGTERM delivery is unavailable or
+        # blocked. The signal is an additional bounded wake for a Pa_ReadStream
+        # whose abort/close path itself never returns.
+        cancel_active_capture(reason=_PARENT_EXIT_REASON)
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def _abort_input_stream(stream: Any) -> bool:
@@ -317,11 +484,15 @@ def capture_in_progress() -> bool:
         return bool(_stream_cancel_workers)
 
 
-def request_capture_cancel(signum: int | None = None) -> None:
+def request_capture_cancel(
+    signum: int | None = None,
+    *,
+    reason: str | None = None,
+) -> None:
     """Make cancellation sticky for current and not-yet-registered capture."""
     state = _current_capture_state()
     if state is not None:
-        state.request(signum)
+        state.request(signum, reason=reason)
 
 
 def raise_if_capture_cancelled(
@@ -402,7 +573,11 @@ def cancellation_cleanup(
         raise_if_capture_cancelled(owner)
 
 
-def cancel_active_capture(signum: int | None = None) -> bool:
+def cancel_active_capture(
+    signum: int | None = None,
+    *,
+    reason: str | None = None,
+) -> bool:
     """Detach and asynchronously abort this process's active input stream.
 
     No PID lookup or process signalling is performed: this is deliberately
@@ -411,7 +586,7 @@ def cancel_active_capture(signum: int | None = None) -> bool:
     bounded parent cleanup calls them synchronously.
     """
     global _active_input_stream
-    request_capture_cancel(signum)
+    request_capture_cancel(signum, reason=reason)
     owner: _StreamCleanupOwner | None = None
     with _active_stream_lock:
         stream = _active_input_stream
@@ -475,6 +650,10 @@ def _registered_input_stream(stream: Any) -> Iterator[None]:
                 # Preserve the capture/provider exception; the owner registry
                 # already reflects post-launch uncertainty or was reconciled.
                 pass
+        interruption = state.interruption() if state is not None else None
+        if interruption is not None and not isinstance(exc, KeyboardInterrupt):
+            primary = interruption
+            raise interruption from exc
         raise
     finally:
         with cancellation_cleanup(state, primary=primary):
@@ -520,6 +699,12 @@ def capture_interrupt_signals() -> Iterator[None]:
         _capture_signal_state = state
 
     def _interrupt(signum: int, _frame: object) -> None:
+        wake_reason = state.consume_wake_signal(signum)
+        if wake_reason is not None:
+            cancel_active_capture(reason=wake_reason)
+            if not state.cleaning_up():
+                raise CaptureCancelled(wake_reason)
+            return
         first = state.request(signum)
         cancel_active_capture(signum)
         if not first or state.cleaning_up():
@@ -529,14 +714,17 @@ def capture_interrupt_signals() -> Iterator[None]:
         raise CaptureInterrupted(signum)
 
     primary: BaseException | None = None
+    parent_guard = _ParentLifetimeGuard(state)
     try:
         for signum in watched:
             signal.signal(signum, _interrupt)
+        parent_guard.start()
         yield
     except BaseException as exc:
         primary = exc
         raise
     finally:
+        parent_guard.stop()
         with cancellation_cleanup(state, primary=primary):
             with _capture_state_lock:
                 if _capture_signal_state is state:
