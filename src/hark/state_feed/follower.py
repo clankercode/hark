@@ -49,6 +49,18 @@ class StateFeedFollower:
         for s in self.sources:
             s.start_at_end()
 
+    def start_live_with_snapshot(self) -> list[FeedRecord]:
+        """Establish live cursors and return records before each boundary.
+
+        All source boundaries are subscribed before this method returns, so
+        callers can emit a replay from the snapshot without opening a
+        replay-to-live gap for appends that land during that emission.
+        """
+        records: list[FeedRecord] = []
+        for source in self.sources:
+            records.extend(source.snapshot_at_end())
+        return records
+
     def start_from(self, cursor: str | None, *, default_tail: int = 0) -> None:
         """Resume from a composite cursor; unknown keys fall back to a recent
         tail of ``default_tail`` records (0 = from end)."""

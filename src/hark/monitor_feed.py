@@ -423,7 +423,12 @@ def replay_matching(
     out: TextIO,
     include_test_events: bool = False,
 ) -> int:
-    """Replay last *limit* matching events (chronological) from files."""
+    """Replay last *limit* matching events (chronological) from files.
+
+    Standalone helper for non-follow callers. Live ``hark monitor`` uses
+    :func:`follow_state_files` with ``replay>0`` so subscription happens
+    before replay emission (B144).
+    """
     if limit <= 0:
         return 0
     matched: list[tuple[dict[str, Any], str]] = []
@@ -440,6 +445,18 @@ def replay_matching(
                 obj, kinds, include_test_events=include_test_events
             ):
                 matched.append((obj, path.name))
+
+    return _emit_replay(matched, limit=limit, for_monitor=for_monitor, out=out)
+
+
+def _emit_replay(
+    matched: list[tuple[dict[str, Any], str]],
+    *,
+    limit: int,
+    for_monitor: bool,
+    out: TextIO,
+) -> int:
+    """Emit the last matching records from an already captured snapshot."""
 
     # keep last N across all files by observed_at if present else order
     def sort_key(item: tuple[dict[str, Any], str]) -> str:
@@ -466,11 +483,17 @@ def follow_state_files(
     out: TextIO | None = None,
     poll_s: float = 0.05,
     include_test_events: bool = False,
+    replay: int = 0,
 ) -> int:
     """Follow JSONL state files; print matching handsfree wake events forever.
 
     Uses :class:`~hark.state_feed.StateFeedFollower` (partial buffer, inode
     rotation, truncation) — same core as the dashboard MultiTailer adapter.
+
+    When ``replay > 0``, establishes a durable per-source subscription first,
+    emits the last matching snapshot records as replay, then continues live.
+    Appends that land after the snapshot boundary but during replay emission
+    are delivered as live records (B144).
     """
     out = out or sys.stdout
     # Ensure files exist so first open works
@@ -484,7 +507,25 @@ def follow_state_files(
     ]
     follower = StateFeedFollower(sources)
     try:
-        follower.start_live()
+        if replay > 0:
+            snapshot = follower.start_live_with_snapshot()
+            matched = [
+                (record.payload, record.source)
+                for record in snapshot
+                if should_surface(
+                    record.payload,
+                    kinds,
+                    include_test_events=include_test_events,
+                )
+            ]
+            _emit_replay(
+                matched,
+                limit=replay,
+                for_monitor=for_monitor,
+                out=out,
+            )
+        else:
+            follower.start_live()
         while True:
             progressed = False
             for rec in follower.poll():
@@ -552,11 +593,13 @@ def run_monitor(
             pass
         kinds = kinds if kinds is not None else MODE_A_WAKE_KINDS
         paths = paths or default_feed_paths()
-        if replay:
-            replay_matching(
-                paths, kinds=kinds, limit=replay, for_monitor=for_monitor, out=out
-            )
-        return follow_state_files(paths, kinds=kinds, for_monitor=for_monitor, out=out)
+        return follow_state_files(
+            paths,
+            kinds=kinds,
+            for_monitor=for_monitor,
+            out=out,
+            replay=replay,
+        )
     finally:
         if lock is not None:
             lock.release()

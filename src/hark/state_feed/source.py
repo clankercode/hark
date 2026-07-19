@@ -320,6 +320,93 @@ class SourceFollower:
     def start_at_end(self) -> None:
         self._reopen(from_start=False)
 
+    def snapshot_at_end(self) -> list[FeedRecord]:
+        """Capture complete records and stay subscribed at that boundary.
+
+        The snapshot boundary is the size of the opened file descriptor at
+        subscription time, not a later path lookup. Bytes appended after that
+        boundary remain unread on the same descriptor and are returned by
+        :meth:`poll`. If the path is rotated, ``poll`` drains any unread
+        bytes on the old descriptor before opening the new incarnation.
+        """
+        self.close()
+        self._reset()
+        try:
+            self._fh = self.path.open("rb")
+        except OSError:
+            return []
+        try:
+            stat = os.fstat(self._fh.fileno())
+            self._ident = (stat.st_dev, stat.st_ino)
+            boundary = stat.st_size
+            self._size_seen = boundary
+            self._mtime_ns = stat.st_mtime_ns
+            self._ctime_ns = stat.st_ctime_ns
+            self._prefix_identity = self._prefix_identity_from_fd(self._fh.fileno())
+        except OSError:
+            self.close()
+            return []
+
+        remaining = boundary
+        data = bytearray()
+        while remaining > 0:
+            chunk = self._fh.read(remaining)
+            if not chunk:
+                break
+            data.extend(chunk)
+            remaining -= len(chunk)
+        self._buf = bytes(data)
+        return list(self._emit_complete_lines())
+
+    def _record_from_raw(self, raw_line: bytes) -> FeedRecord | None:
+        self._consume_line(raw_line)
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line:
+            return None
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        if self.transform is not None:
+            obj = self.transform(obj)
+        position = self.cursor_position
+        return FeedRecord(
+            self.source,
+            self.cursor_key,
+            self.seq,
+            obj,
+            incarnation=position.incarnation,
+            checkpoint=position.checkpoint,
+            byte_offset=position.byte_offset,
+        )
+
+    def _emit_complete_lines(self) -> Iterator[FeedRecord]:
+        """Yield records for complete lines currently in ``_buf``."""
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl < 0:
+                return
+            raw_line, self._buf = self._buf[:nl], self._buf[nl + 1 :]
+            record = self._record_from_raw(raw_line)
+            if record is not None:
+                yield record
+
+    def _drain_handle(self) -> Iterator[FeedRecord]:
+        """Read remaining bytes from the open descriptor and emit complete lines."""
+        if self._fh is None:
+            return
+        while True:
+            yield from self._emit_complete_lines()
+            # Prefer buffered complete-line reads for parity with seek paths.
+            raw_line = self._read_complete_line()
+            if raw_line is None:
+                return
+            record = self._record_from_raw(raw_line)
+            if record is not None:
+                yield record
+
     def poll(self) -> Iterator[FeedRecord]:
         """Yield complete new records since the last poll."""
         snapshot = self._path_snapshot()
@@ -329,14 +416,23 @@ class SourceFollower:
             self._reopen(from_start=True)
             if self._fh is None:
                 return
-        elif snapshot is not None and (
-            snapshot[0] != self._ident or snapshot[4] != self._prefix_identity
-        ):
+        elif snapshot is not None and snapshot[0] != self._ident:
+            # True rotation: drain unread bytes on the subscribed descriptor
+            # so a pre-rotation append is not lost (B144), then reopen.
+            yield from self._drain_handle()
+            self._reopen(from_start=True)
+            if self._fh is None:
+                return
+        elif snapshot is not None and snapshot[4] != self._prefix_identity:
+            # Same inode but bounded prefix identity changed. Restart from the
+            # new top without draining the old offset view (B131).
             self._reopen(from_start=True)
             if self._fh is None:
                 return
         else:
             if snapshot is None:
+                # Path disappeared; open descriptor still durable for prior writes.
+                yield from self._drain_handle()
                 return
             size = snapshot[1]
             if size < self._size_seen:
@@ -347,32 +443,7 @@ class SourceFollower:
             self._mtime_ns = snapshot[2]
             self._ctime_ns = snapshot[3]
 
-        while True:
-            raw_line = self._read_complete_line()
-            if raw_line is None:
-                return
-            self._consume_line(raw_line)
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if self.transform is not None:
-                obj = self.transform(obj)
-            position = self.cursor_position
-            yield FeedRecord(
-                self.source,
-                self.cursor_key,
-                self.seq,
-                obj,
-                incarnation=position.incarnation,
-                checkpoint=position.checkpoint,
-                byte_offset=position.byte_offset,
-            )
+        yield from self._drain_handle()
 
     def close(self) -> None:
         if self._fh is not None:

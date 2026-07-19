@@ -261,6 +261,195 @@ def test_replay_filters_marked_test_events(tmp_path: Path):
     assert json.loads(out.getvalue())["event_id"] == "operator-live"
 
 
+def test_run_monitor_does_not_drop_append_at_replay_live_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """B144: append between replay snapshot and live poll must surface as live."""
+    feed = tmp_path / "ambient.jsonl"
+    feed.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "kind": "ambient.prompt",
+                        "event_id": "replayed",
+                        "observed_at": "2026-07-16T00:00:00Z",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "ambient.debug",
+                        "event_id": "filtered-kind",
+                        "observed_at": "2026-07-16T00:00:00.500Z",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "ambient.prompt",
+                        "event_id": "filtered-test",
+                        "observed_at": "2026-07-16T00:00:00.750Z",
+                        "hark_provenance": "test",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class BoundaryOutput(StringIO):
+        appended = False
+
+        def write(self, text: str) -> int:
+            written = super().write(text)
+            payload = json.loads(text)
+            if payload["monitor_delivery"]["mode"] == "replay" and not self.appended:
+                self.appended = True
+                with feed.open("a", encoding="utf-8") as fh:
+                    fh.write(
+                        json.dumps(
+                            {
+                                "kind": "ambient.prompt",
+                                "event_id": "boundary-append",
+                                "observed_at": "2026-07-16T00:00:01Z",
+                            }
+                        )
+                        + "\n"
+                    )
+            return written
+
+    out = BoundaryOutput()
+
+    def stop_after_first_idle(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hark.monitor_feed.time.sleep", stop_after_first_idle)
+
+    assert (
+        run_monitor(
+            replay=1,
+            paths=[feed],
+            for_monitor=False,
+            out=out,
+            allow_multiple=True,
+        )
+        == 0
+    )
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [(line["event_id"], line["monitor_delivery"]["mode"]) for line in lines] == [
+        ("replayed", "replay"),
+        ("boundary-append", "live"),
+    ]
+
+
+def test_run_monitor_drains_subscribed_file_before_rotation_handoff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """B144: complete a partial on the subscribed FD, then rotate, without loss."""
+    feed = tmp_path / "ambient.jsonl"
+    rotated = tmp_path / "ambient.jsonl.1"
+    feed.write_text(
+        json.dumps({"kind": "ambient.prompt", "event_id": "replayed"})
+        + "\n"
+        + '{"kind":"ambient.prompt","event_id":"boundary-old',
+        encoding="utf-8",
+    )
+
+    class RotatingBoundaryOutput(StringIO):
+        rotated = False
+
+        def write(self, text: str) -> int:
+            written = super().write(text)
+            payload = json.loads(text)
+            if payload["monitor_delivery"]["mode"] == "replay" and not self.rotated:
+                self.rotated = True
+                with feed.open("a", encoding="utf-8") as fh:
+                    fh.write('"}\n')
+                feed.rename(rotated)
+                feed.write_text(
+                    json.dumps(
+                        {"kind": "ambient.prompt", "event_id": "replacement-new"}
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            return written
+
+    out = RotatingBoundaryOutput()
+    monkeypatch.setattr(
+        "hark.monitor_feed.time.sleep",
+        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    assert (
+        run_monitor(
+            replay=1,
+            paths=[feed],
+            for_monitor=False,
+            out=out,
+            allow_multiple=True,
+        )
+        == 0
+    )
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [(line["event_id"], line["monitor_delivery"]["mode"]) for line in lines] == [
+        ("replayed", "replay"),
+        ("boundary-old", "live"),
+        ("replacement-new", "live"),
+    ]
+
+
+@pytest.mark.parametrize("larger", [False, True], ids=["equal-size", "larger"])
+def test_run_monitor_detects_same_inode_rewrite_at_or_beyond_cursor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, larger: bool
+):
+    """Same-inode rewrite of the first line must restart and emit the new value."""
+    feed = tmp_path / "ambient.jsonl"
+    original = {"kind": "ambient.prompt", "event_id": "original"}
+    replacement = {"kind": "ambient.prompt", "event_id": "newvalue"}
+    if larger:
+        replacement["padding"] = "x" * 100
+    original_line = json.dumps(original) + "\n"
+    replacement_line = json.dumps(replacement) + "\n"
+    assert (len(replacement_line) > len(original_line)) is larger
+    feed.write_text(original_line, encoding="utf-8")
+    inode = feed.stat().st_ino
+
+    class RewriteBoundaryOutput(StringIO):
+        rewritten = False
+
+        def write(self, text: str) -> int:
+            written = super().write(text)
+            payload = json.loads(text)
+            if payload["monitor_delivery"]["mode"] == "replay" and not self.rewritten:
+                self.rewritten = True
+                feed.write_text(replacement_line, encoding="utf-8")
+                assert feed.stat().st_ino == inode
+            return written
+
+    out = RewriteBoundaryOutput()
+    monkeypatch.setattr(
+        "hark.monitor_feed.time.sleep",
+        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    assert (
+        run_monitor(
+            replay=1,
+            paths=[feed],
+            for_monitor=False,
+            out=out,
+            allow_multiple=True,
+        )
+        == 0
+    )
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [(line["event_id"], line["monitor_delivery"]["mode"]) for line in lines] == [
+        ("original", "replay"),
+        ("newvalue", "live"),
+    ]
+
+
 def test_partial_fragment_delta():
     from hark.partial import partial_fragment
 
