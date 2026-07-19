@@ -192,6 +192,85 @@ class SourceFollower:
     def start_at_end(self) -> None:
         self._reopen(from_start=False)
 
+    def snapshot_at_end(self) -> list[FeedRecord]:
+        """Capture complete records and stay subscribed at that boundary.
+
+        The snapshot boundary is the size of the opened file descriptor at
+        subscription time, not a later path lookup. Bytes appended after that
+        boundary remain unread on the same descriptor and are returned by
+        :meth:`poll`. If the path is rotated, ``poll`` drains any unread
+        bytes on the old descriptor before opening the new incarnation.
+        """
+        self.close()
+        self._ident = None
+        self._prefix_identity = None
+        self._checkpoint = _CHECKPOINT_SEED
+        self._buf = b""
+        self._size_seen = 0
+        self.seq = 0
+        try:
+            self._fh = self.path.open("rb")
+        except OSError:
+            return []
+        try:
+            stat = os.fstat(self._fh.fileno())
+            self._ident = (stat.st_dev, stat.st_ino)
+            boundary = stat.st_size
+            self._size_seen = boundary
+            self._prefix_identity = self._prefix_identity_from_fd(self._fh.fileno())
+        except OSError:
+            self.close()
+            return []
+
+        remaining = boundary
+        data = bytearray()
+        while remaining > 0:
+            chunk = self._fh.read(remaining)
+            if not chunk:
+                break
+            data.extend(chunk)
+            remaining -= len(chunk)
+        self._buf = bytes(data)
+        return list(self._emit_complete_lines())
+
+    def _emit_complete_lines(self) -> Iterator[FeedRecord]:
+        """Yield records for complete lines currently in ``_buf``."""
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl < 0:
+                return
+            raw_line, self._buf = self._buf[:nl], self._buf[nl + 1 :]
+            self._consume_line(raw_line)
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if self.transform is not None:
+                obj = self.transform(obj)
+            yield FeedRecord(
+                self.source,
+                self.cursor_key,
+                self.seq,
+                obj,
+                incarnation=self.cursor_position.incarnation,
+            )
+
+    def _drain_handle(self) -> Iterator[FeedRecord]:
+        """Read remaining bytes from the open descriptor and emit complete lines."""
+        if self._fh is None:
+            return
+        while True:
+            yield from self._emit_complete_lines()
+            chunk = self._fh.read(65536)
+            if not chunk:
+                return
+            self._buf += chunk
+
     def poll(self) -> Iterator[FeedRecord]:
         """Yield complete new records since the last poll."""
         snapshot = self._path_snapshot()
@@ -201,16 +280,26 @@ class SourceFollower:
             self._reopen(from_start=True)
             if self._fh is None:
                 return
-        elif snapshot is not None and (
-            snapshot[0] != self._ident or snapshot[2] != self._prefix_identity
-        ):
-            # Rotated/replaced, or rewritten in place with a changed bounded
-            # prefix: drain nothing further from the old handle and replay.
+        elif snapshot is not None and snapshot[0] != self._ident:
+            # True rotation (device/inode change): drain unread bytes from the
+            # subscribed descriptor so a pre-rotation append is not lost, then
+            # open the new incarnation from its start.
+            yield from self._drain_handle()
+            self._reopen(from_start=True)
+            if self._fh is None:
+                return
+        elif snapshot is not None and snapshot[2] != self._prefix_identity:
+            # Same inode but bounded prefix identity changed (first complete
+            # line finished, or in-place rewrite). B131 restarts from the new
+            # top without draining the old offset view.
             self._reopen(from_start=True)
             if self._fh is None:
                 return
         else:
             if snapshot is None:
+                # Path disappeared; the open descriptor is still a durable
+                # subscription for any bytes written before unlink/rename.
+                yield from self._drain_handle()
                 return
             size = snapshot[1]
             if size < self._size_seen:
@@ -222,36 +311,7 @@ class SourceFollower:
                     return
             self._size_seen = size
 
-        while True:
-            # drain complete lines already buffered (e.g. after seek_to)
-            while True:
-                nl = self._buf.find(b"\n")
-                if nl < 0:
-                    break
-                raw_line, self._buf = self._buf[:nl], self._buf[nl + 1 :]
-                self._consume_line(raw_line)
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if self.transform is not None:
-                    obj = self.transform(obj)
-                yield FeedRecord(
-                    self.source,
-                    self.cursor_key,
-                    self.seq,
-                    obj,
-                    incarnation=self.cursor_position.incarnation,
-                )
-            chunk = self._fh.read(65536)
-            if not chunk:
-                return
-            self._buf += chunk
+        yield from self._drain_handle()
 
     def close(self) -> None:
         if self._fh is not None:
