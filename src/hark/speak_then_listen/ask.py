@@ -11,12 +11,29 @@ from typing import Any
 
 from hark.config import HarkConfig
 from hark.confirm_lexicon import classify_confirm_reply
-from hark.exitcodes import ABORT, OK, PROVIDER, TIMEOUT
+from hark.exitcodes import ABORT, OK, PROVIDER, TIMEOUT, normalize_failure_exit
 from hark.providers.base import ProviderError
 from hark.risk import classify_question, confirm_required
 
 
-def run_ask(
+def _provider_failure_result(
+    exc: ProviderError,
+    *,
+    tts_info: Any,
+    text: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "ok": False,
+        "error": str(exc),
+        "exit": normalize_failure_exit(getattr(exc, "code", None), fallback=PROVIDER),
+        "tts": tts_info,
+    }
+    if text is not None:
+        result["text"] = text
+    return result
+
+
+def _run_ask(
     cfg: HarkConfig,
     prompt: str,
     *,
@@ -49,12 +66,10 @@ def run_ask(
             "tts": getattr(exc, "tts_info", None),
         }
     except ProviderError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "exit": getattr(exc, "code", PROVIDER),
-            "tts": getattr(exc, "tts_info", None),
-        }
+        return _provider_failure_result(
+            exc,
+            tts_info=getattr(exc, "tts_info", None),
+        )
 
     if listened.cancelled:
         return {
@@ -90,8 +105,8 @@ def run_ask(
     if need_confirm:
         # Confirming: readback TTS + silence Answer Window + lexicon (HandoffState.CONFIRMING).
         readback = f"I heard: {listened.text}. Say yes to send, or cancel."
-        speech_mod.run_tts(cfg, readback, provider=provider, play=True)
         try:
+            speech_mod.run_tts(cfg, readback, provider=provider, play=True)
             conf = speech_mod.run_listen(
                 cfg,
                 profile="confirm",
@@ -107,6 +122,19 @@ def run_ask(
                 "text": listened.text,
                 "tts": tts_info,
             }
+        except ProviderError as exc:
+            return _provider_failure_result(
+                exc,
+                text=listened.text,
+                tts_info=tts_info,
+            )
+        except KeyboardInterrupt as exc:
+            # The first answer is already durable user context.  Preserve it
+            # if cancellation arrives during confirmation TTS or capture.
+            if getattr(exc, "tts_info", None) is None:
+                setattr(exc, "tts_info", tts_info)
+            setattr(exc, "answer_text", listened.text)
+            raise
         if conf.cancelled:
             return {
                 "ok": False,
@@ -140,3 +168,51 @@ def run_ask(
         "tts": tts_info,
         "exit": OK,
     }
+
+
+def interrupted_ask_result(exc: KeyboardInterrupt) -> dict[str, Any]:
+    """Translate an interruption anywhere in the ask signal scope to JSON."""
+    signal_name = getattr(exc, "signal_name", None)
+    reason = getattr(exc, "reason", None)
+    end_phrase = reason or (
+        f"signal:{signal_name}" if signal_name else "interrupt"
+    )
+    result = {
+        "ok": False,
+        "cancelled": True,
+        "error": "interrupted",
+        "text": getattr(exc, "answer_text", ""),
+        "end_phrase": end_phrase,
+        "signal": signal_name,
+        "exit": ABORT,
+        "tts": getattr(exc, "tts_info", None),
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+def run_ask(
+    cfg: HarkConfig,
+    prompt: str,
+    *,
+    confirm: str | None = None,
+    end_mode: str | None = None,
+    provider: str | None = None,
+    risk_hint: str | None = None,
+) -> dict[str, Any]:
+    """Run an ask turn and translate process interruption into cancellation."""
+    from hark.audio.capture import capture_interrupt_signals
+
+    try:
+        with capture_interrupt_signals():
+            return _run_ask(
+                cfg,
+                prompt,
+                confirm=confirm,
+                end_mode=end_mode,
+                provider=provider,
+                risk_hint=risk_hint,
+            )
+    except KeyboardInterrupt as exc:
+        return interrupted_ask_result(exc)

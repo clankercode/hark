@@ -7,6 +7,7 @@ from typing import Iterator
 
 from hark.state_feed.cursor import (
     CursorPosition,
+    InvalidCursorPosition,
     format_cursor,
     parse_cursor_positions,
 )
@@ -54,9 +55,21 @@ class StateFeedFollower:
         positions = parse_cursor_positions(cursor)
         for s in self.sources:
             if s.cursor_key in positions:
-                s.seek_to(positions[s.cursor_key])
+                position = positions[s.cursor_key]
+                if isinstance(position, InvalidCursorPosition):
+                    # Invalid known keys must not skip; replay from zero.
+                    s.seek_to(CursorPosition(seq=0), conservative_legacy=True)
+                    continue
+                s.seek_to(
+                    position,
+                    conservative_legacy=(
+                        position.incarnation is None or position.checkpoint is None
+                    ),
+                )
             elif default_tail > 0:
-                s.seek_to(CursorPosition(seq=max(0, line_count(s.path) - default_tail)))
+                s.seek_to(
+                    CursorPosition(seq=max(0, line_count(s.path) - default_tail))
+                )
             else:
                 s.start_at_end()
 

@@ -243,16 +243,56 @@ class SourceFollower:
         self.seq = position.seq
         return True
 
-    def seek_to(self, position: CursorPosition | int) -> None:
-        """Resume from a proved position, replaying safely on any mismatch."""
-        if not isinstance(position, CursorPosition):
-            position = CursorPosition(seq=position)
+    def seek_to(
+        self,
+        position: CursorPosition | int,
+        *,
+        incarnation: str | None = None,
+        checkpoint: str | None = None,
+        conservative_legacy: bool = False,
+    ) -> None:
+        """Resume from a proved position, replaying safely on any mismatch.
+
+        Callers may pass a :class:`CursorPosition` or a bare sequence with
+        optional ``incarnation``/``checkpoint`` keywords (B131-compatible).
+
+        Incomplete proofs and ``conservative_legacy`` reopen at the first
+        complete line — duplicates beat silent loss when file identity cannot
+        be verified (rotated shorter files, in-place rewrites).
+        """
+        if isinstance(position, CursorPosition):
+            if incarnation is not None or checkpoint is not None:
+                position = CursorPosition(
+                    seq=position.seq,
+                    incarnation=(
+                        incarnation
+                        if incarnation is not None
+                        else position.incarnation
+                    ),
+                    checkpoint=(
+                        checkpoint if checkpoint is not None else position.checkpoint
+                    ),
+                    byte_offset=position.byte_offset,
+                )
+        else:
+            position = CursorPosition(
+                seq=int(position),
+                incarnation=incarnation,
+                checkpoint=checkpoint,
+            )
         self._reopen(from_start=True)
         if self._fh is None:
             return
         has_proof = position.incarnation is not None and position.checkpoint is not None
+        # Partial proofs (exactly one of incarnation/checkpoint) and explicit
+        # legacy resume cannot safely skip: a shorter replacement would be lost.
+        partial_proof = (position.incarnation is None) != (position.checkpoint is None)
+        if conservative_legacy or partial_proof:
+            return
         if not has_proof:
-            # Legacy sequence-only cursor: preserve historical behavior.
+            # Bare sequence without proof — used for recent-tail windows.
+            # External client cursors must pass conservative_legacy via the
+            # follower so they never take this path (B131).
             self._skip_lines(position.seq)
             return
         if position.byte_offset is not None and self._seek_trusted(position):

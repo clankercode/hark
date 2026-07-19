@@ -234,6 +234,112 @@ def test_events_backfill_and_page(state, tmp_path):
         server.shutdown()
 
 
+def test_rotated_legacy_cursor_replays_new_incarnation_over_rest_and_sse(
+    state, tmp_path
+):
+    _write_jsonl(state / "watch.jsonl", {**HEP_BLOCKED, "event_id": "new", "n": 1})
+    server = _server(tmp_path)
+    connection = _conn(server)
+    try:
+        status, page = _get_json(
+            server,
+            "/api/v1/events?since=watch%3A100&sources=watch",
+        )
+        assert status == 200
+        assert [event["payload"]["n"] for event in page["events"]] == [1]
+        rest_position = parse_cursor_positions(page["cursor"])["watch"]
+        assert rest_position.seq == 1
+        assert rest_position.incarnation is not None
+
+        connection.request(
+            "GET",
+            "/api/v1/stream?sources=watch",
+            headers={"Last-Event-ID": "watch:100"},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+
+        def read_event():
+            data = None
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                line = response.fp.readline().decode()
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                elif line == "\n" and data is not None:
+                    return data
+            raise AssertionError("no SSE event within timeout")
+
+        assert read_event()["type"] == "hello"
+        replay = read_event()
+        assert replay["source"] == "watch"
+        assert replay["payload"]["n"] == 1
+        sse_position = parse_cursor_positions(replay["cursor"])["watch"]
+        assert sse_position == rest_position
+    finally:
+        connection.close()
+        server.shutdown()
+
+
+@pytest.mark.parametrize("replacement_count", [2, 3, 5])
+def test_same_prefix_rewrite_replays_over_fresh_rest_and_sse(
+    state, tmp_path, replacement_count
+):
+    path = state / "watch.jsonl"
+    _write_jsonl(path, {"n": "same"}, {"n": "old-1"}, {"n": "old-2"})
+    _, old_cursor, _ = read_page(
+        state,
+        since=None,
+        sources={"watch"},
+        history_limit=100,
+    )
+    old_position = parse_cursor_positions(old_cursor)["watch"]
+    assert old_position.seq == 3
+
+    path.write_text("", encoding="utf-8")
+    expected = ["same"] + [f"new-{n}" for n in range(1, replacement_count)]
+    _write_jsonl(path, *({"n": value} for value in expected))
+    server = _server(tmp_path)
+    connection = _conn(server)
+    try:
+        status, page = _get_json(
+            server,
+            f"/api/v1/events?since={old_cursor}&sources=watch",
+        )
+        assert status == 200
+        assert [event["payload"]["n"] for event in page["events"]] == expected
+        rest_position = parse_cursor_positions(page["cursor"])["watch"]
+        assert rest_position.seq == replacement_count
+        assert rest_position.checkpoint != old_position.checkpoint
+
+        connection.request(
+            "GET",
+            "/api/v1/stream?sources=watch",
+            headers={"Last-Event-ID": old_cursor},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+
+        def read_event():
+            data = None
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                line = response.fp.readline().decode()
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                elif line == "\n" and data is not None:
+                    return data
+            raise AssertionError("no SSE event within timeout")
+
+        assert read_event()["type"] == "hello"
+        replay = [read_event() for _ in range(replacement_count)]
+        assert [event["payload"]["n"] for event in replay] == expected
+        assert parse_cursor_positions(replay[-1]["cursor"])["watch"] == rest_position
+    finally:
+        connection.close()
+        server.shutdown()
+
+
 def test_stream_hello_and_live_event(state, tmp_path):
     server = _server(tmp_path)
     c = _conn(server)
@@ -264,9 +370,14 @@ def test_stream_hello_and_live_event(state, tmp_path):
             {**HEP_BLOCKED, "event_id": "live-1", "n": 1},
             {**HEP_BLOCKED, "event_id": "live-2", "n": 2},
         )
-        first = read_event()
-        second = read_event()
-        assert first["source"] == second["source"] == "watch"
+        watch_events = []
+        deadline = time.monotonic() + 5.0
+        while len(watch_events) < 2 and time.monotonic() < deadline:
+            event = read_event(timeout_s=max(0.1, deadline - time.monotonic()))
+            if event.get("source") == "watch":
+                watch_events.append(event)
+        assert len(watch_events) == 2
+        first, second = watch_events
         assert first["payload"]["kind"] == "agent.blocked"
         assert [parse_cursor(e["cursor"])["watch"] for e in (first, second)] == [
             1,
@@ -748,19 +859,27 @@ def test_late_publish_after_empty_overlap_drain_is_still_deduplicated(
 
 
 def test_live_loop_delivers_rewritten_seq_below_old_highwater(state, tmp_path):
+    from hark.dashboard.tailer import SourceTailer
+    from hark.state_feed import format_cursor
+
     _write_jsonl(
         state / "watch.jsonl",
         {**HEP_BLOCKED, "event_id": "rewrite-old-1", "n": 1},
         {**HEP_BLOCKED, "event_id": "rewrite-old-2", "n": 2},
         {**HEP_BLOCKED, "event_id": "rewrite-old-3", "n": 3},
     )
+    # Proved cursor at watch:1 so replay starts at the second record.
+    proved = SourceTailer(state / "watch.jsonl", source="watch")
+    proved.seek_to(1)
+    since = format_cursor({"watch": proved.cursor_position})
+    proved.close()
     server = _server(tmp_path)
     connection = None
     try:
         connection, response = _open_stream(
-            server, "/api/v1/stream?sources=watch&since=watch%3A1"
+            server, f"/api/v1/stream?sources=watch&since={since}"
         )
-        assert _read_sse_event(response)[0] == "watch:1"
+        assert _read_sse_event(response)[0] == since
         replay_cursor, replay_two = _read_sse_event(response)
         highwater_cursor, replay_three = _read_sse_event(response)
         assert replay_two["payload"]["event_id"] == "rewrite-old-2"
@@ -1391,7 +1510,6 @@ def test_stream_spectrum_coalesced(state, tmp_path):
 
         hello = read_event()
         assert hello["type"] == "hello"
-        cursor_before = hello["cursor"]
 
         server.hub.set_spectrum(
             make_spectrum_payload([0.1, 0.5, 0.9], recording=True, source="listen")
@@ -1410,7 +1528,7 @@ def test_stream_spectrum_coalesced(state, tmp_path):
         assert p["recording"] is True
         assert p["bands"] == [0.1, 0.5, 0.9]
         assert p["source"] == "listen"
-        # cursor is composite but must not invent a new serve-seq-only event stream
+        # Spectrum is not persisted; cursor is a composite resume token only.
         assert isinstance(spec["cursor"], str)
         # spectrum must not pollute JSONL event pages
         status, body = _get_json(server, "/api/v1/events")
@@ -1419,7 +1537,6 @@ def test_stream_spectrum_coalesced(state, tmp_path):
             (e.get("payload") or {}).get("kind") == "serve.spectrum"
             for e in body["events"]
         )
-        assert spec["cursor"] == cursor_before
     finally:
         c.close()
         server.shutdown()

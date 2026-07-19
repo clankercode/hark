@@ -3,28 +3,49 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from hark import __version__
-from hark.config import (
-    SessionConfig,
-    config_to_dict,
-    eprint,
-    load_config,
-    write_default_config,
-)
+from hark.config import config_to_dict, eprint, load_config, write_default_config
 from hark.delivery import DeliveryStore
 from hark.doctor import run_doctor
-from hark.exitcodes import ABORT, AUDIO, ERROR, HERDR, OK, PROVIDER, TIMEOUT, USAGE
-from hark.fingerprint import question_fingerprint
-from hark.herdr.client import HerdrClient, HerdrError
+from hark.exitcodes import (
+    ABORT,
+    AUDIO,
+    ERROR,
+    HERDR,
+    OK,
+    PROVIDER,
+    TIMEOUT,
+    USAGE,
+    normalize_failure_exit,
+)
+from hark.herdr.access import HerdrSessionAccess, active_client, active_named_client
+from hark.herdr.client import HerdrClient, HerdrError, NamedSessionInfo
+from hark.herdr.tunnel import ensure_tunnel
 from hark.paths import default_config_path, state_dir
 from hark.providers.base import ProviderError
 from hark.targets import parse_target
 from hark.watch import run_watch
+
+
+def _scoped_herdr(func):
+    """Run one command through configured-session lookup and tunnel ownership."""
+
+    @functools.wraps(func)
+    def wrapped(args: argparse.Namespace, cfg):
+        with HerdrSessionAccess(
+            cfg,
+            client_factory=HerdrClient,
+            tunnel_factory=ensure_tunnel,
+        ):
+            return func(args, cfg)
+
+    return wrapped
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -549,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
         "register",
         help=(
             "persist ANTIGRAVITY_LS_ADDRESS + conversation id "
-            f"to ~/.local/state/hark/agy-env.json"
+            "to ~/.local/state/hark/agy-env.json"
         ),
     )
     api_reg.add_argument(
@@ -753,7 +774,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return HERDR
     except ProviderError as exc:
         eprint(f"hark: provider: {exc}")
-        return getattr(exc, "code", PROVIDER) or PROVIDER
+        return normalize_failure_exit(getattr(exc, "code", None), fallback=PROVIDER)
     except TimeoutError as exc:
         eprint(f"hark: timeout: {exc}")
         return TIMEOUT
@@ -909,12 +930,19 @@ def dispatch(args: argparse.Namespace, cfg) -> int:
     return USAGE
 
 
+@_scoped_herdr
 def cmd_session(args: argparse.Namespace, cfg) -> int:
     """``hark session list|ensure`` (I005 / B057)."""
-    client = _client_for(cfg, (cfg.sessions[0].id if cfg.sessions else "local"))
+    session_id = cfg.sessions[0].id if cfg.sessions else "local"
+    configured = cfg.session_by_id(session_id)
     sub = getattr(args, "session_cmd", None)
     if sub == "list":
-        rows = client.list_sessions()
+        if configured is not None and configured.ssh:
+            raise HerdrError(
+                f"remote Herdr session {session_id!r} cannot list the remote "
+                "process-wide session registry through a socket tunnel"
+            )
+        rows = _client_for(cfg, session_id).list_sessions()
         payload = [
             {
                 "name": s.name,
@@ -936,10 +964,19 @@ def cmd_session(args: argparse.Namespace, cfg) -> int:
                 print(f"{s['name']}{dflt}: {mark}  sock={s['socket_path'] or '?'}")
         return OK
     if sub == "ensure":
-        info = client.ensure_session(
-            str(args.name),
-            start=not bool(getattr(args, "no_start", False)),
-        )
+        name = str(args.name)
+        if configured is not None and configured.ssh:
+            selected = active_named_client(cfg, session_id, name, start=False)
+            info = NamedSessionInfo(
+                name=name,
+                running=selected.socket_exists(),
+                socket_path=str(selected.socket_path),
+            )
+        else:
+            info = _client_for(cfg, session_id).ensure_session(
+                name,
+                start=not bool(getattr(args, "no_start", False)),
+            )
         payload = {
             "name": info.name,
             "running": info.running,
@@ -959,6 +996,7 @@ def cmd_session(args: argparse.Namespace, cfg) -> int:
     return USAGE
 
 
+@_scoped_herdr
 def cmd_agent_start(args: argparse.Namespace, cfg) -> int:
     """``hark agent-start`` — resolve CLI, start in Herdr, optional kickoff (B057)."""
     from hark.agents.resolve import ResolveError, resolve_flexible
@@ -968,14 +1006,12 @@ def cmd_agent_start(args: argparse.Namespace, cfg) -> int:
         or (cfg.sessions[0].id if cfg.sessions else None)
         or "local"
     )
-    client = _client_for(cfg, session_id)
-
     herdr_sess = getattr(args, "herdr_session", None)
     if herdr_sess:
-        client.ensure_session(str(herdr_sess))
-        # Re-bind client to the named herdr session socket when possible
-        client = HerdrClient(SessionConfig(id=str(herdr_sess)))
+        client = active_named_client(cfg, session_id, str(herdr_sess))
         session_id = str(herdr_sess)
+    else:
+        client = _client_for(cfg, session_id)
 
     overrides = getattr(cfg, "agents", None)
     override_map = None
@@ -1427,27 +1463,23 @@ def cmd_watch_logs(args: argparse.Namespace) -> int:
 
 
 def _client_for(cfg, session_id: str) -> HerdrClient:
-    session = cfg.session_by_id(session_id) or SessionConfig(id=session_id)
-    return HerdrClient(session)
+    return active_client(cfg, session_id)
 
 
+@_scoped_herdr
 def cmd_status(args: argparse.Namespace, cfg) -> int:
-    sessions = cfg.sessions
-    if args.sessions:
-        want = set(args.sessions)
-        sessions = [s for s in cfg.sessions if s.id in want] or [
-            SessionConfig(id=sid) for sid in args.sessions
-        ]
+    session_ids = list(args.sessions or [session.id for session in cfg.sessions])
+    if not session_ids and not args.sessions:
+        session_ids = ["local"]
     rows = []
     errors = []
     any_ok = False
-    for session in sessions:
-        client = HerdrClient(session)
+    for session_id in session_ids:
         try:
-            agents = client.list_agents()
+            agents = _client_for(cfg, session_id).list_agents()
             any_ok = True
         except HerdrError as exc:
-            errors.append({"session_id": session.id, "error": str(exc)})
+            errors.append({"session_id": session_id, "error": str(exc)})
             continue
         for a in agents:
             if args.filter_status and a.status != args.filter_status:
@@ -1477,6 +1509,7 @@ def cmd_status(args: argparse.Namespace, cfg) -> int:
     return OK if any_ok else HERDR
 
 
+@_scoped_herdr
 def cmd_context(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
     text = _client_for(cfg, target.session_id).read_pane(
@@ -1489,6 +1522,7 @@ def cmd_context(args: argparse.Namespace, cfg) -> int:
     return OK
 
 
+@_scoped_herdr
 def cmd_reply(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
     submit = not bool(getattr(args, "no_submit", False))
@@ -1508,6 +1542,7 @@ def cmd_reply(args: argparse.Namespace, cfg) -> int:
     return OK
 
 
+@_scoped_herdr
 def cmd_keys(args: argparse.Namespace, cfg) -> int:
     target = parse_target(args.target, default_session=args.session or "local")
     _client_for(cfg, target.session_id).send_keys(target.pane_id, list(args.keys))
@@ -1531,6 +1566,7 @@ _ANSWER_REJECT_HINTS = {
 }
 
 
+@_scoped_herdr
 def cmd_answer(args: argparse.Namespace, cfg) -> int:
     if not args.text and not args.keys:
         eprint("hark answer: require --text or --keys")
@@ -1710,16 +1746,26 @@ def cmd_listen_end(args: argparse.Namespace) -> int:
 
 
 def cmd_ask(args: argparse.Namespace, cfg) -> int:
+    from hark.audio.capture import capture_interrupt_signals
     from hark.speech import run_ask
+    from hark.speak_then_listen.ask import interrupted_ask_result
 
     prompt = " ".join(args.text)
-    result = run_ask(
-        cfg,
-        prompt,
-        confirm=args.confirm,
-        end_mode=args.end_mode,
-        provider=args.provider,
-    )
+    try:
+        with capture_interrupt_signals():
+            result = run_ask(
+                cfg,
+                prompt,
+                confirm=args.confirm,
+                end_mode=args.end_mode,
+                provider=args.provider,
+            )
+    except KeyboardInterrupt as exc:
+        # Covers handler installation/restoration and the interval after
+        # run_ask returns but before its scoped signal handlers are removed.
+        result = interrupted_ask_result(exc)
+    if not result.get("ok"):
+        result["exit"] = normalize_failure_exit(result.get("exit"), fallback=ERROR)
     result["for_event"] = getattr(args, "event_id", None)
     print(json.dumps(result, indent=2 if args.json else None))
     return int(result.get("exit", OK if result.get("ok") else ERROR))
@@ -1760,14 +1806,19 @@ def _queue_live_answerable(cfg, ev: dict) -> tuple[bool, str]:
     session_id = str(ev.get("session_id") or "")
     pane_id = str(ev.get("pane_id") or "")
     try:
-        client = _client_for(cfg, session_id)
-        verdict = assess_live(
-            pane_id=pane_id,
-            bound_revision=int(ev.get("pane_revision") or 0),
-            bound_fingerprint=ev.get("question_fingerprint"),
-            hep_kind=hep_kind_from_bound(ev),
-            client=client,
-        )
+        with HerdrSessionAccess(
+            cfg,
+            client_factory=HerdrClient,
+            tunnel_factory=ensure_tunnel,
+        ):
+            client = _client_for(cfg, session_id)
+            verdict = assess_live(
+                pane_id=pane_id,
+                bound_revision=int(ev.get("pane_revision") or 0),
+                bound_fingerprint=ev.get("question_fingerprint"),
+                hep_kind=hep_kind_from_bound(ev),
+                client=client,
+            )
     except Exception as exc:  # noqa: BLE001 — fail-soft; leave pending
         return True, f"herdr_error:{exc}"
     if verdict.ok:
