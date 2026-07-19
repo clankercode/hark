@@ -54,6 +54,104 @@ def test_partial_and_rotation_via_core(tmp_path: Path):
     assert recs[0].seq == 1
 
 
+def test_snapshot_at_end_hands_off_append_without_duplicate(tmp_path: Path):
+    """B144: durable subscription before replay; later appends are live-only."""
+    feed = tmp_path / "ambient.jsonl"
+    _write(feed, {"kind": "ambient.prompt", "event_id": "snapshot"})
+    follower = SourceFollower(feed, source="ambient")
+
+    snapshot = follower.snapshot_at_end()
+    _write(feed, {"kind": "ambient.prompt", "event_id": "live"})
+    live = list(follower.poll())
+
+    assert [record.payload["event_id"] for record in snapshot] == ["snapshot"]
+    assert [record.payload["event_id"] for record in live] == ["live"]
+    assert [record.seq for record in snapshot + live] == [1, 2]
+    follower.close()
+
+
+def test_snapshot_at_end_keeps_partial_line_for_live_completion(tmp_path: Path):
+    feed = tmp_path / "ambient.jsonl"
+    feed.write_text(
+        '{"kind":"ambient.prompt","event_id":"snapshot"}\n'
+        '{"kind":"ambient.prompt","event_id":"partial',
+        encoding="utf-8",
+    )
+    follower = SourceFollower(feed, source="ambient")
+
+    snapshot = follower.snapshot_at_end()
+    with feed.open("a", encoding="utf-8") as fh:
+        fh.write('"}\n')
+    live = list(follower.poll())
+
+    assert [record.payload["event_id"] for record in snapshot] == ["snapshot"]
+    assert [record.payload["event_id"] for record in live] == ["partial"]
+    assert live[0].seq == 2
+    follower.close()
+
+
+def test_snapshot_at_end_preserves_rotation_and_truncation_handling(tmp_path: Path):
+    feed = tmp_path / "ambient.jsonl"
+    _write(feed, {"event_id": "snapshot-long-enough-for-truncation"})
+    follower = SourceFollower(feed, source="ambient")
+    assert [record.payload["event_id"] for record in follower.snapshot_at_end()] == [
+        "snapshot-long-enough-for-truncation"
+    ]
+
+    feed.rename(tmp_path / "ambient.jsonl.1")
+    _write(feed, {"event_id": "rotated-long-enough"}, mode="w")
+    assert [record.payload["event_id"] for record in follower.poll()] == [
+        "rotated-long-enough"
+    ]
+
+    _write(feed, {"event_id": "also-long-enough"})
+    assert [record.payload["event_id"] for record in follower.poll()] == [
+        "also-long-enough"
+    ]
+    _write(feed, {"event_id": "short"}, mode="w")
+    truncated = list(follower.poll())
+    assert [record.payload["event_id"] for record in truncated] == ["short"]
+    assert truncated[0].seq == 1
+    follower.close()
+
+
+def test_snapshot_drains_unread_before_rotation(tmp_path: Path):
+    """Pre-rotation append on the subscribed FD must not be dropped."""
+    feed = tmp_path / "ambient.jsonl"
+    rotated = tmp_path / "ambient.jsonl.1"
+    _write(feed, {"event_id": "snapshot"})
+    follower = SourceFollower(feed, source="ambient")
+    assert [r.payload["event_id"] for r in follower.snapshot_at_end()] == ["snapshot"]
+    _write(feed, {"event_id": "pre-rotate"})
+    feed.rename(rotated)
+    _write(feed, {"event_id": "post-rotate"}, mode="w")
+    assert [r.payload["event_id"] for r in follower.poll()] == [
+        "pre-rotate",
+        "post-rotate",
+    ]
+    follower.close()
+
+
+def test_start_live_with_snapshot_multi_source(tmp_path: Path):
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    _write(a, {"event_id": "a1"})
+    _write(b, {"event_id": "b1"})
+    follower = StateFeedFollower(
+        [
+            SourceFollower(a, source="a", cursor_key="a"),
+            SourceFollower(b, source="b", cursor_key="b"),
+        ]
+    )
+    snap = follower.start_live_with_snapshot()
+    _write(a, {"event_id": "a2"})
+    _write(b, {"event_id": "b2"})
+    live = list(follower.poll())
+    assert [r.payload["event_id"] for r in snap] == ["a1", "b1"]
+    assert [r.payload["event_id"] for r in live] == ["a2", "b2"]
+    follower.close()
+
+
 def test_composite_cursor_format_roundtrip():
     assert parse_cursor("watch:12,bound:3") == {"watch": 12, "bound": 3}
     assert format_cursor({"watch": 12, "bound": 3}) == "watch:12,bound:3"
@@ -293,6 +391,20 @@ def test_legacy_cursor_replays_replacement_instead_of_skipping_it(tmp_path: Path
         {"new": 1},
         {"new": 2},
     ]
+
+
+def test_proved_cursor_format_roundtrip_is_opaque_and_backward_compatible():
+    position = CursorPosition(
+        seq=12,
+        incarnation="a" * 32,
+        checkpoint="b" * 32,
+        byte_offset=345,
+    )
+    cursor = format_cursor({"watch": position, "ambient": 3})
+
+    assert cursor == f"watch:12@{'a' * 32}~{'b' * 32}~345,ambient:3"
+    assert parse_cursor(cursor) == {"watch": 12, "ambient": 3}
+    assert parse_cursor_positions(cursor)["watch"] == position
 
 
 def test_state_feed_follower_multi_source(tmp_path: Path):
