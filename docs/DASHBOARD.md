@@ -80,9 +80,9 @@ Every SSE `data:` line is one envelope (`stream.schema.json`):
 - Cursors are **opaque to clients** beyond equality/passthrough. Clients MUST
   NOT construct cursors except from `hello`, event envelopes, or page results.
 - Servers accept legacy `key:seq` positions and emit proved positions as
-  `key:seq@incarnation~checkpoint~byte_offset`. The proof fields are opaque
-  lowercase hexadecimal values; the offset is unsigned decimal. Keys match
-  `[A-Za-z][A-Za-z0-9_.-]*` and are unique. Invalid cursor input is rejected
+  `key:seq@incarnation~checkpoint[~byte_offset]`. The proof fields are opaque
+  lowercase hexadecimal values; the optional offset is unsigned decimal. Keys
+  match `[a-z][a-z0-9_-]*` and are unique. Invalid cursor input is rejected
   with `400 bad_cursor` before any SSE frame is emitted.
 - The checkpoint proves the complete raw-line prefix through `seq`. It permits
   bounded forward pagination when the source is unchanged. If the file was
