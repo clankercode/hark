@@ -624,21 +624,27 @@ def test_configured_r2_preserves_candidate_owned_initial_boundary(
 @pytest.mark.parametrize(
     "confirm_reply",
     (
+        "yes 'can't'",
         "yes 'can't' approve this",
+        "yes ‘can’t’",
         "yes ‘can’t’ approve this",
+        "yes 'won't' approve this",
+        "yes 'don't' do it",
     ),
 )
-def test_configured_r2_leaves_quoted_contractions_for_separate_policy(
+def test_configured_r2_rejects_quoted_negative_contractions(
     monkeypatch, confirm_reply
 ):
+    """B157: R2 run_ask must cancel on quoted complete negative contractions."""
     out = _run_ask_with_confirmation(
         monkeypatch,
         confirm_reply,
         configured_mode="auto",
     )
 
-    assert out["ok"] is True
-    assert out.get("cancelled") is not True
+    assert out["ok"] is False
+    assert out["cancelled"] is True
+    assert out["confirm_reply"] == confirm_reply
 
 
 @pytest.mark.parametrize(

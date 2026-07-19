@@ -816,6 +816,28 @@ def _contains_whole_phrase(padded: str, phrase: str) -> bool:
     return f" {phrase} " in padded
 
 
+def _strip_balanced_token_apostrophe_quotes(text: str) -> str:
+    """Peel balanced apostrophe quotes around whole tokens (B157).
+
+    Apostrophe-family glyphs are preserved so contractions such as ``don't``
+    remain meaningful. That same preservation leaves STT/transcript quotation
+    marks like ``'can't'`` attached to the token, which blocks whole-word
+    ``NEGATE`` matching and can fall through to affirmative approval.
+
+    Double quotes and parentheses are already removed by the generic
+    punctuation stripper. Only peel when the *same* whole token both starts and
+    ends with ``'`` so internal contraction apostrophes and unbalanced noise are
+    left alone.
+    """
+    tokens: list[str] = []
+    for token in text.split():
+        while len(token) >= 2 and token[0] == "'" and token[-1] == "'":
+            token = token[1:-1]
+        if token:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def classify_confirm_reply(text: str) -> str:
     """Classify a raw STT transcript as ``yes``, ``no``, or ``unclear``.
 
@@ -837,6 +859,10 @@ def classify_confirm_reply(text: str) -> str:
     # small spoken lexicon, so punctuation is non-semantic while apostrophes
     # remain meaningful for negatives such as ``don't``.
     t = " ".join(_PUNCTUATION.sub(" ", t).split())
+    # After apostrophe normalization, peel balanced whole-token quotes so a
+    # complete negative contraction such as ``'can't'`` can match NEGATE
+    # without weakening whole-token boundaries (B157).
+    t = _strip_balanced_token_apostrophe_quotes(t)
     if not t:
         return "unclear"
     if t in AFFIRM:
