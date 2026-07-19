@@ -16,6 +16,7 @@ import pytest
 
 import hark.daemon as daemon
 import hark.worker_process as worker_process
+from hark.audio.mic_mute import stop_mute_sync_watcher
 from hark.exitcodes import ERROR, OK
 from hark.worker_process import (
     WORKER_PIDFILE_ENV,
@@ -26,6 +27,14 @@ from hark.worker_process import (
 )
 
 REAL_SPAWN_OWNED_POPEN = daemon._spawn_owned_popen
+
+
+@pytest.fixture(scope="module", autouse=True)
+def isolate_daemon_tests_from_mute_sync_watcher():
+    """Prevent a process-global background Popen from racing spawn mocks."""
+    stop_mute_sync_watcher()
+    yield
+    stop_mute_sync_watcher()
 
 
 def spawn_hark_worker(
