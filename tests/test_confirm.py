@@ -649,11 +649,56 @@ def test_observable_bridge_without_later_prose_boundary_remains_fail_closed(evid
     ("opening_quote", "closing_quote"),
     (("'", "'"), ("\u2018", "\u2019")),
 )
-def test_quoted_supported_contractions_remain_outside_b151_scope(
-    opening_quote, closing_quote, apostrophe
-):
+def test_quoted_supported_contractions_fail_closed(opening_quote, closing_quote, apostrophe):
+    """B157: balanced apostrophe-family quotes around a complete negative."""
     reply = f"yes {opening_quote}can{apostrophe}t{closing_quote} approve this"
-    assert classify_confirm_reply(reply) == "yes"
+    assert classify_confirm_reply(reply) == "no"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "yes 'can't'",
+        "yes ‘can’t’",
+        "yes ‘can’t’ approve this",
+        "yes 'won't'",
+        "yes 'don't' do it",
+        "'can't'",
+        "yes 'no'",
+        "yes 'cancel'",
+        # Double quotes / parentheses already strip as generic punctuation.
+        'yes "can\'t"',
+        "yes (can't)",
+    ],
+)
+def test_quoted_negative_contractions_and_refusals_fail_closed(reply):
+    """B157 acceptance: quoted complete negatives must not authorize approval."""
+    assert classify_confirm_reply(reply) == "no"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # Whole-token boundaries: peeling outer quotes must not invent can't.
+        "yes 'scant'",
+        "yes scant",
+        "yes can''tastic",
+        # Unbalanced / non-wrapper apostrophes stay out of the peel path.
+        "yes 'can't",
+        "yes can't'",
+    ],
+)
+def test_quoted_peel_preserves_whole_token_and_unbalanced_boundaries(reply):
+    assert classify_confirm_reply(reply) != "no"
+
+
+def test_quoted_peel_preserves_affirmative_idiom_and_b142_deferral():
+    assert classify_confirm_reply("yes why not") == "yes"
+    assert classify_confirm_reply("Yes, why not?") == "yes"
+    assert classify_confirm_reply("Yes, but wait.") == "unclear"
+    assert classify_confirm_reply("yes but wait") == "unclear"
+    # Quoted affirmative alone remains approval; quotes are non-semantic wrappers.
+    assert classify_confirm_reply("'yes'") == "yes"
 
 
 @pytest.mark.parametrize("apostrophe", ("'", "`", "\u2019", *APOSTROPHE_VARIANTS))
