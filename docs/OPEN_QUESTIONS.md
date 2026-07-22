@@ -16,7 +16,7 @@
 | Done | Wake + agent judgment via short context |
 | xAI auth | Grok Build OAuth first |
 | Dev | `uv run` from latest checkout |
-| Local ML | No neural STT/TTS |
+| Local ML | Cloud STT/TTS by default; local wake-snippet scanning OK (Sherpa KWS backend, B070); opt-in local full-STT via `stt.provider = "faster_whisper"` / `moonshine` (B072 — see ADR-004) |
 | Prior specs | Merged — see PRIOR_ART.md |
 
 ## Still open (optional)

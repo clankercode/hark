@@ -23,6 +23,61 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   left chunks unplayed, tracked via a new skip-invocation counter in
   `audio/playback.py`.
 
+Backfill for backlog items B125–B159 landed since v0.1.10 (grouped by area;
+internal-only churn — merge commits, backlog bookkeeping, test isolation —
+deliberately omitted):
+
+- feat(skill, B125): structured startup interview — the hark skill captures
+  scope, autonomy, role, and mode as a session profile passed through to
+  downstream asks.
+- feat(tunnels, B126): remote Herdr sessions are tunneled for all configured
+  access, not only inside `hark watch`; managed tunnel sockets stay
+  path-safe.
+- feat(tts): configurable TTS playback speed.
+- fix(ask, B141): surface the question text before a blocking `hark ask`
+  listen so the prompt stays visible in the agent transcript.
+- fix(ask, B143/B145): interrupted agent turns cancel in-flight ask audio
+  capture cleanly (signal-safe), and a wall-clock capture deadline aborts
+  hung reads — `hark ask` no longer hangs after speaking the question.
+- fix(ask, B146): bounded TTS playback-lock acquisition with typed
+  lock/queue timeouts — `hark ask` no longer blocks indefinitely.
+- fix(ask, B149/B154/B156): provider failures during confirmation turns
+  return structured results, failed asks always exit non-zero (ProviderError
+  code 0 contained), and hostile ProviderError rendering is escaped at
+  structured ask boundaries.
+- fix(tts, B153): repeated SIGINT now stops a hung TTS provider — bounded,
+  interrupt-safe provider isolation.
+- fix(confirm, B142/B147/B148/B151/B157/B159): confirmation-lexicon
+  hardening — clear affirmatives no longer report `cancelled` (B142), and
+  apostrophe-less spoken negations (B147), deferred/conditional/hedged
+  replies (B148), Unicode apostrophe-like negations (B151), quoted negative
+  contractions (B157), and Format/Mark characters inside negative tokens
+  (B159) all fail closed instead of authorizing.
+- fix(ambient, B132/B133/B150): later-turn listen failures no longer
+  misreport as `conversation_idle` (B132); `ambient.pause` cleanup respects
+  newer process owners (B133); a late near-end timer can no longer start
+  overlap capture after handoff returns (B150).
+- fix(state-feed, B131/B155): incarnation-aware resume cursors survive
+  rotation to a shorter file (B131), and same-prefix equal/longer in-place
+  rewrites are detected live (B155).
+- fix(dashboard, B129/B130): static path traversal into prefix-matching
+  sibling directories blocked (B129); SSE replay cursors are lossless and
+  reconnect backfills unseen events after the hello frame (B130).
+- fix(monitor, B140/B144): synthetic ambient test events no longer enter the
+  live monitor (B140); replay-to-live handoff no longer drops a newly
+  appended event (B144).
+- fix(delivery, B134): concurrent bound answers are single-flighted — the
+  same event can no longer be sent twice.
+- fix(workers, B127/B128/B137): worker lifecycle hardening — stops no longer
+  signal stale reused PIDs (B127), `hark start` reconciles missing worker
+  roles instead of reporting healthy (B128), and spawn is transactional so
+  partial starts leave no untracked children (B137).
+- fix(tunnels, B152): crashed tunnel owners' SSH children are adopted and
+  reaped.
+- fix(agent-start, B138/B139): implicit agent-command fallback is restricted
+  to unknown tokens (B138), and resolver overrides validate the exact
+  executable path against reject-lists (B139).
+
 ## 0.1.10
 
 - feat(ambient/streaming, B121 + B122): `[ambient].streaming = true` is
