@@ -38,7 +38,7 @@ Alternatives (from branding brief): “Blocked agents call. Hark answers.” · 
 hark doctor
 hark watch [--for-monitor]
 hark status
-hark queue                 # pending interactions (when daemon/library tracks them)
+hark queue                 # pending interactions
 hark context <target>
 hark tts "…"
 hark listen
@@ -49,8 +49,7 @@ hark answer <event_id> …   # bound delivery with fingerprint checks
 hark mute | unmute
 hark devices
 hark providers
-# later:
-harkd                      # optional always-on Mode B (experimental; docs/HARKD.md)
+harkd                      # optional always-on daemon scaffold (experimental; docs/HARKD.md)
 hark daemon start|status|stop
 ```
 

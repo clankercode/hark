@@ -27,6 +27,13 @@ utterances / offline privacy via `stt.provider = "faster_whisper"` (or
 change the default (`auto` → cloud) and must **not** be used as continuous
 ambient wake (see B069 survey).
 
+**Amendment (persona wake defaults):** the default activation set is now the
+12 phrases in `DEFAULT_ACTIVATION_PHRASES` (`src/hark/wake.py`) — `hey` /
+`hello` + each of the four wake names (iris, mercury, hark, herald), plus
+`okay iris` / `okay mercury` / `okay hark` / `ok hark`. Still locally
+scanned, still configurable; the cloud-STT-only-after-wake policy is
+unchanged.
+
 ## ADR-005: Confirm policy split by risk
 
 R0/R1: confirm when unsure. R2/R3: always under configured policy.
@@ -112,3 +119,9 @@ When not answering a blocked question, Mode A may run ambient listen:
 - Local engine scans ~2.5 s snippets (vosk small model or test probe)  
 - After wake → cloud STT for the prompt body (same `[listen]` end_mode)  
 - Config: `[ambient]` in `~/.config/hark/config.toml`  
+
+**Amendment:** the default activation set is now the 12 phrases in
+`DEFAULT_ACTIVATION_PHRASES` (`src/hark/wake.py`) — `hey` / `hello` + iris,
+mercury, hark, herald, plus `okay iris` / `okay mercury` / `okay hark` /
+`ok hark` — and a Sherpa-ONNX KWS wake backend (B070) is available
+alongside vosk. Both remain configurable via `[ambient]`.
