@@ -17,6 +17,11 @@ Format: sections headed `## X.Y.Z` match git tags `vX.Y.Z` and the npm package v
   remaining chunks). Notification is dismissed when playback ends; silently
   disabled without `notify-send` or a session bus. Opt out with
   `[tts].notify_skip = false`. Result dict gains `user_skipped` on skip.
+- fix(tts, B161): `user_skipped`/`tts.skipped` no longer false-positive when
+  a Skip click lands after the final chunk already finished playing — a skip
+  now only counts when it actually interrupted playback (stopper invoked) or
+  left chunks unplayed, tracked via a new skip-invocation counter in
+  `audio/playback.py`.
 
 ## 0.1.10
 

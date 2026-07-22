@@ -38,6 +38,7 @@ from hark.audio.playback import (
     exclusive_playback,
     play_wav_bytes,
     playback_skip_generation,
+    playback_skip_invocations,
     write_wav,
 )
 from hark.config import HarkConfig
@@ -996,6 +997,7 @@ def run_tts(
                                 # the notification so a click during spawn is
                                 # still honored.
                                 skip_gen = playback_skip_generation()
+                                skip_inv = playback_skip_invocations()
                                 chunks_played = 0
                                 with tts_skip_notification(cfg, full_text):
                                     for i in range(len(chunks)):
@@ -1039,7 +1041,16 @@ def run_tts(
                                             )
                                         else:
                                             next_fut = None
-                                if playback_skip_generation() != skip_gen:
+                                if playback_skip_generation() != skip_gen and (
+                                    playback_skip_invocations() != skip_inv
+                                    or chunks_played < len(chunks)
+                                ):
+                                    # A skip was requested AND actually cut
+                                    # playback short (a stopper was invoked,
+                                    # or unplayed chunks remained). A stray
+                                    # click landing after the final chunk
+                                    # finished is ignored — the full message
+                                    # was heard.
                                     user_skipped = True
                                     surface_tts_event(
                                         "tts.skipped",

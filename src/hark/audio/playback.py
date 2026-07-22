@@ -36,13 +36,17 @@ class PlayResult:
 # B161: user-initiated skip of in-process playback (TTS skip notification).
 # Stoppers are registered for the *currently playing* chunk only; the
 # generation counter lets the run_tts chunk loop notice a skip that landed
-# between stoppers (or while no playback was active) and stop early.
+# between stoppers (or while no playback was active) and stop early. The
+# invocation counter bumps only when a skip actually invoked a stopper, so
+# callers can tell "playback was cut short" apart from a stray skip click
+# that landed after playback had already finished.
 # Scope is deliberately process-wide: a skip stops every in-process playback,
 # including short cues/chimes that happen to be playing concurrently — the
 # speaker FIFO serializes TTS with most cue playback, so overlap is rare.
 _skip_lock = threading.Lock()
 _skip_stoppers: set[Callable[[], None]] = set()
 _skip_generation = 0
+_skip_invocations = 0
 
 
 def request_playback_skip() -> bool:
@@ -50,9 +54,11 @@ def request_playback_skip() -> bool:
 
     Returns True when at least one active playback stopper was invoked.
     Always bumps the skip generation so callers that snapshot it before
-    playback can detect the request even if it raced playback setup.
+    playback can detect the request even if it raced playback setup; bumps
+    the invocation counter only when a stopper was actually invoked (i.e.
+    playback was genuinely interrupted).
     """
-    global _skip_generation
+    global _skip_generation, _skip_invocations
     with _skip_lock:
         _skip_generation += 1
         stoppers = list(_skip_stoppers)
@@ -63,6 +69,9 @@ def request_playback_skip() -> bool:
             invoked = True
         except Exception:
             pass
+    if invoked:
+        with _skip_lock:
+            _skip_invocations += 1
     return invoked
 
 
@@ -70,6 +79,12 @@ def playback_skip_generation() -> int:
     """Monotonic skip counter; snapshot before play to detect a later skip."""
     with _skip_lock:
         return _skip_generation
+
+
+def playback_skip_invocations() -> int:
+    """Monotonic counter of skips that actually interrupted a playback."""
+    with _skip_lock:
+        return _skip_invocations
 
 
 @contextmanager

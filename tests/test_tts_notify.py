@@ -216,14 +216,19 @@ def test_notify_skip_config_default_and_toml(tmp_path):
 
 def test_request_playback_skip_invokes_stoppers_and_bumps_generation():
     before = playback.playback_skip_generation()
+    inv_before = playback.playback_skip_invocations()
     stopped: list[bool] = []
     with playback._skip_stopper(lambda: stopped.append(True)):
         assert playback.request_playback_skip() is True
     assert stopped == [True]
     assert playback.playback_skip_generation() == before + 1
+    # A skip that actually interrupted playback bumps the invocation counter.
+    assert playback.playback_skip_invocations() == inv_before + 1
     # Stopper unregistered: second skip finds nothing to stop.
     assert playback.request_playback_skip() is False
     assert playback.playback_skip_generation() == before + 2
+    # ...and does not count as an interruption.
+    assert playback.playback_skip_invocations() == inv_before + 1
 
 
 def test_play_file_skip_does_not_fall_through_to_next_player(monkeypatch):
@@ -436,3 +441,49 @@ def test_run_tts_no_skip_plays_all_chunks(monkeypatch):
     assert out["ok"] is True
     assert "user_skipped" not in out
     assert len(plays) == out["chunks"]
+
+
+def test_run_tts_skip_after_final_chunk_is_not_flagged(monkeypatch):
+    """A stray Skip click landing after the last chunk finished must not
+    report user_skipped or emit tts.skipped — the full message was heard."""
+    plays: list[int] = []
+    events: list[str] = []
+
+    class LateSkipNote:
+        """Simulates a Skip click arriving as the span is dismissed."""
+
+        def __init__(self, text, *, on_skip=None):
+            self.on_skip = on_skip
+
+        def start(self):
+            return True
+
+        def close(self):
+            # Playback is already done: no stopper is registered, so this
+            # bumps the generation without interrupting anything.
+            if self.on_skip is not None:
+                self.on_skip()
+
+    def play_impl(audio, **k):
+        plays.append(len(audio))
+        return SimpleNamespace(duration_ms=50)
+
+    _patch_run_tts_fakes(monkeypatch, play_impl)
+    monkeypatch.setattr("hark.tts_notify.TtsSkipNotification", LateSkipNote)
+    monkeypatch.setattr(
+        "hark.speech.surface_tts_event",
+        lambda kind, **k: events.append(kind),
+    )
+
+    cfg = HarkConfig()
+    cfg.tts.max_chars = 0
+    cfg.tts.chunk_chars = 500
+    cfg.audio.hold_during_conference = False
+    out = run_tts(
+        cfg, _LONG_TEXT, play=True, conference_policy="force", use_cache=False
+    )
+
+    assert out["ok"] is True
+    assert len(plays) == out["chunks"]  # everything played to completion
+    assert "user_skipped" not in out
+    assert "tts.skipped" not in events
