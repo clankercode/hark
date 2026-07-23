@@ -80,7 +80,7 @@ def _resolve_cloud_stt(name: str = "auto") -> SttProvider:
     if google_auth().available:
         return GoogleStt()
     raise ProviderError(
-        "no STT provider available — grok login / XAI_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY"
+        "no STT provider available — grok login / agy / XAI_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY"
     )
 
 

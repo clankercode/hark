@@ -12,13 +12,16 @@ import pytest
 
 from hark.providers import auth as auth_mod
 from hark.providers.auth import (
+    extract_agy_google_token,
     extract_codex_openai_token,
     extract_legacy_minimax_token,
     extract_mmx_token,
     extract_opencode_provider_token,
     extract_pi_provider_token,
+    google_auth,
     minimax_auth,
     openai_auth,
+    resolve_google_token,
     resolve_minimax_token,
     resolve_openai_token,
 )
@@ -34,6 +37,8 @@ def _write_json(path: Path, data: object) -> Path:
 def no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("MMX_CONFIG_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -382,3 +387,110 @@ def test_path_helpers_honor_env(
     assert codex_auth_path() == tmp_path / "c" / "auth.json"
     assert mmx_config_path() == tmp_path / "m" / "config.json"
     assert opencode_auth_path() == tmp_path / "xdg" / "opencode" / "auth.json"
+
+
+# ---------------------------------------------------------------------------
+# Antigravity (agy) Google OAuth
+# ---------------------------------------------------------------------------
+
+
+def test_extract_agy_google_token_valid(tmp_path: Path) -> None:
+    path = _write_json(
+        tmp_path / "oauth_creds.json",
+        {
+            "access_token": "ya29.a0-fake-agy-token",
+            "token_type": "Bearer",
+            "expiry_date": 9_999_999_999_999,  # far future
+        },
+    )
+    token, detail = extract_agy_google_token(path)
+    assert token == "ya29.a0-fake-agy-token"
+    assert "agy" in detail
+    assert "oauth" in detail
+
+
+def test_extract_agy_google_token_expired(tmp_path: Path) -> None:
+    path = _write_json(
+        tmp_path / "oauth_creds.json",
+        {
+            "access_token": "ya29.a0-expired-token",
+            "expiry_date": 1_000_000,  # far past
+        },
+    )
+    token, detail = extract_agy_google_token(path)
+    assert token is None
+    assert "expired" in detail
+
+
+def test_extract_agy_google_token_missing(tmp_path: Path) -> None:
+    token, detail = extract_agy_google_token(tmp_path / "missing.json")
+    assert token is None
+    assert "missing" in detail
+
+
+def test_resolve_google_token_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_env_keys: None
+) -> None:
+    path = _write_json(
+        tmp_path / "oauth_creds.json",
+        {
+            "access_token": "ya29.a0-agy-oauth-tok",
+            "expiry_date": 9_999_999_999_999,
+        },
+    )
+    monkeypatch.setattr(auth_mod, "gemini_oauth_path", lambda: path)
+
+    # 1. agy OAuth returned when env unset
+    token, detail = resolve_google_token()
+    assert token == "ya29.a0-agy-oauth-tok"
+    assert "agy" in detail
+
+    # 2. GEMINI_API_KEY env overrides agy
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-env-gemini")
+    token, detail = resolve_google_token()
+    assert token == "sk-env-gemini"
+    assert "GEMINI_API_KEY" in detail
+
+
+def test_google_auth_status_source_agy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_env_keys: None
+) -> None:
+    path = _write_json(
+        tmp_path / "oauth_creds.json",
+        {
+            "access_token": "ya29.a0-agy-auth-status",
+            "expiry_date": 9_999_999_999_999,
+        },
+    )
+    monkeypatch.setattr(auth_mod, "gemini_oauth_path", lambda: path)
+    st = google_auth()
+    assert st.available is True
+    assert st.source == "agy"
+    assert "agy" in st.detail
+
+
+def test_google_provider_key_and_headers(
+    monkeypatch: pytest.MonkeyPatch, no_env_keys: None
+) -> None:
+    from hark.providers import google_p
+
+    # OAuth token -> Authorization Bearer header
+    monkeypatch.setattr(
+        auth_mod,
+        "resolve_google_token",
+        lambda: ("ya29.a0-oauth-tok", "agy (oauth from /tmp)"),
+    )
+    key_param, headers = google_p._key_and_headers()
+    assert key_param == ""
+    assert headers.get("Authorization") == "Bearer ya29.a0-oauth-tok"
+
+    # API key -> ?key= param
+    monkeypatch.setattr(
+        auth_mod,
+        "resolve_google_token",
+        lambda: ("AIzaSy-api-key", "GEMINI_API_KEY set"),
+    )
+    key_param, headers = google_p._key_and_headers()
+    assert key_param == "?key=AIzaSy-api-key"
+    assert "Authorization" not in headers
+

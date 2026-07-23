@@ -7,16 +7,23 @@ import os
 
 import httpx
 
+from hark.providers import auth
 from hark.providers.base import ProviderError, SynthResult, Transcript, provider_operation
 
 GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def _key() -> str:
-    k = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not k:
-        raise ProviderError("set GEMINI_API_KEY or GOOGLE_API_KEY")
-    return k
+def _key_and_headers() -> tuple[str, dict[str, str]]:
+    token, detail = auth.resolve_google_token()
+    if not token:
+        raise ProviderError(f"Google STT/TTS: {detail}")
+    headers: dict[str, str] = {}
+    if token.startswith("ya29.") or token.startswith("eyJ") or "oauth" in detail.lower():
+        headers["Authorization"] = f"Bearer {token}"
+        key_param = ""
+    else:
+        key_param = f"?key={token}"
+    return key_param, headers
 
 
 class GoogleStt:
@@ -24,10 +31,10 @@ class GoogleStt:
 
     @provider_operation("Gemini STT")
     def transcribe(self, wav_bytes: bytes, *, language: str | None = None) -> Transcript:
-        key = _key()
+        key_param, headers = _key_and_headers()
         b64 = base64.b64encode(wav_bytes).decode("ascii")
         model = "gemini-2.0-flash"
-        url = f"{GEMINI}/models/{model}:generateContent?key={key}"
+        url = f"{GEMINI}/models/{model}:generateContent{key_param}"
         body = {
             "contents": [
                 {
@@ -49,7 +56,7 @@ class GoogleStt:
             ]
         }
         with httpx.Client(timeout=120.0) as client:
-            r = client.post(url, json=body)
+            r = client.post(url, headers=headers, json=body)
             if r.status_code >= 400:
                 raise ProviderError(f"Gemini STT HTTP {r.status_code}: {r.text[:300]}")
             payload = r.json()
@@ -66,9 +73,9 @@ class GoogleTts:
     @provider_operation("Gemini TTS")
     def synthesize(self, text: str, *, voice: str | None = None) -> SynthResult:
         # Gemini TTS is model/version sensitive; try audio generation if available
-        key = _key()
+        key_param, headers = _key_and_headers()
         model = "gemini-2.5-flash-preview-tts"
-        url = f"{GEMINI}/models/{model}:generateContent?key={key}"
+        url = f"{GEMINI}/models/{model}:generateContent{key_param}"
         body = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
@@ -76,7 +83,8 @@ class GoogleTts:
             },
         }
         with httpx.Client(timeout=120.0) as client:
-            r = client.post(url, json=body)
+            r = client.post(url, headers=headers, json=body)
+
             if r.status_code >= 400:
                 raise ProviderError(
                     f"Gemini TTS HTTP {r.status_code}: {r.text[:300]} "

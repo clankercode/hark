@@ -23,6 +23,7 @@ from typing import Any
 
 from hark.paths import (
     codex_auth_path,
+    gemini_oauth_path,
     grok_auth_path,
     legacy_minimax_path,
     mmx_config_path,
@@ -66,6 +67,7 @@ def _not_expired(entry: dict[str, Any]) -> bool:
         or entry.get("expires")
         or entry.get("expiry")
         or entry.get("exp")
+        or entry.get("expiry_date")
     )
     if exp is None:
         return True
@@ -317,6 +319,35 @@ def extract_legacy_minimax_token(path: Path | None = None) -> tuple[str | None, 
     return None, "missing legacy ~/.minimax"
 
 
+def extract_agy_google_token(auth_path: Path | None = None) -> tuple[str | None, str]:
+    """Return (token, source_detail) from ~/.gemini/oauth_creds.json if usable.
+
+    Never log the token.
+    """
+    path = auth_path or gemini_oauth_path()
+    if not path.is_file():
+        return None, "missing ~/.gemini/oauth_creds.json (run agy)"
+
+    data = _read_json(path)
+    if not isinstance(data, dict):
+        return None, "oauth_creds.json is not a JSON object"
+
+    if not _not_expired(data):
+        return None, f"oauth_creds.json present but token expired ({path})"
+
+    token = (
+        _str_secret(data.get("access_token"))
+        or _str_secret(data.get("api_key"))
+        or _str_secret(data.get("key"))
+    )
+    if token:
+        kind = "oauth" if token.startswith("ya29.") or token.startswith("eyJ") else "api_key"
+        return token, f"agy ({kind} from {path})"
+
+    return None, f"oauth_creds.json present but no usable token ({path})"
+
+
+
 def xai_auth() -> AuthStatus:
     token, detail = extract_grok_access_token()
     if token:
@@ -381,18 +412,52 @@ def openai_auth() -> AuthStatus:
     return AuthStatus(name="openai", available=True, source=source, detail=detail)
 
 
-def google_auth() -> AuthStatus:
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        which = "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "GOOGLE_API_KEY"
-        return AuthStatus(
-            name="google", available=True, source="env", detail=f"{which} set"
-        )
-    return AuthStatus(
-        name="google",
-        available=False,
-        source=None,
-        detail="set GEMINI_API_KEY or GOOGLE_API_KEY",
+def resolve_google_token() -> tuple[str | None, str]:
+    """Resolve Google/Gemini credential: env → agy → OpenCode → Pi.
+
+    Returns (token, detail). Prefer env so explicit keys always win (fail-open).
+    """
+    env = _str_secret(os.environ.get("GEMINI_API_KEY")) or _str_secret(
+        os.environ.get("GOOGLE_API_KEY")
     )
+    if env:
+        which = "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "GOOGLE_API_KEY"
+        return env, f"{which} set"
+
+    token, detail = extract_agy_google_token()
+    if token:
+        return token, detail
+
+    token, detail = extract_opencode_provider_token(("google", "gemini"))
+    if token:
+        return token, detail
+
+    token, detail = extract_pi_provider_token(("google", "gemini"))
+    if token:
+        return token, detail
+
+    return None, (
+        "set GEMINI_API_KEY or GOOGLE_API_KEY; or agy OAuth (~/.gemini/oauth_creds.json); "
+        "or OpenCode/Pi google keys"
+    )
+
+
+def google_auth() -> AuthStatus:
+    token, detail = resolve_google_token()
+    if not token:
+        return AuthStatus(name="google", available=False, source=None, detail=detail)
+    if detail.startswith("GEMINI_API_KEY") or detail.startswith("GOOGLE_API_KEY"):
+        source = "env"
+    elif detail.startswith("agy"):
+        source = "agy"
+    elif detail.startswith("opencode"):
+        source = "opencode"
+    elif detail.startswith("pi"):
+        source = "pi"
+    else:
+        source = "cli"
+    return AuthStatus(name="google", available=True, source=source, detail=detail)
+
 
 
 def resolve_minimax_token() -> tuple[str | None, str]:
@@ -486,3 +551,10 @@ def resolve_minimax_api_key() -> str | None:
     """Token only (for providers)."""
     token, _ = resolve_minimax_token()
     return token
+
+
+def resolve_google_api_key() -> str | None:
+    """Token only (for providers)."""
+    token, _ = resolve_google_token()
+    return token
+

@@ -38,6 +38,12 @@ def grok_auth_path() -> Path:
     return Path.home() / ".grok" / "auth.json"
 
 
+def gemini_oauth_path() -> Path:
+    """Antigravity / Gemini CLI credentials (`~/.gemini/oauth_creds.json`)."""
+    return Path.home() / ".gemini" / "oauth_creds.json"
+
+
+
 def codex_auth_path() -> Path:
     """Codex CLI credentials (`auth.json`). Honors CODEX_HOME when set."""
     override = os.environ.get("CODEX_HOME")
