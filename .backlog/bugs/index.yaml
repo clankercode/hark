@@ -160,3 +160,4 @@ bugs:
     - file: B159-format-characters-inside-negat.todo
     - file: B160-we-should-be-able-to-run-hark.todo
     - file: B161-when-tts-is-playing-we-should.todo
+    - file: B162-doctor-shows-provider-on-crede.todo
