@@ -167,3 +167,4 @@ bugs:
     - file: B166-config-accepts-stt-provider-mi.todo
     - file: B167-feature-from-operator-first-ru.todo
     - file: B168-feature-google-provider-only-r.todo
+    - file: B169-hark-start-reports-started-mis.todo
